@@ -19,7 +19,6 @@ if str(ROOT.parent) not in sys.path:
 from agent.schemas.task_schema import Task, TaskDefinition, load_task_from_yaml
 from agent.supervisor.supervisor import run_task
 from agent.logging.run_logger import init_run, log_event, finalize_run
-from agent.chat_engine import chat_reply
 from agent.learning.learning_store import load_playbook
 
 load_dotenv()
@@ -480,11 +479,6 @@ def main_menu():
             record_session_menu()
         elif choice == "s":
             capture_session_menu()
-        elif choice == "c":
-            clear()
-            msg = input("You: ")
-            print("Assistant:", chat_reply(msg))
-            pause()
         elif choice == "0":
             clear()
             sys.exit(0)
@@ -492,31 +486,13 @@ def main_menu():
             continue
 
 
-def chat_mode():
-    clear()
-    print("DrCodePT chat (type 'exit' to quit)\n")
-    while True:
-        try:
-            msg = input("You: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nBye.")
-            break
-        if msg.lower() in {"exit", "quit"}:
-            print("Bye.")
-            break
-        print("Assistant:", chat_reply(msg))
-
-
 if __name__ == "__main__":
     args = sys.argv[1:]
     # Flags:
     # --menu / -m : open the DrCodePT menu
-    # --chat / -c : open offline chat mode
     # default    : launch Codex CLI (LAUNCH_CODEX.bat) if present; fallback to Agent_CLI.bat; otherwise menu
     if any(a in {"--menu", "-m"} for a in args):
         main_menu()
-    elif any(a in {"--chat", "-c"} for a in args):
-        chat_mode()
     else:
         launch = ROOT.parent / "LAUNCH_CODEX.bat"
         fallback = ROOT.parent / "Agent_CLI.bat"
