@@ -165,18 +165,25 @@ class BrowserTool(ToolAdapter):
 
     def execute(self, task, inputs: Dict[str, Any]) -> ToolResult:
         login_site = inputs.get("login_site") or getattr(task, "login_site", None)
-        steps = inputs.get("steps") or getattr(task, "steps", None) or (getattr(task, "inputs", {}) or {}).get("steps")
+        user_steps = inputs.get("steps") or getattr(task, "steps", None) or (getattr(task, "inputs", {}) or {}).get(
+            "steps"
+        )
         start_url = getattr(task, "url", None) or inputs.get("url")
 
-        if not steps and login_site:
+        login_steps: List[Dict[str, Any]] = []
+        if login_site:
             try:
-                steps = build_login_steps(login_site, start_url=start_url)
+                login_steps = build_login_steps(login_site, start_url=start_url)
             except CredentialError as exc:
                 return ToolResult(False, error=str(exc))
             except Exception as exc:  # pragma: no cover - safeguard
                 return ToolResult(False, error=f"Failed to build login steps: {exc}")
 
-        if not steps:
+        if user_steps:
+            steps = login_steps + user_steps
+        elif login_steps:
+            steps = login_steps
+        else:
             if not start_url:
                 return ToolResult(False, error="No steps or url provided for browser task")
             steps = [{"action": "goto", "url": start_url}]

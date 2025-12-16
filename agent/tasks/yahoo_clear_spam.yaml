@@ -1,0 +1,46 @@
+id: yahoo_clear_spam
+name: "Yahoo Mail: Empty Spam"
+type: browser
+goal: "Log into Yahoo Mail and empty the Spam folder"
+login_site: yahoo
+inputs:
+  steps:
+    - action: goto
+      url: https://mail.yahoo.com/d/folders/5
+    - action: wait_for
+      selector: "a[data-test-folder-name='Spam'], a[aria-label='Spam']"
+      timeout_ms: 20000
+    - action: wait_for
+      selector: "div[data-test-id='virtual-list'], ul[data-test-id='message-list']"
+      timeout_ms: 20000
+    - action: click
+      text: "Empty Spam"
+      timeout_ms: 5000
+    - action: click
+      selector: "button[data-test-id='primary-button'], button[data-test-id='confirmation-dialog-ok-button']"
+      timeout_ms: 5000
+    - action: wait_for
+      text: "Spam folder is empty"
+      timeout_ms: 10000
+    - action: screenshot
+      path: runs/yahoo_spam_cleanup.png
+output:
+  destination: runs/output
+  format: screenshot+html
+definition_of_done: "Spam folder shows empty state after cleanup screenshot"
+verify:
+  - id: page_contains
+    args:
+      text: "Spam folder is empty"
+allowed_paths:
+  - runs/
+  - outputs/
+tools_allowed:
+  - browser
+stop_rules:
+  max_attempts: 2
+  max_minutes: 8
+  max_tool_calls: 12
+on_fail: escalate
+requires_human: false
+session_state_path: sessions/yahoo_state.json
