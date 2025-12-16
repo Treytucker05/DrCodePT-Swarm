@@ -4,7 +4,7 @@ from __future__ import annotations
 Vision tool: screenshots + GPT-4o vision for description and element localization.
 """
 
-import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -20,11 +20,21 @@ def _import_pyautogui():
     return pyautogui, None
 
 
+def _screenshot_dir() -> Path:
+    root = Path(__file__).resolve().parent.parent / "screenshots"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _timestamp() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
+
 def take_screenshot(path: Optional[str] = None) -> Path:
     pyautogui, err = _import_pyautogui()
     if not pyautogui:
         raise RuntimeError(err)
-    out = Path(path) if path else Path(tempfile.gettempdir()) / "vision_screenshot.png"
+    out = Path(path) if path else _screenshot_dir() / f"vision_{_timestamp()}.png"
     img = pyautogui.screenshot()
     img.save(out)
     return out

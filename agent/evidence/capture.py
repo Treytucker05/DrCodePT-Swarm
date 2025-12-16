@@ -12,12 +12,23 @@ from typing import Any, Dict
 Timestamp = lambda: datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 
 
+def _screenshot_dir() -> Path:
+    """Directory to collect all screenshots for easy cleanup."""
+    root = Path(__file__).resolve().parent.parent / "screenshots"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _screenshot_path(prefix: str = "screenshot") -> Path:
+    return _screenshot_dir() / f"{prefix}_{Timestamp()}.png"
+
+
 def _tmp_path(suffix: str) -> Path:
     return Path(tempfile.gettempdir()) / f"evidence_{Timestamp()}{suffix}"
 
 
 def capture_screenshot(browser) -> Path:
-    path = _tmp_path(".png")
+    path = _screenshot_path("browser")
     try:
         browser.screenshot(path=str(path))
         return path
@@ -120,7 +131,7 @@ def bundle_evidence(run_path: Path, captures: Dict[str, Any]) -> Path:
 
 async def capture_screenshot_async(browser_or_page) -> Path:
     """Async screenshot capture for Browser-Use compatibility."""
-    path = _tmp_path(".png")
+    path = _screenshot_path("browser_async")
     try:
         # Try Browser-Use style (has get_current_page method)
         if hasattr(browser_or_page, 'get_current_page'):

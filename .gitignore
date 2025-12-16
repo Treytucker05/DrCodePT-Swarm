@@ -11,6 +11,8 @@ agent/sessions/*_state.json
 agent/recordings/
 *.log
 *.mp4
+screenshots/*
+!screenshots/.gitkeep
 
 # Python
 __pycache__/

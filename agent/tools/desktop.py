@@ -5,7 +5,7 @@ Desktop control tool built on PyAutoGUI.
 Supports mouse actions (move, click, drag), keyboard (type, hotkey, press), and screenshots.
 """
 
-import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -19,6 +19,16 @@ def _import_pyautogui():
         return None, f"PyAutoGUI not installed: {exc}. Run: pip install pyautogui"
     pyautogui.FAILSAFE = False  # avoid abrupt aborts on corner hits
     return pyautogui, None
+
+
+def _screenshot_dir() -> Path:
+    root = Path(__file__).resolve().parent.parent / "screenshots"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _timestamp() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 
 
 def _coords(inputs: Dict[str, Any]) -> Optional[Tuple[int, int]]:
@@ -103,7 +113,7 @@ class DesktopTool(ToolAdapter):
                 if path:
                     path = Path(path)
                 else:
-                    path = Path(tempfile.gettempdir()) / f"desktop_ss.png"
+                    path = _screenshot_dir() / f"desktop_{_timestamp()}.png"
                 img = pyautogui.screenshot()
                 img.save(path)
                 return ToolResult(True, output={"screenshot_path": str(path)})
