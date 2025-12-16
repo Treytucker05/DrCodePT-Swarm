@@ -64,6 +64,24 @@ def record_success(signature: str, fix_applied: Any):
         f.write("\n")
 
 
+def record_failure(signature: str, reason: str, task_id: str = "", step_id: str = "", metadata: Dict[str, Any] | None = None):
+    """Persist a failure signature for future retrieval."""
+
+    FAILURE_LOG.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "signature": signature,
+        "reason": reason,
+        "task_id": task_id,
+        "step_id": step_id,
+        "metadata": metadata or {},
+        "outcome": "failure",
+        "timestamp": datetime.now().isoformat(),
+    }
+    with FAILURE_LOG.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry))
+        f.write("\n")
+
+
 def load_playbook(site: str) -> Dict[str, Any]:
     path = PLAYBOOK_DIR / f"{site}.yaml"
     if not path.is_file():
@@ -83,6 +101,7 @@ __all__ = [
     "generate_failure_signature",
     "retrieve_similar_cases",
     "record_success",
+    "record_failure",
     "load_playbook",
     "update_playbook",
 ]
