@@ -1,0 +1,21 @@
+id: test_browser_use_001
+name: Test Browser-Use Integration
+type: browser
+goal: "Go to https://example.com and tell me what the main heading says on the page"
+inputs: {}
+output:
+  destination: outputs/browser_use_test.json
+  format: json
+definition_of_done: "Successfully identified and reported the main heading from example.com"
+verify: []
+allowed_paths:
+  - outputs/
+  - sessions/
+tools_allowed:
+  - browser
+stop_rules:
+  max_attempts: 2
+  max_minutes: 3
+  max_tool_calls: 15
+on_fail: abort
+url: https://example.com

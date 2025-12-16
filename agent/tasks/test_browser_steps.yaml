@@ -1,0 +1,24 @@
+id: test_browser_steps
+name: Test Browser Steps
+type: browser
+goal: "Open example.com and wait for Example Domain"
+inputs:
+  steps:
+    - action: goto
+      url: https://example.com
+    - action: wait_for
+      text: Example Domain
+      timeout_ms: 10000
+    - action: screenshot
+output: {}
+definition_of_done: "Reached example.com and captured screenshot"
+verify: []
+allowed_paths:
+  - runs/
+tools_allowed:
+  - browser
+stop_rules:
+  max_attempts: 1
+  max_minutes: 2
+  max_tool_calls: 5
+on_fail: abort

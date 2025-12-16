@@ -1,0 +1,37 @@
+# Global ignores
+.env
+*.env
+**/.env
+**/*.env
+agent/.env
+agent/runs/
+runs/
+agent/failures/
+agent/sessions/*_state.json
+agent/recordings/
+*.log
+*.mp4
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+env/
+venv/
+.venv/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+*.swo

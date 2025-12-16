@@ -1,0 +1,7 @@
+blocked_at: '2025-12-15T19:52:42.468379'
+instructions: Complete the required action then create CONTINUE.flag
+reason: requires_human
+resume_from: test_handoff_001
+run_path: C:\Users\treyt\OneDrive\Desktop\DrCodePT-Swarm\agent\runs\2025-12-15_195238_test_handoff_001
+screenshot: null
+task_id: test_handoff_001

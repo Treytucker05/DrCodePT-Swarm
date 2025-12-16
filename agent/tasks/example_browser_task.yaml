@@ -1,0 +1,28 @@
+id: example_browser_001
+name: Example Browser Task
+type: browser
+goal: "Open example.com and capture headline text"
+inputs:
+  query: "example automation"
+output:
+  destination: runs/output
+  format: screenshot+html
+definition_of_done: "Page loads and contains Example Domain text"
+verify:
+  - id: page_contains
+    args:
+      text: "Example Domain"
+allowed_paths:
+  - runs/
+  - outputs/
+tools_allowed:
+  - browser
+stop_rules:
+  max_attempts: 2
+  max_minutes: 5
+  max_tool_calls: 5
+on_fail: escalate
+url: https://example.com
+timeout_seconds: 30
+requires_human: false
+session_state_path: sessions/google_state.json

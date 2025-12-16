@@ -1,0 +1,67 @@
+id: example_composite_001
+name: Example Composite Task
+type: composite
+goal: "Run a shell command then perform an API call"
+inputs: {}
+output: {}
+definition_of_done: "Both subtasks succeed and verifications pass"
+verify:
+  - id: command_exit_zero
+    args: {}
+allowed_paths:
+  - runs/
+tools_allowed:
+  - composite
+stop_rules:
+  max_attempts: 3
+  max_minutes: 10
+  max_tool_calls: 10
+on_fail: escalate
+steps:
+  - id: sub_shell_echo
+    name: "Subtask: Echo greeting"
+    type: shell
+    goal: "Echo greeting"
+    inputs:
+      message: "Hello from composite"
+    output:
+      destination: stdout
+      format: text
+    definition_of_done: "Command prints greeting"
+    verify:
+      - id: command_exit_zero
+        args: {}
+    allowed_paths: []
+    tools_allowed:
+      - shell
+    stop_rules:
+      max_attempts: 2
+      max_minutes: 1
+      max_tool_calls: 2
+    on_fail: abort
+    command: echo "Hello from composite"
+    timeout_seconds: 10
+  - id: sub_api_get
+    name: "Subtask: Fetch HTTPBin"
+    type: api
+    goal: "GET status from httpbin"
+    inputs: {}
+    output:
+      destination: memory
+      format: json
+    definition_of_done: "HTTP 200 response received"
+    verify:
+      - id: api_status_ok
+        args:
+          expected_status: 200
+    allowed_paths: []
+    tools_allowed:
+      - api
+    stop_rules:
+      max_attempts: 2
+      max_minutes: 2
+      max_tool_calls: 3
+    on_fail: abort
+    endpoint: https://httpbin.org/get
+    method: GET
+    timeout_seconds: 15

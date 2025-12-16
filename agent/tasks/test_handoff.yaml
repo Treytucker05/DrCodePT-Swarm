@@ -1,0 +1,21 @@
+id: test_handoff_001
+name: Test Human Handoff
+type: browser
+goal: Navigate to a page and trigger handoff
+inputs: {}
+output: {}
+definition_of_done: "Human completes handoff and task resumes"
+verify:
+  - id: page_contains
+    args:
+      text: "Will never match - forces failure"
+allowed_paths: []
+tools_allowed:
+  - browser
+stop_rules:
+  max_attempts: 1
+  max_minutes: 5
+  max_tool_calls: 10
+on_fail: escalate
+requires_human: true
+url: https://example.com
