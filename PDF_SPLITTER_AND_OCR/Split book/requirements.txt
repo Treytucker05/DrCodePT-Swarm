@@ -1,0 +1,5 @@
+pypdf>=6.4.0
+pypdfium2>=4.30.0
+pillow>=10.0.0
+pytesseract>=0.3.10
+

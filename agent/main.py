@@ -454,7 +454,6 @@ def main_menu():
         print("  [9] Self-Check System")
         print("  [R] Record Browser Session")
         print("  [S] Capture Login Session")
-        print("  [C] Chat (offline summary)")
         print("  [0] Exit\n")
         choice = input("Select option: ").strip().lower()
         if choice == "1":

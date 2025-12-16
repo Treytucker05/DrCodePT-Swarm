@@ -1,0 +1,753 @@
+  
+		 
+			
+		 
+			 Use the Microsoft To Do API - Microsoft Graph v1.0 | Microsoft Learn 
+			 
+			 
+			 
+
+			 
+			  
+
+			 
+			 
+			 
+			 
+			 
+			 
+			 
+			 
+			 
+			 
+			   
+			 
+			   
+			 
+
+			 
+
+			 
+			
+
+			 
+			
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	
+		 
+	 
+		 
+	
+		 
+	
+
+			 
+			
+			 
+			 
+						 
+						 
+						 
+			
+			
+			
+
+			 
+			
+
+			 
+			
+			
+
+			 
+			
+		 
+	
+			 
+				 
+		 
+			
+		 
+			Skip to main content
+		 
+	
+		 
+			Skip to Ask Learn chat experience
+		 
+	
+
+			  
+			 
+			 
+				 
+					 This browser is no longer supported. 
+					 
+						Upgrade to Microsoft Edge to take advantage of the latest features, security updates, and technical support.
+					 
+					 
+						 
+							Download Microsoft Edge
+						 
+						 
+							More info about Internet Explorer and Microsoft Edge
+						 
+					 
+				 
+			 
+			 
+			 
+				  
+				  
+				  
+			 
+			
+		 
+		 
+			  
+			
+		 
+		 
+	
+		 
+	 
+				  
+					 
+		  
+	 
+			   
+
+				 
+					
+			 
+		 
+			 
+				    
+				  Table of contents  
+			 
+			 
+				    
+				 Exit editor mode 
+			 
+		 
+	 
+			 
+				 
+					
+		 
+			 
+				
+		 
+			 
+				 
+					  
+				 
+			 
+			  
+		 
+
+		  
+	 
+		 
+			
+		 
+			 
+				  
+			 
+		 
+		 
+			 
+				  
+			 
+			 Ask Learn 
+		 
+		 
+			 
+				  
+			 
+			 Ask Learn 
+		 
+	 
+		 
+			 
+				  
+			 
+			 Focus mode 
+		 
+	 
+
+			 
+				 
+					 
+						  
+					 
+				 
+				 
+					
+		 
+			 
+				  
+			 
+			 Table of contents 
+		 
+	 
+		 
+			 
+				  
+			 
+			 Read in English 
+		 
+	 
+		 
+			 
+				  
+			 
+			 Add 
+		 
+	
+					
+		 
+			 
+				  
+			 
+			 Add to plan 
+		 
+	  
+		 
+			 
+				  
+			 
+			 Edit 
+		 
+	
+					
+		 
+		 Share via 
+		
+					 
+						 
+							  
+						 
+						 Facebook 
+					 
+
+					 
+						 
+							  
+						 
+						 x.com 
+					 
+
+					 
+						 
+							  
+						 
+						 LinkedIn 
+					 
+					 
+						 
+							  
+						 
+						 Email 
+					 
+			  
+	 
+		 
+		 
+			 
+				  
+			 
+			 Print 
+		 
+	
+				 
+			 
+		 
+	
+			 
+		 
+	  
+		 
+		 
+			 
+			 
+				 
+					 
+						 
+							  
+						 
+						 Note 
+					 
+					 
+						Access to this page requires authorization. You can try  signing in  or  changing directories .
+					 
+					 
+						Access to this page requires authorization. You can try  changing directories .
+					 
+				 
+			 
+		 
+	
+					  Use the Microsoft To Do API  
+					
+		 
+			 
+				 
+					
+		 
+			 
+				  
+			 
+			 Feedback 
+		 
+	
+				 
+		  
+		 
+	 
+		 
+			 
+				 
+					  
+				 
+				 
+					 
+						Summarize this article for me
+					 
+				 
+			 
+			 
+			  
+		 
+	 
+		 
+			 
+				In this article
+			 
+		 
+	
+					  Use the Microsoft Graph To Do API to create an app that connects with tasks across Microsoft To Do clients. Build a variety of experiences with tasks, such as the following: 
+ 
+ Create tasks from your appâ??s workflow, for example, from email or notifications, and save them in To Do. Use the  linkedResource  entity to store the link back to your app. 
+ Sync your appâ??s existing tasks with To Do and create a single task view for better prioritization and manageability. 
+ Manage To Do tasks in a custom business application. 
+ 
+ The API supports both delegated and application permissions. 
+ Before starting with the To Do API, take a look at the resources and how they relate to one another. 
+   
+ Task list 
+ A  todoTaskList  represents a logical container of  todoTask  resources. You can currently create tasks only in a task list. To  get all your task lists , make the following HTTP request: 
+  GET /me/todo/lists
+  
+ Task 
+ A  todoTask  represents a task, i.e. a piece of work or personal item that can be tracked and completed. To get your tasks from a task list, make the following HTTP request: 
+  GET /me/todo/lists/{todoTaskListId}/tasks
+  
+ Checklist item 
+ A  checklistItem  represents a subtask in a bigger  todoTask .  ChecklistItem  allows breaking down a complex task into more actionable, smaller tasks. To get a  checklistItem  from a task, make the following HTTP request: 
+  GET /me/todo/lists/{todoTaskListId}/tasks/{todoTaskId}/checklistItems/{checklistItems}
+  
+ Linked resource 
+ A  linkedResource  represents any item from a partner application related to the task, for example, an item like email from where a task was created. You can use it to store information and the link back to the related item in your app. To get a linked resource from a task, make the following HTTP request: 
+  GET /me/todo/lists/{todoTaskListId}/tasks/{todoTaskId}/linkedresources/{linkedResourceId}
+  
+ Track changes using delta query 
+ For performance reasons, you may want to maintain a local cache of objects, and periodically synchronize the local cache with the server, using  delta query . 
+ The following To Do API resources support delta query: 
+ 
+  todoTask  collection in a task list 
+  todoTaskList  
+ 
+ 
+					
+		  
+	 
+		  
+		  
+	
+					
+		 
+		 
+			 
+			 Feedback 
+			 
+				 
+					Was this page helpful?
+				 
+				 
+					 
+						 
+							  
+						 
+						 Yes 
+					 
+					 
+						 
+							  
+						 
+						 No 
+					 
+					 
+						 
+							 
+								  
+							 
+							 No 
+						 
+						 
+							 
+								Need help with this topic?
+							 
+							 
+								Want to try using Ask Learn to clarify or guide you through this topic?
+							 
+							
+		 
+			 
+		 
+			 
+				  
+			 
+		 
+		 
+			 
+				  
+			 
+			 Ask Learn 
+		 
+		 
+			 
+				  
+			 
+			 Ask Learn 
+		 
+	 
+			 
+				 
+					  
+				 
+				  Suggest a fix?  
+			 
+		 
+	
+						 
+					 
+				 
+			 
+		 
+		 
+	
+				 
+				
+		 
+			 
+			 
+				Additional resources
+			 
+			 
+		  
+	 
+		  
+	 
+		  
+	
+		 
+	 
+		 
+			 
+			 
+				 
+			 
+				 Last updated on  
+		2024-03-06
+	  
+			 
+		 
+			 
+		 
+	
+			 
+			
+		  
+	
+		
+				 
+				 
+					
+		 
+			 
+				
+		 
+			 In this article 
+		 
+	
+				 
+				
+		 
+			 Was this page helpful? 
+			 
+				 
+					 
+						  
+					 
+					 Yes 
+				 
+				 
+					 
+						  
+					 
+					 No 
+				 
+				 
+					 
+						 
+							  
+						 
+						 No 
+					 
+					 
+						 
+							Need help with this topic?
+						 
+						 
+							Want to try using Ask Learn to clarify or guide you through this topic?
+						 
+						
+		 
+			 
+		 
+			 
+				  
+			 
+		 
+		 
+			 
+				  
+			 
+			 Ask Learn 
+		 
+		 
+			 
+				  
+			 
+			 Ask Learn 
+		 
+	 
+			 
+				 
+					  
+				 
+				  Suggest a fix?  
+			 
+		 
+	
+					 
+				 
+			 
+		 
+	
+			 
+		 
+	
+			     
+					   
+			     
+		 
+			 
+				
+		      en-us  
+	  
+		
+		 
+		 
+			  
+			  
+			  
+			  
+		 
+	
+			 Your Privacy Choices  
+	
+	 
+				 
+		 
+			 
+				 
+					  
+				 
+				 Theme 
+				 
+					  
+				 
+			 
+			 
+				 
+					 
+						 
+							 
+								 
+									 
+										 
+										 
+										 
+										 
+										 
+										 
+										 
+										 
+									 
+								 
+							 
+							  Light  
+						 
+					 
+					 
+						 
+							 
+								 
+									 
+										 
+										 
+										 
+										 
+										 
+										 
+										 
+										 
+									 
+								 
+							 
+							  Dark  
+						 
+					 
+					 
+						 
+							 
+								 
+									 
+										 
+										 
+										 
+										 
+										 
+										 
+										 
+										 
+									 
+								 
+							 
+							  High contrast  
+						 
+					 
+				 
+			 
+		 
+	 
+			 
+			 
+				  
+				 
+		
+		 AI Disclaimer 
+	
+	  
+		
+		 Previous Versions 
+	
+	   
+		
+		 Blog 
+	
+	   
+		
+		 Contribute 
+	
+	  
+		
+		 Privacy 
+	
+	  
+		
+		 Terms of Use 
+	
+	  
+		
+		 Trademarks 
+	
+	 
+				 © Microsoft 2025 
+			 
+		 
+	 
+			 
+		 
+

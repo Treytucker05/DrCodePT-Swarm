@@ -1,0 +1,5 @@
+{
+  "name": "DrCodePT Console",
+  "description": "Operations-grade console for the DrCodePT autonomous agent system.",
+  "requestFramePermissions": []
+}
