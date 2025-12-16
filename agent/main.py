@@ -512,17 +512,19 @@ if __name__ == "__main__":
     # Flags:
     # --menu / -m : open the DrCodePT menu
     # --chat / -c : open offline chat mode
-    # default    : launch Codex CLI (Agent_CLI.bat) if present; otherwise menu
+    # default    : launch Codex CLI (LAUNCH_CODEX.bat) if present; fallback to Agent_CLI.bat; otherwise menu
     if any(a in {"--menu", "-m"} for a in args):
         main_menu()
     elif any(a in {"--chat", "-c"} for a in args):
         chat_mode()
     else:
-        bat = ROOT.parent / "Agent_CLI.bat"
-        if bat.is_file():
-            rc = subprocess.call(str(bat), shell=True)
+        launch = ROOT.parent / "LAUNCH_CODEX.bat"
+        fallback = ROOT.parent / "Agent_CLI.bat"
+        target = launch if launch.is_file() else fallback if fallback.is_file() else None
+        if target:
+            rc = subprocess.call(str(target), shell=True)
             if rc != 0:
-                print(f"Agent_CLI.bat exited with code {rc}, falling back to menu.")
+                print(f"{target.name} exited with code {rc}, falling back to menu.")
                 main_menu()
         else:
             main_menu()
