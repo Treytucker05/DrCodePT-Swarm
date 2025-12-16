@@ -26,7 +26,11 @@ Handoff flow
 
 No secrets / no keys
 - OPENAI_API_KEY is not required; browser tool is deterministic; vision reasoning is escalated to handoff.
-- If you need credentials, inject via environment variables and reference with `${ENV_VAR}` in tasks. Do not store secrets in YAML.
+- Credentials for logins should live in the encrypted credential store under `agent/memory/credential_store.json`.
+  - Generate an encryption key with: `python - <<'PY'\nfrom cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\nPY`
+  - Export it as `AGENT_CREDENTIAL_KEY` (preferred) or be ready to enter it interactively; do **not** write the key to disk.
+  - Save site credentials via `from agent.memory.credentials import save_credential; save_credential("blackboard", "user", "pass")`.
+  - Browser tasks can set `login_site: <site>` to automatically build login steps from the site playbook and stored credentials.
 
 Menu entry point
 - `python main.py` launches the terminal menu (run tasks, create tasks, view runs/failures/playbooks, etc.).

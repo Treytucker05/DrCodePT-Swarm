@@ -73,6 +73,7 @@ class TaskDefinition(BaseModel):
 
     # Optional / type-specific
     url: Optional[str] = None
+    login_site: Optional[str] = None
     command: Optional[str] = None
     script: Optional[str] = None
     path: Optional[str] = None
@@ -103,11 +104,12 @@ class TaskDefinition(BaseModel):
         method = values.get("method")
         steps = values.get("steps")
         inputs = values.get("inputs") or {}
+        login_site = values.get("login_site")
 
         if t_type == TaskType.shell and not command:
             raise ValueError("Shell tasks require a 'command'.")
-        if t_type == TaskType.browser and not (url or inputs.get("steps")):
-            raise ValueError("Browser tasks require a 'url' or inputs.steps.")
+        if t_type == TaskType.browser and not (url or inputs.get("steps") or login_site):
+            raise ValueError("Browser tasks require a 'url', inputs.steps, or login_site.")
         if t_type == TaskType.api:
             if not endpoint:
                 raise ValueError("API tasks require an 'endpoint'.")

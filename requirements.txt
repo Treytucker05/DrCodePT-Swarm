@@ -1,0 +1,7 @@
+cryptography
+playwright
+pyautogui
+python-dotenv
+pydantic
+PyYAML
+requests
