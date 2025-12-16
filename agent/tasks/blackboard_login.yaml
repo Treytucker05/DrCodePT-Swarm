@@ -23,5 +23,6 @@ stop_rules:
 on_fail: escalate
 requires_human: true
 url: https://utmb.blackboard.com
+login_site: blackboard
 timeout_seconds: 120
 session_state_path: sessions/blackboard_state.json

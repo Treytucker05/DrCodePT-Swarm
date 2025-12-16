@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .base import ToolAdapter, ToolResult
+from agent.memory.credentials import CredentialError, build_login_steps
 
 
 def _safe_env(value: str) -> str:
@@ -72,6 +73,12 @@ class BrowserTool(ToolAdapter):
                         return ToolResult(False, error="fill requires selector")
                     value = _safe_env(step.get("value", ""))
                     await page.fill(selector, str(value), timeout=timeout)
+
+                elif action == "submit":
+                    if selector:
+                        await page.press(selector, "Enter", timeout=timeout)
+                    else:
+                        await page.keyboard.press("Enter")
 
                 elif action == "press":
                     key = step.get("key")
@@ -157,12 +164,22 @@ class BrowserTool(ToolAdapter):
             )
 
     def execute(self, task, inputs: Dict[str, Any]) -> ToolResult:
+        login_site = inputs.get("login_site") or getattr(task, "login_site", None)
         steps = inputs.get("steps") or getattr(task, "steps", None) or (getattr(task, "inputs", {}) or {}).get("steps")
+        start_url = getattr(task, "url", None) or inputs.get("url")
+
+        if not steps and login_site:
+            try:
+                steps = build_login_steps(login_site, start_url=start_url)
+            except CredentialError as exc:
+                return ToolResult(False, error=str(exc))
+            except Exception as exc:  # pragma: no cover - safeguard
+                return ToolResult(False, error=f"Failed to build login steps: {exc}")
+
         if not steps:
-            url = getattr(task, "url", None) or inputs.get("url")
-            if not url:
+            if not start_url:
                 return ToolResult(False, error="No steps or url provided for browser task")
-            steps = [{"action": "goto", "url": url}]
+            steps = [{"action": "goto", "url": start_url}]
 
         run_path = inputs.get("run_path")
         session_state_path = getattr(task, "session_state_path", None)

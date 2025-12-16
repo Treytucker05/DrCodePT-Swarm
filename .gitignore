@@ -8,6 +8,7 @@ agent/runs/
 runs/
 agent/failures/
 agent/sessions/*_state.json
+agent/memory/credential_store.json
 agent/recordings/
 *.log
 *.mp4

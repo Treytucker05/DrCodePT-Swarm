@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """
 Persistent agent memory stored in memory/agent_memory.json.
-Fields: completed_tasks, facts, preferences, credential_paths (paths to secrets files).
+Fields: completed_tasks, facts, preferences, credentials (site -> credential_id mapping).
 """
 
 import json
@@ -17,7 +17,7 @@ DEFAULT_MEMORY: Dict[str, Any] = {
     "completed_tasks": [],
     "facts": {},
     "preferences": {},
-    "credential_paths": {},
+    "credentials": {},
 }
 
 _CACHE: Dict[str, Any] | None = None
@@ -37,6 +37,20 @@ def load_memory() -> Dict[str, Any]:
     else:
         _CACHE = deepcopy(DEFAULT_MEMORY)
         save_memory(_CACHE)
+
+    if not isinstance(_CACHE, dict):
+        _CACHE = deepcopy(DEFAULT_MEMORY)
+
+    # Migration: credential_paths -> credentials
+    if "credential_paths" in _CACHE and "credentials" not in _CACHE:
+        old = _CACHE.pop("credential_paths") or {}
+        if isinstance(old, dict):
+            _CACHE["credentials"] = {k: str(v) for k, v in old.items()}
+
+    # Ensure required keys exist
+    for key, default_value in DEFAULT_MEMORY.items():
+        _CACHE.setdefault(key, deepcopy(default_value))
+
     return _CACHE
 
 
