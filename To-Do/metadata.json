@@ -1,0 +1,5 @@
+{
+  "name": "SmartDo AI",
+  "description": "An intelligent to-do list manager that uses Gemini AI to parse natural language brain dumps into organized, prioritized, and scheduled tasks.",
+  "requestFramePermissions": []
+}
