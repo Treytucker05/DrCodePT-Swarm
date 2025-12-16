@@ -23,6 +23,7 @@ try:  # pragma: no cover - populated in Component 7/8
         generate_failure_signature,
         retrieve_similar_cases,
         record_success,
+        record_failure,
     )
 except Exception:  # pragma: no cover
     def generate_failure_signature(*args, **kwargs):
@@ -32,6 +33,9 @@ except Exception:  # pragma: no cover
         return []
 
     def record_success(*args, **kwargs):
+        return None
+
+    def record_failure(*args, **kwargs):
         return None
 
 try:  # pragma: no cover
@@ -99,6 +103,26 @@ def record_success_signature(signature, fix_applied):
         pass
 
 
+def record_failure_signature(signature: str, reason: str, task_id: str, step_id: str, attempt: int, verify_results):
+    metadata = {
+        "task_id": task_id,
+        "step_id": step_id,
+        "attempt": attempt,
+    }
+    if verify_results:
+        metadata["verifiers"] = [
+            {
+                "id": getattr(r, "id", None),
+                "passed": getattr(r, "passed", None),
+            }
+            for r in verify_results
+        ]
+    try:
+        record_failure(signature, reason, task_id=task_id, step_id=step_id, metadata=metadata)
+    except Exception:
+        pass
+
+
 def run_task(yaml_path: str):
     task = load_task_from_yaml(yaml_path)
     validate_task(task)
@@ -155,10 +179,12 @@ def run_task(yaml_path: str):
             # Verify
             evidence = {}
             verify_results = run_verifiers(step.verify if step.type == TaskType.composite else task.verify, result, evidence)
+            failure_reason = ""
 
             # Capture evidence when anything fails
             if (not result.success) or (not all_passed(verify_results)):
                 evidence = bundle_evidence(run_path, {"output": getattr(result, "output", None)})
+                failure_reason = result.error or "verification_failed"
             log_event(run_path, "verify_results", {"step": step.id, "results": [r.__dict__ for r in verify_results]})
 
             # Human input trigger
@@ -186,6 +212,14 @@ def run_task(yaml_path: str):
             attempts += 1
             last_signatures.append(signature)
             log_event(run_path, "step_failed", {"step": step.id, "attempt": attempts})
+            record_failure_signature(
+                signature,
+                failure_reason or "step_failed",
+                task.id,
+                step.id,
+                attempts,
+                verify_results,
+            )
 
             fix = retrieve_fix_for_signature(signature)
             if fix:
