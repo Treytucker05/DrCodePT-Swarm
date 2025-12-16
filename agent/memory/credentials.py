@@ -3,14 +3,14 @@ from __future__ import annotations
 """Encrypted credential store for site logins.
 
 Credentials are stored as encrypted tokens on disk and referenced by ID from
-agent_memory.json. Set an encryption key via the AGENT_CREDENTIAL_KEY
-environment variable (preferred) or provide it interactively when prompted.
+agent_memory.json. An encryption key is loaded from the AGENT_CREDENTIAL_KEY
+environment variable when available; otherwise a persistent key file is
+created automatically so credentials can be saved without manual setup.
 """
 
 import json
 import os
 from datetime import datetime
-from getpass import getpass
 from pathlib import Path
 from typing import Any, Dict, Optional
 from uuid import uuid4
@@ -22,28 +22,28 @@ from .memory_manager import load_memory, save_memory
 ROOT = Path(__file__).resolve().parent
 STORE_PATH = ROOT / "credential_store.json"
 KEY_ENV_VAR = "AGENT_CREDENTIAL_KEY"
+KEY_FILE = ROOT / "credential_key.key"
 
 
 class CredentialError(RuntimeError):
     """Raised when credential operations fail."""
 
 
-def _load_key(prompt: bool = True) -> bytes:
-    key = os.getenv(KEY_ENV_VAR)
-    if key:
-        return key.encode("utf-8")
+def _load_key() -> bytes:
+    env_key = os.getenv(KEY_ENV_VAR)
+    if env_key:
+        return env_key.encode("utf-8")
 
-    if prompt and os.isatty(0):
-        entered = getpass(
-            "Enter credential store key (export AGENT_CREDENTIAL_KEY to skip prompt): "
-        ).strip()
-        if entered:
-            return entered.encode("utf-8")
+    if KEY_FILE.is_file():
+        return KEY_FILE.read_bytes()
 
-    raise CredentialError(
-        "Missing encryption key. Set AGENT_CREDENTIAL_KEY to a Fernet key (e.g., "
-        "output of Fernet.generate_key())."
-    )
+    new_key = Fernet.generate_key()
+    KEY_FILE.write_bytes(new_key)
+    try:
+        os.chmod(KEY_FILE, 0o600)
+    except OSError:
+        pass
+    return new_key
 
 
 def _fernet() -> Fernet:

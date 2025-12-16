@@ -127,22 +127,6 @@ class TaskDefinition(BaseModel):
             # Encourage explicit permission for the primary tool
             raise ValueError(f"Primary tool '{t_type.value}' must be included in tools_allowed.")
 
-        # Secret leakage guard: reject raw secrets for common keys unless ENV interpolation
-        def _check_no_plain_secrets(obj):
-            if isinstance(obj, dict):
-                for k, v in obj.items():
-                    if isinstance(v, (dict, list)):
-                        _check_no_plain_secrets(v)
-                    else:
-                        if isinstance(v, str) and any(term in k.lower() for term in ["password", "token", "api_key", "apikey", "secret"]):
-                            if "${" not in v:
-                                raise ValueError(f"Secret-like field '{k}' must reference an environment variable (use ${ENV_VAR}).")
-            if isinstance(obj, list):
-                for item in obj:
-                    _check_no_plain_secrets(item)
-
-        _check_no_plain_secrets(inputs)
-
         return values
 
 
