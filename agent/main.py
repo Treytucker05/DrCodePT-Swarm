@@ -492,5 +492,37 @@ def main_menu():
             continue
 
 
+def chat_mode():
+    clear()
+    print("DrCodePT chat (type 'exit' to quit)\n")
+    while True:
+        try:
+            msg = input("You: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nBye.")
+            break
+        if msg.lower() in {"exit", "quit"}:
+            print("Bye.")
+            break
+        print("Assistant:", chat_reply(msg))
+
+
 if __name__ == "__main__":
-    main_menu()
+    args = sys.argv[1:]
+    # Flags:
+    # --menu / -m : open the DrCodePT menu
+    # --chat / -c : open offline chat mode
+    # default    : launch Codex CLI (Agent_CLI.bat) if present; otherwise menu
+    if any(a in {"--menu", "-m"} for a in args):
+        main_menu()
+    elif any(a in {"--chat", "-c"} for a in args):
+        chat_mode()
+    else:
+        bat = ROOT.parent / "Agent_CLI.bat"
+        if bat.is_file():
+            rc = subprocess.call(str(bat), shell=True)
+            if rc != 0:
+                print(f"Agent_CLI.bat exited with code {rc}, falling back to menu.")
+                main_menu()
+        else:
+            main_menu()
