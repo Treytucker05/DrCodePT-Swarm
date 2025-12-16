@@ -1,0 +1,32 @@
+site: yahoo
+start_url: https://login.yahoo.com/
+login_flow:
+  - selector: "input#login-username"
+    action: fill
+    field_type: text
+    note: "Yahoo ID or email field"
+  - selector: "button#login-signin"
+    action: click
+    note: "Continue after username"
+  - selector: "input#login-passwd"
+    action: fill
+    field_type: password
+    note: "Password field"
+  - selector: "button#login-signin"
+    action: click
+    note: "Submit password"
+known_urls:
+  - https://login.yahoo.com/
+  - https://mail.yahoo.com/
+working_selectors:
+  mail_button: "a[data-test-id='header-mail-button']"
+  spam_folder: "a[data-test-folder-name='Spam'], a[aria-label='Spam']"
+  empty_spam: "button[data-test-id='empty-folder'], button[title='Empty Spam']"
+  confirm_empty: "button[data-test-id='primary-button'], button[data-test-id='confirmation-dialog-ok-button']"
+known_quirks:
+  - "May prompt for CAPTCHA or secondary verification."
+  - "Login flow is two-step (username then password)."
+notes: |
+  The selectors above target the standard Yahoo Mail experience. If your account
+  uses a different locale or layout, record a fresh session and update the
+  playbook with the observed selectors.

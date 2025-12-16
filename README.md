@@ -32,5 +32,10 @@ No secrets / no keys
   - Save site credentials via `from agent.memory.credentials import save_credential; save_credential("blackboard", "user", "pass")`.
   - Browser tasks can set `login_site: <site>` to automatically build login steps from the site playbook and stored credentials.
 
+Yahoo Mail spam cleanup
+- Store your Yahoo login once: `from agent.memory.credentials import save_credential; save_credential("yahoo", "you@example.com", "app_or_account_password")`.
+- Run the deterministic task: `python -m agent.supervisor.supervisor agent/tasks/yahoo_clear_spam.yaml`.
+- The task uses the `agent/memory/site_playbooks/yahoo.yaml` login flow (username step, then password step) and then empties the Spam folder via the "Empty Spam" control. Update the playbook selectors if your layout differs.
+
 Menu entry point
 - `python main.py` launches the terminal menu (run tasks, create tasks, view runs/failures/playbooks, etc.).
