@@ -41,6 +41,12 @@ def _find_chromium_executable() -> Optional[str]:
 class BrowserTool(ToolAdapter):
     tool_name = "browser"
 
+    async def _get_dom_snapshot(self, page) -> Optional[str]:
+        try:
+            return await page.content()
+        except Exception:
+            return None
+
     async def _run_steps(self, context, page, steps: List[Dict[str, Any]], run_path: Optional[str], session_state_path: Optional[str]) -> ToolResult:
         extracts: Dict[str, Any] = {}
         evidence_dir = _mk_evidence(run_path)
@@ -158,6 +164,7 @@ class BrowserTool(ToolAdapter):
             # collect evidence
             screenshot_path = None
             html_path = None
+            dom_snapshot = None
             try:
                 screenshot_path = evidence_dir / f"failure_{int(time.time())}.png"
                 await page.screenshot(path=str(screenshot_path), full_page=True)
@@ -165,8 +172,11 @@ class BrowserTool(ToolAdapter):
                 screenshot_path = None
             try:
                 html_path = evidence_dir / f"failure_{int(time.time())}.html"
-                html = await page.content()
-                html_path.write_text(html, encoding="utf-8")
+                dom_snapshot = await self._get_dom_snapshot(page)
+                if dom_snapshot:
+                    html_path.write_text(dom_snapshot, encoding="utf-8")
+                else:
+                    html_path = None
             except Exception:
                 html_path = None
 
@@ -174,6 +184,7 @@ class BrowserTool(ToolAdapter):
                 False,
                 error=str(exc),
                 evidence={"screenshot": str(screenshot_path) if screenshot_path else None, "html": str(html_path) if html_path else None},
+                metadata={"dom_snapshot": dom_snapshot},
             )
 
     def execute(self, task, inputs: Dict[str, Any]) -> ToolResult:

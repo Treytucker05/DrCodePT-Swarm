@@ -1,72 +1,69 @@
-from __future__ import annotations
-
-"""Bridge Codex planner output into the DrCodePT-Swarm supervisor."""
-
 import sys
-from datetime import datetime
-from pathlib import Path
-
 import yaml
-from pydantic import ValidationError
+from pathlib import Path
+from typing import Dict, Any
 
 # Ensure repository root is importable when launched from other folders
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
-from agent.schemas.task_schema import TaskDefinition  # noqa: E402
-from agent.supervisor.supervisor import run_task  # noqa: E402
-
-
-def read_stdin() -> str:
-    """Read the full YAML plan from stdin."""
-    plan_text = sys.stdin.read()
-    if not plan_text.strip():
-        raise ValueError("No YAML plan received on stdin from Codex.")
-    return plan_text
-
-
-def parse_plan(plan_text: str) -> TaskDefinition:
-    """Parse and validate the YAML plan into a TaskDefinition."""
-    try:
-        data = yaml.safe_load(plan_text)
-    except yaml.YAMLError as exc:  # pragma: no cover - simple CLI script
-        raise ValueError(f"Failed to parse YAML from Codex: {exc}")
-
-    if not isinstance(data, dict):
-        raise ValueError("Codex plan must deserialize into a mapping/dictionary.")
-
-    try:
-        return TaskDefinition.parse_obj(data)
-    except ValidationError as exc:  # pragma: no cover - simple CLI script
-        raise ValueError(f"Plan failed validation: {exc}")
-
-
-def persist_plan(plan_text: str) -> Path:
-    """Persist the plan under agent/tasks for traceability."""
-    tasks_dir = REPO_ROOT / "agent" / "tasks"
-    tasks_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    plan_path = tasks_dir / f"codex_plan_{timestamp}.yaml"
-    plan_path.write_text(plan_text, encoding="utf-8")
-    return plan_path
+try:
+    from agent.schemas.task_schema import TaskDefinition
+    from agent.supervisor.supervisor import run_task
+except ImportError:
+    # Fallback for local testing if run from outside the main project root
+    print("Error: Could not import agent modules. Check PYTHONPATH.")
+    sys.exit(1)
 
 
 def main():
+    """
+    Reads YAML from stdin (piped from Codex), converts it to a TaskDefinition,
+    and executes it using the custom supervisor.
+    """
+    raw_yaml = sys.stdin.read()
+    
+    # --- Start Robust Parsing Loop ---
     try:
-        plan_text = read_stdin()
-        task_def = parse_plan(plan_text)
-        plan_path = persist_plan(plan_text)
+        if not raw_yaml.strip():
+            raise ValueError("Received empty input from Codex.")
 
-        print(f"--- Supervisor: Starting Task: {task_def.goal} ---")
-        run_task(str(plan_path))
-        print("--- Task Complete ---")
-    except Exception as exc:  # pragma: no cover - simple CLI script
-        preview = plan_text[:500] if 'plan_text' in locals() else "<no content>"
-        print("\n--- Execution Bridge Error ---", file=sys.stderr)
-        print(f"An error occurred during task processing: {exc}", file=sys.stderr)
-        print(f"Raw YAML received:\n{preview}...", file=sys.stderr)
+        # 1. Parse the YAML into a Python dictionary
+        task_data = yaml.safe_load(raw_yaml)
+        if not isinstance(task_data, dict):
+            raise ValueError("Codex output is not a valid YAML dictionary.")
+
+        # 2. Validate and convert to TaskDefinition object
+        task_def = TaskDefinition(**task_data)
+
+    except Exception as e:
+        # This is the failure point. Instead of crashing, we report the error 
+        # in a structured way that a human (or another LLM) can use to correct the plan.
+        print(f"\n--- PLANNER ERROR: INVALID YAML OUTPUT ---")
+        print(f"Error: {e}")
+        print(f"The following YAML failed to parse:")
+        print("---------------------------------------")
+        print(raw_yaml)
+        print("---------------------------------------")
+        print("ACTION REQUIRED: The Planner (Codex) must be re-prompted with this error to generate a corrected YAML plan.")
         sys.exit(1)
+    # --- End Robust Parsing Loop ---
+
+    # 3. Execute the task using the custom supervisor
+    print(f"--- Supervisor: Starting Task: {task_def.goal} ---")
+    try:
+        run_result = run_task(task_def)
+    except Exception as e:
+        print(f"\n--- SUPERVISOR EXECUTION ERROR ---")
+        print(f"Error during task execution: {e}")
+        sys.exit(1)
+
+    # 4. Report the final result
+    print("\n--- Task Complete ---")
+    print(f"Outcome: {run_result.outcome}")
+    print(f"Summary: {run_result.summary}")
+    print("---------------------\n")
 
 
 if __name__ == "__main__":

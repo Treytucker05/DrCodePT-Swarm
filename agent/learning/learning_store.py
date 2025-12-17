@@ -1,7 +1,3 @@
-from __future__ import annotations
-
-"""Learning store for failure signatures and site playbooks."""
-
 import hashlib
 import json
 from datetime import datetime
@@ -24,6 +20,7 @@ def _hash_dict(data: Dict[str, Any]) -> str:
 
 
 def generate_failure_signature(tool: str, site: str, url: str, exception_type: str, verifier_failed: str, dom_hints: Dict[str, Any]) -> str:
+    """Generates a unique hash signature for a failure case."""
     base = {
         "tool": tool or "",
         "site": site or "",
@@ -35,73 +32,46 @@ def generate_failure_signature(tool: str, site: str, url: str, exception_type: s
     return _hash_dict(base)
 
 
+def record_failure(task_id: str, signature: str, context: Dict[str, Any]):
+    """Records a new failure case to the log file."""
+    FAILURE_LOG.parent.mkdir(parents=True, exist_ok=True)
+    
+    record = {
+        "timestamp": datetime.now().isoformat(),
+        "task_id": task_id,
+        "signature": signature,
+        "context": context,
+    }
+    with open(FAILURE_LOG, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record) + "\n")
+
+
 def retrieve_similar_cases(signature: str, top_k: int = 3) -> List[Dict[str, Any]]:
+    """Retrieves similar failure cases based on the signature."""
     cases = []
     if FAILURE_LOG.is_file():
-        for line in FAILURE_LOG.read_text(encoding="utf-8").splitlines():
-            try:
-                data = json.loads(line)
-                cases.append(data)
-            except Exception:
-                continue
+        with open(FAILURE_LOG, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    data = json.loads(line)
+                    cases.append(data)
+                except Exception:
+                    continue
+    
     # Simple similarity: exact signature first, then recent others
     exact = [c for c in cases if c.get("signature") == signature]
     others = [c for c in cases if c.get("signature") != signature]
+    
+    # Prioritize exact matches, then sort others by timestamp (most recent first)
+    others.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+    
     ranked = exact + others
     return ranked[:top_k]
 
 
-def record_success(signature: str, fix_applied: Any):
-    FAILURE_LOG.parent.mkdir(parents=True, exist_ok=True)
-    entry = {
-        "signature": signature,
-        "fix_strategy": fix_applied,
-        "outcome": "success",
-        "timestamp": datetime.now().isoformat(),
-    }
-    with FAILURE_LOG.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry))
-        f.write("\n")
-
-
-def record_failure(signature: str, reason: str, task_id: str = "", step_id: str = "", metadata: Dict[str, Any] | None = None):
-    """Persist a failure signature for future retrieval."""
-
-    FAILURE_LOG.parent.mkdir(parents=True, exist_ok=True)
-    entry = {
-        "signature": signature,
-        "reason": reason,
-        "task_id": task_id,
-        "step_id": step_id,
-        "metadata": metadata or {},
-        "outcome": "failure",
-        "timestamp": datetime.now().isoformat(),
-    }
-    with FAILURE_LOG.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry))
-        f.write("\n")
-
-
 def load_playbook(site: str) -> Dict[str, Any]:
+    """Loads a site-specific playbook for known issues."""
     path = PLAYBOOK_DIR / f"{site}.yaml"
-    if not path.is_file():
-        return {}
-    return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-
-
-def update_playbook(site: str, key: str, value: Any):
-    data = load_playbook(site)
-    data[key] = value
-    path = PLAYBOOK_DIR / f"{site}.yaml"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(data), encoding="utf-8")
-
-
-__all__ = [
-    "generate_failure_signature",
-    "retrieve_similar_cases",
-    "record_success",
-    "record_failure",
-    "load_playbook",
-    "update_playbook",
-]
+    if path.is_file():
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
+    return {}

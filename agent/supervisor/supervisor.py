@@ -15,7 +15,7 @@ from agent.tools.registry import get_tool
 from agent.verifiers.registry import get_verifier
 from agent.logging.run_logger import init_run, log_event, finalize_run
 from agent.evidence.capture import bundle_evidence
-from agent.supervisor.hardening import _last_events
+from agent.supervisor.hardening import _last_events, self_heal_browser_failure
 
 # Lazy imports for components that may be filled later
 try:  # pragma: no cover - populated in Component 7/8
@@ -175,6 +175,16 @@ def run_task(yaml_path: str):
             result = tool.execute(step, combined_inputs)
             tool_calls += 1
             log_event(run_path, "tool_execute", {"step": step.id, "result": getattr(result, 'output', None), "success": result.success})
+            action_value = combined_inputs.get("action") or combined_inputs.get("op")
+            if result.success:
+                log_event(run_path, "tool_success", {"tool": step.type.value, "action": action_value, "output": result.output})
+            else:
+                log_event(run_path, "tool_failure", {"tool": step.type.value, "action": action_value, "error": result.error, "metadata": result.metadata})
+                if step.type == TaskType.browser and result.metadata.get("dom_snapshot"):
+                    heal_metadata = dict(result.metadata)
+                    if result.error:
+                        heal_metadata["error"] = result.error
+                    self_heal_browser_failure(run_path, step, heal_metadata)
 
             # Verify
             evidence = {}

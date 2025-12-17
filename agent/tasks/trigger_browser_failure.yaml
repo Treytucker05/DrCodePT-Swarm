@@ -1,0 +1,24 @@
+id: trigger_browser_failure
+name: Trigger Browser Failure
+type: browser
+goal: "Navigate to google.com and click a non-existent element to trigger failure"
+inputs:
+  steps:
+    - action: goto
+      url: https://www.google.com
+    - action: click
+      selector: "#non-existent-button-to-fail"
+      timeout_ms: 1000
+output: {}
+definition_of_done: "Browser failure captured for self-healing"
+verify: []
+allowed_paths:
+  - runs/
+  - evidence/
+tools_allowed:
+  - browser
+stop_rules:
+  max_attempts: 1
+  max_minutes: 2
+  max_tool_calls: 3
+on_fail: escalate
