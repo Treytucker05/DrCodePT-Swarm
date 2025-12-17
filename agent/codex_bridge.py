@@ -33,6 +33,9 @@ def parse_plan(plan_text: str) -> TaskDefinition:
     except yaml.YAMLError as exc:  # pragma: no cover - simple CLI script
         raise ValueError(f"Failed to parse YAML from Codex: {exc}")
 
+    if not isinstance(data, dict):
+        raise ValueError("Codex plan must deserialize into a mapping/dictionary.")
+
     try:
         return TaskDefinition.parse_obj(data)
     except ValidationError as exc:  # pragma: no cover - simple CLI script
@@ -52,14 +55,18 @@ def persist_plan(plan_text: str) -> Path:
 def main():
     try:
         plan_text = read_stdin()
-        _ = parse_plan(plan_text)
+        task_def = parse_plan(plan_text)
         plan_path = persist_plan(plan_text)
-    except Exception as exc:  # pragma: no cover - simple CLI script
-        print(f"[codex_bridge] {exc}", file=sys.stderr)
-        sys.exit(1)
 
-    # Hand off to supervisor
-    run_task(str(plan_path))
+        print(f"--- Supervisor: Starting Task: {task_def.goal} ---")
+        run_task(str(plan_path))
+        print("--- Task Complete ---")
+    except Exception as exc:  # pragma: no cover - simple CLI script
+        preview = plan_text[:500] if 'plan_text' in locals() else "<no content>"
+        print("\n--- Execution Bridge Error ---", file=sys.stderr)
+        print(f"An error occurred during task processing: {exc}", file=sys.stderr)
+        print(f"Raw YAML received:\n{preview}...", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
