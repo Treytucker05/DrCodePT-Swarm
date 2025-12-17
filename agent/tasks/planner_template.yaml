@@ -1,0 +1,11 @@
+goal: <concise one-sentence summary>
+type: composite
+steps:
+  - tool: <browser|shell|python|fs|api>
+    action: <action>
+    inputs:
+      <key>: <value>
+    verifier:
+      id: <page_contains|command_exit_zero|file_exists|text_in_file|api_status_ok>
+      args:
+        <key>: <value>
