@@ -1,0 +1,49 @@
+id: "task-create-test-system-script"
+name: "Create and verify test_system.py"
+type: "composite"
+goal: "Create a Python script named test_system.py that writes 'Agent Test Successful' to output.txt, reads and prints it, then deletes the file"
+definition_of_done: "test_system.py exists with the specified logic; running python test_system.py prints 'Agent Test Successful', exits with code 0, and output.txt is removed afterward"
+stop_rules:
+  max_attempts: 3
+  max_minutes: 10
+  max_tool_calls: 30
+on_fail: "escalate"
+steps:
+  - id: "step-1-write-script"
+    name: "Write test_system.py"
+    type: "shell"
+    goal: "Create test_system.py that writes, reads, prints, and deletes output.txt"
+    command: |
+      $script = @'
+      from pathlib import Path
+
+      OUTPUT = Path("output.txt")
+      OUTPUT.write_text("Agent Test Successful")
+      print(OUTPUT.read_text())
+      OUTPUT.unlink()
+      '@
+      Set-Content -Path test_system.py -Value $script -Encoding UTF8
+    definition_of_done: "test_system.py is created with the correct logic to write, read, print, and delete output.txt"
+    stop_rules:
+      max_attempts: 3
+      max_minutes: 5
+      max_tool_calls: 10
+    on_fail: "escalate"
+    verify:
+      - id: "file_exists"
+        args:
+          path: "test_system.py"
+  - id: "step-2-run-script"
+    name: "Execute test_system.py"
+    type: "shell"
+    goal: "Run the script and confirm expected behavior"
+    command: "python test_system.py"
+    definition_of_done: "python test_system.py exits with code 0, prints 'Agent Test Successful', and output.txt is removed after execution"
+    stop_rules:
+      max_attempts: 3
+      max_minutes: 5
+      max_tool_calls: 10
+    on_fail: "escalate"
+    verify:
+      - id: "command_exit_zero"
+        args: {}

@@ -1,3 +1,0 @@
-INFO:     127.0.0.1:53768 - "GET /api/tasks HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53615 - "GET /api/runs HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60043 - "POST /api/chat HTTP/1.1" 200 OK

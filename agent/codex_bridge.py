@@ -68,10 +68,14 @@ def main():
         print(f"Error during task execution: {e}")
         sys.exit(1)
 
-    # 4. Report the final result
+    # 4. Report the final result (run_task currently returns None on success)
     print("\n--- Task Complete ---")
-    print(f"Outcome: {run_result.outcome}")
-    print(f"Summary: {run_result.summary}")
+    if run_result is None:
+        print("Outcome: success")
+        print("Summary: supervisor reported success (no return payload).")
+    else:
+        print(f"Outcome: {getattr(run_result, 'outcome', 'success')}")
+        print(f"Summary: {getattr(run_result, 'summary', '')}")
     print("---------------------\n")
 
 

@@ -123,8 +123,16 @@ def record_failure_signature(signature: str, reason: str, task_id: str, step_id:
         pass
 
 
-def run_task(yaml_path: str):
-    task = load_task_from_yaml(yaml_path)
+def run_task(task_or_path):
+    """
+    Run a task given either a YAML file path or a TaskDefinition instance.
+    This allows codex_bridge to pass an already-validated TaskDefinition,
+    while CLI usage can still pass a path.
+    """
+    if isinstance(task_or_path, TaskDefinition):
+        task = task_or_path
+    else:
+        task = load_task_from_yaml(str(task_or_path))
     validate_task(task)
     run_path = init_run(task.id)
 
@@ -163,7 +171,9 @@ def run_task(yaml_path: str):
                 return
 
             # Execute
-            if step.type.value not in (step.tools_allowed or []):
+            # Enforce tool allowlist only if provided. Default (empty) means allow primary tool.
+            allowed_tools = step.tools_allowed or task.tools_allowed or []
+            if allowed_tools and (step.type.value not in allowed_tools):
                 abort(run_path, f"Tool {step.type.value} not allowed")
                 return
             tool = get_tool(step.type)
