@@ -22,7 +22,16 @@ def main():
     Reads YAML from stdin (piped from Codex), converts it to a TaskDefinition,
     and executes it using the custom supervisor.
     """
-    raw_yaml = sys.stdin.read()
+    # Check if a file path was provided as a command-line argument
+    if len(sys.argv) > 1:
+        plan_file = Path(sys.argv[1])
+        if not plan_file.is_file():
+            print(f"Error: File not found: {plan_file}")
+            sys.exit(1)
+        raw_yaml = plan_file.read_text(encoding="utf-8")
+    else:
+        # Fall back to reading from stdin (for piping)
+        raw_yaml = sys.stdin.read()
     
     # --- Start Robust Parsing Loop ---
     try:

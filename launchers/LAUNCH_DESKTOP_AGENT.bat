@@ -72,8 +72,10 @@ if errorlevel 1 (
 
 set "CODEX_CONFIG=%CONFIG%"
 echo [INFO] Launching Codex with desktop MCP + web search...
-rem Launch Codex in a dedicated console so stdin is a TTY and the window stays open.
-start "" cmd /k "set CODEX_CONFIG=%CODEX_CONFIG% && codex --dangerously-bypass-approvals-and-sandbox --search --output-only --system-prompt-file \"%PLANNER_PROMPT%\" | python \"%CODEX_BRIDGE%\""
+rem Launch Codex in interactive mode
+rem The user will type their goal, and Codex will generate the plan
+rem After Codex finishes, the user must manually run: python "%CODEX_BRIDGE%" "%ROOT%\agent\temp_plan.yaml"
+start "" cmd /k "set CODEX_CONFIG=%CODEX_CONFIG% && codex --dangerously-bypass-approvals-and-sandbox --search"
 
 endlocal
 exit /b %ERRORLEVEL%
