@@ -6,6 +6,10 @@ rem Launch Codex with PyAutoGUI desktop control MCP + Playwright MCP + web searc
 set "BASE=%~dp0"
 cd /d "%BASE%"
 
+set "ROOT=%BASE%.."
+set "PLANNER_PROMPT=%ROOT%\codex_planner_prompt.txt"
+set "CODEX_BRIDGE=%ROOT%\agent\codex_bridge.py"
+
 set "CONFIG=%BASE%codex.desktop.toml"
 
 if not exist "%CONFIG%" (
@@ -69,7 +73,7 @@ if errorlevel 1 (
 set "CODEX_CONFIG=%CONFIG%"
 echo [INFO] Launching Codex with desktop MCP + web search...
 rem Launch Codex in a dedicated console so stdin is a TTY and the window stays open.
-start "" cmd /k "set CODEX_CONFIG=%CODEX_CONFIG% && codex --dangerously-bypass-approvals-and-sandbox --search"
+start "" cmd /k "set CODEX_CONFIG=%CODEX_CONFIG% && codex --dangerously-bypass-approvals-and-sandbox --search --output-only --system-prompt-file \"%PLANNER_PROMPT%\" | python \"%CODEX_BRIDGE%\""
 
 endlocal
 exit /b %ERRORLEVEL%
