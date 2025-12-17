@@ -2,5 +2,7 @@
   "completed_tasks": [],
   "facts": {},
   "preferences": {},
-  "credentials": {}
+  "credentials": {
+    "yahoo": "yahoo-9fa3ab92"
+  }
 }

@@ -1,0 +1,77 @@
+id: complete_research_index
+name: "Complete RESEARCH_INDEX.md with evidence-backed updates"
+type: composite
+goal: >
+  Perform the research needed to populate sop/RESEARCH_INDEX.md and do not finish until all
+  artifacts have a non-"Not started" research status and placeholder notes are replaced with evidence.
+inputs: {}
+output: {}
+definition_of_done: >
+  RESEARCH_INDEX.md contains no "Not started" or "_Notes go here_" placeholders and each row has
+  an updated Research Status plus notes; verification command passes.
+verify: []
+allowed_paths:
+  - C:/Users/treyt/OneDrive/Desktop/pt-study-sop/sop/RESEARCH_INDEX.md
+tools_allowed:
+  - composite
+stop_rules:
+  max_attempts: 10
+  max_minutes: 1440
+  max_tool_calls: 50
+on_fail: escalate
+steps:
+  - id: manual_research_and_edit
+    name: "Research + fill RESEARCH_INDEX.md"
+    type: notify
+    goal: >
+      Use browser/desktop tools to gather sources and edit sop/RESEARCH_INDEX.md so every artifact
+      has evidence-backed status and notes. Remove all placeholders.
+    inputs: {}
+    output: {}
+    definition_of_done: "Research completed and file saved with updated statuses/notes."
+    verify: []
+    allowed_paths:
+      - C:/Users/treyt/OneDrive/Desktop/pt-study-sop/sop/RESEARCH_INDEX.md
+    tools_allowed:
+      - browser
+      - desktop
+      - shell
+      - fs
+    stop_rules:
+      max_attempts: 1
+      max_minutes: 1200
+      max_tool_calls: 40
+    on_fail: retry
+    requires_human: true
+  - id: verify_research_index_complete
+    name: "Verify RESEARCH_INDEX.md has no placeholders"
+    type: shell
+    goal: "Fail until RESEARCH_INDEX.md is fully populated."
+    inputs: {}
+    output: {}
+    definition_of_done: "Verification script exits 0 (no placeholders remain)."
+    verify:
+      - id: command_exit_zero
+        args: {}
+    allowed_paths:
+      - C:/Users/treyt/OneDrive/Desktop/pt-study-sop/sop/RESEARCH_INDEX.md
+    tools_allowed:
+      - shell
+    stop_rules:
+      max_attempts: 30
+      max_minutes: 240
+      max_tool_calls: 30
+    on_fail: retry
+    command: |
+      $path = "C:\Users\treyt\OneDrive\Desktop\pt-study-sop\sop\RESEARCH_INDEX.md"
+      if (-not (Test-Path $path)) { Write-Error "Missing file: $path"; exit 1 }
+      $content = Get-Content $path -Raw
+      $placeholders = @("Not started", "_Notes go here_")
+      $remaining = @()
+      foreach ($p in $placeholders) { if ($content -match [regex]::Escape($p)) { $remaining += $p } }
+      if ($remaining.Count -gt 0) {
+        Write-Error ("Placeholders still present: " + ($remaining -join ", "))
+        exit 1
+      }
+      exit 0
+    timeout_seconds: 30

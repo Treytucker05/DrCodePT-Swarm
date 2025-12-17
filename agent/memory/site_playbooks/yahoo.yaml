@@ -5,14 +5,22 @@ login_flow:
     action: fill
     field_type: text
     note: "Yahoo ID or email field"
-  - selector: "button#login-signin"
+  - selector: "input#login-signin"
     action: click
     note: "Continue after username"
+  - selector: "button#skip-button"
+    action: click_optional
+    timeout_ms: 5000
+    note: "Skip passkey/QR challenge if shown"
+  - selector: "input#login-passwd"
+    action: wait_for
+    timeout_ms: 15000
+    note: "Wait for password field after skipping challenges"
   - selector: "input#login-passwd"
     action: fill
     field_type: password
     note: "Password field"
-  - selector: "button#login-signin"
+  - selector: "input#login-signin"
     action: click
     note: "Submit password"
 known_urls:

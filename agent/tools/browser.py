@@ -68,6 +68,19 @@ class BrowserTool(ToolAdapter):
                     else:
                         return ToolResult(False, error="click requires selector or text")
 
+                elif action == "click_optional":
+                    if selector:
+                        handle = await page.query_selector(selector)
+                        if handle:
+                            await handle.click(timeout=timeout)
+                    elif text:
+                        try:
+                            await page.get_by_text(text).click(timeout=timeout)
+                        except Exception:
+                            pass
+                    else:
+                        return ToolResult(False, error="click_optional requires selector or text")
+
                 elif action == "fill":
                     if not selector:
                         return ToolResult(False, error="fill requires selector")
