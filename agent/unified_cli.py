@@ -13,6 +13,7 @@ from typing import List, Dict, Any
 
 import yaml
 import sys as _sys
+import threading
 
 try:  # optional color
     from colorama import Fore, Style, init as color_init
@@ -85,7 +86,32 @@ def codex_command() -> list:
     return [cmd or "codex"]
 
 
-def codex_chat_turn(system_prompt: str, history: List[Dict[str, str]]) -> str:
+class Spinner:
+    def __init__(self, label="Working"):
+        self.label = label
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+
+    def _spin(self):
+        frames = ["|", "/", "-", "\\"]
+        idx = 0
+        while not self._stop.is_set():
+            print(f"\r{CYAN}[{self.label}] {frames[idx]}{RESET}", end="", flush=True)
+            idx = (idx + 1) % len(frames)
+            self._stop.wait(0.2)
+        # clear line
+        print("\r" + " " * 60 + "\r", end="", flush=True)
+
+    def __enter__(self):
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self._stop.set()
+        self._thread.join(timeout=1)
+
+
+def codex_chat_turn(system_prompt: str, history: List[Dict[str, str]], label: str = "Codex") -> str:
     """
     Approximate a chat turn by sending history to codex CLI in one shot.
     """
@@ -104,21 +130,25 @@ def codex_chat_turn(system_prompt: str, history: List[Dict[str, str]]) -> str:
     env = os.environ.copy()
     env.setdefault("PYTHONIOENCODING", "utf-8")
     env.setdefault("PYTHONUTF8", "1")
-    proc = subprocess.run(
-        cmd,
-        input=prompt,
-        text=True,
-        encoding="utf-8",
-        errors="ignore",
-        capture_output=True,
-        env=env,
-        cwd=str(REPO_ROOT),
-    )
+    start = time.time()
+    with Spinner(label) as _sp:
+        proc = subprocess.run(
+            cmd,
+            input=prompt,
+            text=True,
+            encoding="utf-8",
+            errors="ignore",
+            capture_output=True,
+            env=env,
+            cwd=str(REPO_ROOT),
+        )
+    elapsed = time.time() - start
     output = (proc.stdout or "").strip()
     if proc.returncode != 0 or not output:
         err = (proc.stderr or "").strip()
         msg = f"[codex error {proc.returncode}] {err}" if err else "[codex produced no output]"
         return msg
+    print(f"{GREEN}[{label} done]{RESET} ({elapsed:.1f}s)")
     return output
 
 
@@ -152,7 +182,7 @@ def interactive_planning_with_codex(initial_goal: str) -> str | None:
     log_conversation("user", initial_goal)
     print(f"{CYAN}[CODEX] Let's refine your goal...{RESET}")
     for _ in range(8):  # max turns
-        reply = codex_chat_turn(system_prompt, history)
+        reply = codex_chat_turn(system_prompt, history, label="Planning")
         log_conversation("assistant", reply)
         print(f"{CYAN}[CODEX]{RESET} {reply}")
         if reply.startswith("[codex error"):
@@ -179,7 +209,7 @@ def post_execution_conversation(task_result: dict) -> str | None:
     summary = json.dumps(task_result, indent=2)
     history: List[Dict[str, str]] = [{"role": "user", "content": f"Task result:\n{summary}"}]
     while True:
-        reply = codex_chat_turn(system_prompt, history)
+        reply = codex_chat_turn(system_prompt, history, label="Post-run")
         log_conversation("assistant", reply)
         print(f"{CYAN}[CODEX]{RESET} {reply}")
         user = input(f"{CYAN}[YOU]{RESET} ").strip()
@@ -394,6 +424,7 @@ def main():
                 continue
 
         start_ts = time.time()
+        print(f"{CYAN}[EXEC] Running plan...{RESET}")
         code = execute_plan()
         success = code == 0
         artifacts = find_recent_artifacts(start_ts)
