@@ -1,5 +1,5 @@
-id: "task-google-search-screenshot"
-name: "Google Search Python Programming"
+id: "task-google-search-python"
+name: "Google Search for Python programming"
 type: "browser"
 goal: "Search Google for 'Python programming' and capture a screenshot of the results page"
 inputs:
@@ -8,23 +8,29 @@ inputs:
       url: "https://www.google.com"
     - action: "wait_for"
       selector: "textarea[name='q']"
-      timeout_ms: 10000
+      timeout_ms: 8000
     - action: "fill"
       selector: "textarea[name='q']"
       value: "Python programming"
+    - action: "wait_for"
+      selector: "input[name='btnK']"
+      timeout_ms: 5000
     - action: "click"
       selector: "input[name='btnK']"
       timeout_ms: 5000
     - action: "wait_for"
-      selector: "div#search"
+      selector: "#search"
       timeout_ms: 10000
+    - action: "wait_for"
+      text: "Python programming"
+      timeout_ms: 5000
     - action: "screenshot"
-      path: "runs/google_search.png"
-definition_of_done: "Google search results for 'Python programming' are visible and a screenshot is saved to runs/google_search.png"
+      path: "runs/google_python_programming.png"
+definition_of_done: "Search results for 'Python programming' are visible and screenshot saved to runs/google_python_programming.png"
 stop_rules:
   max_attempts: 2
   max_minutes: 5
-  max_tool_calls: 15
+  max_tool_calls: 12
 on_fail: "escalate"
 tools_allowed:
   - "browser"
