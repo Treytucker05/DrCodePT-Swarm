@@ -1,13 +1,15 @@
-"""
-Self-Healing Module with LLM-Powered Error Analysis
+"""Self-Healing module powered by local Ollama models."""
 
-This module analyzes task failures and generates corrected plans using an LLM.
-"""
+from __future__ import annotations
 
-import os
 import json
-from typing import Dict, Any, Optional
+from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, Optional
+
+from agent.learning.ollama_client import analyze_failure as ollama_analyze
+
+_LAST_ANALYSIS: Dict[str, Any] = {}
 
 
 def analyze_failure_with_llm(
@@ -15,75 +17,18 @@ def analyze_failure_with_llm(
     error_message: str,
     task_yaml: str,
     execution_log: Dict[str, Any],
-    model: str = "gpt-4.1-mini"
 ) -> Optional[Dict[str, Any]]:
-    """
-    Analyze a task failure using an LLM and generate a corrected plan.
-    
-    Args:
-        task_goal: The original task goal
-        error_message: The error that occurred
-        task_yaml: The YAML of the failed task
-        execution_log: Log of what happened during execution
-        model: LLM model to use for analysis
-        
-    Returns:
-        Dictionary with:
-        - analysis: Root cause analysis
-        - fix_strategy: Recommended fix approach
-        - corrected_yaml: New YAML plan (if fixable)
-        - confidence: Confidence score (0-1)
-    """
+    """Delegate analysis to Ollama and cache metadata."""
+    global _LAST_ANALYSIS
     try:
-        from openai import OpenAI
-        client = OpenAI()  # API key from environment
-        
-        # Build the analysis prompt
-        prompt = f"""You are an expert at debugging autonomous agent tasks.
-
-TASK GOAL:
-{task_goal}
-
-FAILED YAML PLAN:
-{task_yaml}
-
-ERROR MESSAGE:
-{error_message}
-
-EXECUTION LOG:
-{json.dumps(execution_log, indent=2)}
-
-Analyze this failure and provide:
-1. Root cause analysis (what went wrong and why)
-2. Fix strategy (how to correct it)
-3. Corrected YAML plan (if fixable)
-4. Confidence score (0.0 to 1.0)
-
-Respond in JSON format:
-{{
-  "analysis": "detailed root cause analysis",
-  "fix_strategy": "step-by-step fix approach",
-  "corrected_yaml": "the corrected YAML plan or null if not fixable",
-  "confidence": 0.85,
-  "is_fixable": true
-}}
-"""
-        
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": "You are an expert at debugging autonomous agent tasks. Always respond with valid JSON."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            response_format={"type": "json_object"}
-        )
-        
-        result = json.loads(response.choices[0].message.content)
-        return result
-        
-    except Exception as e:
-        print(f"[WARNING] LLM analysis failed: {e}")
+        analysis = ollama_analyze(task_goal, error_message, execution_log)
+        if analysis:
+            analysis.setdefault("confidence", 0.0)
+            analysis.setdefault("is_fixable", bool(analysis.get("corrected_yaml")))
+            _LAST_ANALYSIS = analysis
+        return analysis
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"[WARNING] LLM analysis failed: {exc}")
         return None
 
 
@@ -91,82 +36,72 @@ def apply_self_healing(
     run_path: Path,
     task_def,
     error_message: str,
-    execution_log: Dict[str, Any]
+    execution_log: Dict[str, Any],
 ) -> Optional[str]:
     """
     Apply self-healing to a failed task.
-    
-    Args:
-        run_path: Path to the run directory
-        task_def: The TaskDefinition object
-        error_message: The error that occurred
-        execution_log: Log of execution events
-        
+
     Returns:
-        Path to corrected YAML file if healing succeeded, None otherwise
+        Path to corrected YAML file if healing succeeded, None otherwise.
     """
-    # Read the original YAML
     yaml_path = run_path / "original_task.yaml"
     if not yaml_path.exists():
         return None
-        
+
     task_yaml = yaml_path.read_text()
-    
-    # Analyze with LLM
     analysis = analyze_failure_with_llm(
         task_goal=task_def.goal,
         error_message=error_message,
         task_yaml=task_yaml,
-        execution_log=execution_log
+        execution_log=execution_log,
     )
-    
+
     if not analysis or not analysis.get("is_fixable"):
         return None
-        
-    # Save the analysis
-    analysis_path = run_path / "self_healing_analysis.json"
+
+    heal_dir = run_path / "self_heal"
+    heal_dir.mkdir(parents=True, exist_ok=True)
+
+    analysis_path = heal_dir / "analysis.json"
     analysis_path.write_text(json.dumps(analysis, indent=2))
-    
-    # Save the corrected YAML
+
+    corrected_path = heal_dir / "corrected_plan.yaml"
     if analysis.get("corrected_yaml"):
-        corrected_path = run_path / "corrected_task.yaml"
         corrected_path.write_text(analysis["corrected_yaml"])
         return str(corrected_path)
-        
+
     return None
+
+
+def get_last_analysis() -> Dict[str, Any]:
+    """Expose last LLM analysis metadata."""
+    return _LAST_ANALYSIS or {}
 
 
 def log_healing_attempt(
     run_path: Path,
     attempt_number: int,
     success: bool,
-    details: Dict[str, Any]
+    details: Dict[str, Any],
 ):
-    """Log a self-healing attempt."""
+    """Log a self-healing attempt to healing_log.jsonl."""
     log_path = run_path / "healing_log.jsonl"
-    
     entry = {
         "attempt": attempt_number,
-        "timestamp": str(Path(run_path).stat().st_mtime),
+        "timestamp": datetime.now().isoformat(),
         "success": success,
-        "details": details
+        "details": details,
     }
-    
-    with open(log_path, "a") as f:
+    with open(log_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
 
 
 if __name__ == "__main__":
-    # Test the module
-    test_analysis = analyze_failure_with_llm(
+    # Lightweight self-check
+    dummy = analyze_failure_with_llm(
         task_goal="Create a file named test.txt",
         error_message="Permission denied",
         task_yaml="id: test\nname: Test\ntype: shell\ngoal: Create file\ncommand: touch /root/test.txt",
-        execution_log={"error": "Permission denied"}
+        execution_log={"error": "Permission denied"},
     )
-    
-    if test_analysis:
-        print("Self-healing analysis:")
-        print(json.dumps(test_analysis, indent=2))
-    else:
-        print("Analysis failed")
+    print(dummy or "analysis unavailable")

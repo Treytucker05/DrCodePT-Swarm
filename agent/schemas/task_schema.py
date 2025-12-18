@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """
 Pydantic task schema for DrCodePT Agent.
-Supports task types: browser | shell | python | fs | api | composite.
+Supports task types: browser | shell | python | fs | api | composite | desktop | screen_recorder | vision | notify | code_review | research.
 """
 
 from enum import Enum
@@ -24,6 +24,8 @@ class TaskType(str, Enum):
     screen_recorder = "screen_recorder"
     vision = "vision"
     notify = "notify"
+    code_review = "code_review"
+    research = "research"
 
 
 class OnFailAction(str, Enum):

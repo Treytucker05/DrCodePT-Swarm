@@ -14,6 +14,8 @@ from .desktop import DesktopTool
 from .screen_recorder import ScreenRecorderTool
 from .vision import VisionTool
 from .notify import NotifyTool
+from .code_review import CodeReviewTool
+from .research import ResearchTool
 
 
 _REGISTRY: Dict[TaskType, object] = {
@@ -26,6 +28,8 @@ _REGISTRY: Dict[TaskType, object] = {
     TaskType.screen_recorder: ScreenRecorderTool(),
     TaskType.vision: VisionTool(),
     TaskType.notify: NotifyTool(),
+    TaskType.code_review: CodeReviewTool(),
+    TaskType.research: ResearchTool(),
 }
 
 
