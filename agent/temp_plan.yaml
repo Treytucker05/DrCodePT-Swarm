@@ -1,0 +1,33 @@
+﻿id: "task-google-search-python-programming"
+name: "Google Search for Python Programming"
+type: "browser"
+goal: "Search Google for 'Python programming' and capture a screenshot of results"
+inputs:
+  steps:
+    - action: "goto"
+      url: "https://www.google.com"
+    - action: "wait_for"
+      selector: "textarea[name='q']"
+      timeout_ms: 10000
+    - action: "fill"
+      selector: "textarea[name='q']"
+      value: "Python programming"
+    - action: "click"
+      selector: "input[name='btnK']"
+    - action: "wait_for"
+      text: "Python.org"
+      timeout_ms: 10000
+    - action: "screenshot"
+      path: "runs/google_search_python.png"
+definition_of_done: "Google search for 'Python programming' completes and screenshot saved to runs/google_search_python.png"
+stop_rules:
+  max_attempts: 2
+  max_minutes: 5
+  max_tool_calls: 12
+on_fail: "escalate"
+tools_allowed:
+  - "browser"
+verify:
+  - id: "page_contains"
+    args:
+      text: "Python.org"
