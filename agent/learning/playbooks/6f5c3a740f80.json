@@ -1,24 +1,23 @@
 {
   "id": "6f5c3a740f80",
-  "name": "Playbook: Create Python CLI Calculator",
+  "name": "Playbook: Build calculator",
   "goal_pattern": "Create a Python calculator program",
-  "task_type": "composite",
-  "created_at": "2025-12-18T13:46:12.031194",
+  "task_type": "shell",
+  "created_at": "2025-12-18T14:58:54.043713",
   "success_count": 1,
-  "yaml_template": "id: \"{task_id}\"\nname: \"Create Python CLI Calculator\"\ntype: \"composite\"\ngoal: \"{goal}\"\ndefinition_of_done: \"calculator.py exists with CLI add/sub/mul/div operations and sample runs complete successfully with expected results\"\nstop_rules:\n  max_attempts: 3\n  max_minutes: 10\n  max_tool_calls: 40\non_fail: \"escalate\"\n",
+  "yaml_template": "id: \"{task_id}\"\nname: \"Build calculator\"\ntype: \"shell\"\ngoal: \"{goal}\"\ndefinition_of_done: \"calculator.py exists and prints a sum\"\nstop_rules:\n  max_attempts: 2\n  max_minutes: 5\n  max_tool_calls: 5\non_fail: \"retry\"\n",
   "key_steps": [
-    "shell: None",
     "shell: None"
   ],
   "common_pitfalls": [],
   "tags": [
-    "composite",
+    "shell",
     "file_operations",
     "scripting"
   ],
   "metadata": {
-    "original_run": "C:\\Users\\treyt\\OneDrive\\Desktop\\DrCodePT-Swarm\\agent\\runs\\2025-12-18_134433_task-python-calculator",
-    "execution_time": 1.2224671840667725,
-    "tool_calls": 2
+    "original_run": "C:\\Users\\treyt\\OneDrive\\Desktop\\DrCodePT-Swarm\\agent\\runs\\2025-12-18_145621_calc-test",
+    "execution_time": 0.6348140239715576,
+    "tool_calls": 1
   }
 }

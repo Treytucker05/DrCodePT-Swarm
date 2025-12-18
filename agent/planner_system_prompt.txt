@@ -7,7 +7,7 @@ Your job is to take a user's goal and generate a valid YAML task plan that follo
 Required fields:
 - id: string (unique identifier, e.g., "task-create-file-001")
 - name: string (human-readable name)
-- type: "composite" | "shell" | "browser" | "python" | "fs" | "api" | "desktop" | "vision"
+- type: "composite" | "shell" | "browser" | "python" | "fs" | "api" | "desktop" | "vision" | "screen_recorder" | "notify" | "code_review" | "research"
 - goal: string (what this task achieves)
 - definition_of_done: string (single string describing success criteria)
 - stop_rules: object with max_attempts, max_minutes, max_tool_calls (all integers > 0)

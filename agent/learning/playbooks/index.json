@@ -8,8 +8,9 @@
         "file_operations",
         "scripting"
       ],
-      "success_count": 1,
-      "created_at": "2025-12-18T13:46:12.031194"
+      "success_count": 3,
+      "created_at": "2025-12-18T13:46:12.031194",
+      "updated_at": "2025-12-18T14:58:54.044845"
     }
   ],
   "tags": {
@@ -20,6 +21,9 @@
       "6f5c3a740f80"
     ],
     "scripting": [
+      "6f5c3a740f80"
+    ],
+    "shell": [
       "6f5c3a740f80"
     ]
   }
