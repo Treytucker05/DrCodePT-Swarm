@@ -15,17 +15,18 @@ Required fields:
 
 Optional fields (type-specific):
 - command: string (required for type: shell)
-- url: string (required for type: browser)
+- url: string (optional for type: browser if using inputs.steps)
+- login_site: string (optional for type: browser, e.g., "yahoo", "google")
 - script: string (required for type: python)
 - path: string (required for type: fs)
 - endpoint: string (required for type: api)
 - method: "GET" | "POST" | "PUT" | "DELETE" (required for type: api)
 - steps: list of TaskDefinition (required for type: composite, each step is a full TaskDefinition)
-- verify: list of {id: string, args: dict} (optional verifiers)
-- inputs: dict (optional input parameters)
+- inputs: dict (for browser tasks, contains "steps" array with concrete actions)
+- verify: list of {id: string, args: dict} (REQUIRED for browser tasks!)
 - output: dict (optional output parameters)
 - allowed_paths: list of strings (optional file paths)
-- tools_allowed: list of strings (optional tool names)
+- tools_allowed: list of strings (must include the task's own type)
 
 === IMPORTANT RULES ===
 
@@ -35,6 +36,43 @@ Optional fields (type-specific):
 4. Each step in a composite task needs ALL required fields (id, name, type, goal, etc.)
 5. Use type: "shell" for PowerShell commands (your ShellTool uses PowerShell)
 6. Use type: "composite" when breaking down a goal into multiple steps
+7. For browser tasks, ALWAYS include verify with specific checks
+8. For browser tasks, inputs.steps MUST contain concrete actions (click, fill, wait_for, etc.)
+9. tools_allowed MUST include the primary tool type (e.g., ["browser"] for browser tasks)
+
+=== BROWSER TASK ACTIONS ===
+
+Browser tasks use inputs.steps with these actions:
+
+- goto: Navigate to URL
+  {action: "goto", url: "https://example.com"}
+
+- click: Click an element (by selector or text)
+  {action: "click", selector: "button#submit"}
+  {action: "click", text: "Login"}
+
+- fill: Fill an input field
+  {action: "fill", selector: "input[name='email']", value: "user@example.com"}
+
+- wait_for: Wait for element or text to appear
+  {action: "wait_for", selector: "div.content", timeout_ms: 10000}
+  {action: "wait_for", text: "Welcome", timeout_ms: 5000}
+
+- screenshot: Take a screenshot
+  {action: "screenshot", path: "runs/screenshot.png"}
+
+- sleep: Wait for a duration
+  {action: "sleep", seconds: 2}
+
+=== BROWSER VERIFIERS ===
+
+ALWAYS use verifiers for browser tasks:
+
+- page_contains: Check if page contains text
+  {id: "page_contains", args: {text: "Success"}}
+
+- command_exit_zero: Check if task succeeded (generic)
+  {id: "command_exit_zero", args: {}}
 
 === EXAMPLE 1: Simple Shell Task ===
 
@@ -50,6 +88,8 @@ stop_rules:
   max_minutes: 5
   max_tool_calls: 10
 on_fail: "escalate"
+tools_allowed:
+  - "shell"
 verify:
   - id: "file_exists"
     args:
@@ -81,6 +121,8 @@ steps:
       max_minutes: 5
       max_tool_calls: 10
     on_fail: "escalate"
+    tools_allowed:
+      - "shell"
     verify:
       - id: "file_exists"
         args:
@@ -97,11 +139,114 @@ steps:
       max_minutes: 5
       max_tool_calls: 10
     on_fail: "escalate"
+    tools_allowed:
+      - "shell"
     verify:
       - id: "command_exit_zero"
         args: {}
 
+=== EXAMPLE 3: Browser Task with Login and Actions ===
+
+id: "task-yahoo-clear-spam"
+name: "Yahoo Mail: Clear Spam Folder"
+type: "browser"
+goal: "Log into Yahoo Mail and empty the Spam folder"
+login_site: "yahoo"
+inputs:
+  steps:
+    - action: "goto"
+      url: "https://mail.yahoo.com/d/folders/5"
+    - action: "wait_for"
+      selector: "a[data-test-folder-name='Spam']"
+      timeout_ms: 20000
+    - action: "wait_for"
+      selector: "div[data-test-id='virtual-list']"
+      timeout_ms: 20000
+    - action: "click"
+      text: "Empty Spam"
+      timeout_ms: 5000
+    - action: "click"
+      selector: "button[data-test-id='primary-button']"
+      timeout_ms: 5000
+    - action: "wait_for"
+      text: "Spam folder is empty"
+      timeout_ms: 10000
+    - action: "screenshot"
+      path: "runs/spam_cleanup.png"
+definition_of_done: "Spam folder shows empty state after cleanup"
+stop_rules:
+  max_attempts: 2
+  max_minutes: 8
+  max_tool_calls: 12
+on_fail: "escalate"
+tools_allowed:
+  - "browser"
+verify:
+  - id: "page_contains"
+    args:
+      text: "Spam folder is empty"
+session_state_path: "sessions/yahoo_state.json"
+
+=== EXAMPLE 4: Browser Task Without Login ===
+
+id: "task-google-search"
+name: "Google Search for Python"
+type: "browser"
+goal: "Search Google for 'Python programming' and take a screenshot"
+inputs:
+  steps:
+    - action: "goto"
+      url: "https://www.google.com"
+    - action: "wait_for"
+      selector: "textarea[name='q']"
+      timeout_ms: 5000
+    - action: "fill"
+      selector: "textarea[name='q']"
+      value: "Python programming"
+    - action: "click"
+      selector: "input[name='btnK']"
+    - action: "wait_for"
+      text: "results"
+      timeout_ms: 10000
+    - action: "screenshot"
+      path: "runs/google_search.png"
+definition_of_done: "Search completed and screenshot saved"
+stop_rules:
+  max_attempts: 2
+  max_minutes: 5
+  max_tool_calls: 10
+on_fail: "escalate"
+tools_allowed:
+  - "browser"
+verify:
+  - id: "page_contains"
+    args:
+      text: "results"
+
+=== CRITICAL FOR BROWSER TASKS ===
+
+When generating browser tasks:
+1. ALWAYS include inputs.steps with concrete actions
+2. ALWAYS include verify with specific text/element checks
+3. ALWAYS include tools_allowed: ["browser"]
+4. Use wait_for after navigation and before interactions
+5. Use specific selectors (CSS or text) for clicks and fills
+6. Take screenshots to capture evidence
+7. If login is needed, use login_site parameter
+
+DO NOT create vague browser tasks like:
+❌ "Open mail" (no concrete actions)
+❌ "Login and triage" (no specific steps)
+❌ No verifiers (can't confirm success)
+
+DO create specific browser tasks like:
+✅ Concrete actions (goto, wait_for, click, fill)
+✅ Specific selectors or text
+✅ Verifiers to check success
+✅ Screenshots for evidence
+
 === YOUR TASK ===
 
 Generate a YAML task plan for the user's goal. Follow the schema exactly.
+For browser tasks, include concrete actions and verifiers.
 Output ONLY valid YAML with no markdown formatting, no code blocks, no explanations.
