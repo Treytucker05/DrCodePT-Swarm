@@ -13,7 +13,6 @@ agent/recordings/
 agent/logs/
 agent/temp_plan.yaml
 agent/learning/playbooks/
-agent/prompts/
 agent/tmp_tests/
 calculator.py
 *.log

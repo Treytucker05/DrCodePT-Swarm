@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 import yaml
+import sys as _sys
 
 try:  # optional color
     from colorama import Fore, Style, init as color_init
@@ -28,8 +29,10 @@ except Exception:  # pragma: no cover - fallback to plain text
 
 BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parent
+_sys.path.insert(0, str(REPO_ROOT))
 PLANNER_PROMPT_FILE = BASE_DIR / "planner_system_prompt.txt"
 TEMP_PLAN = BASE_DIR / "temp_plan.yaml"
+AGENT_CONTEXT = ""  # Global context loaded at startup
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 CONVO_LOG = LOG_DIR / "conversations.log"
@@ -46,6 +49,21 @@ def load_planner_prompt() -> str:
     if not PLANNER_PROMPT_FILE.exists():
         return "You are a planner."
     return PLANNER_PROMPT_FILE.read_text(encoding="utf-8")
+
+
+def load_and_display_context():
+    """Load context and display to user."""
+    try:
+        from agent.context_loader import format_context_for_display, format_context_for_llm
+
+        print(f"{CYAN}[SYSTEM] Loading context...{RESET}")
+        display = format_context_for_display()
+        print(display)
+        llm_context = format_context_for_llm()
+        return llm_context
+    except Exception as exc:
+        print(f"{YELLOW}[WARN] Could not load context: {exc}{RESET}")
+        return ""
 
 
 def load_prompt_file(path: Path) -> str:
@@ -71,7 +89,11 @@ def codex_chat_turn(system_prompt: str, history: List[Dict[str, str]]) -> str:
     """
     Approximate a chat turn by sending history to codex CLI in one shot.
     """
-    transcript_lines = [f"System: {system_prompt.strip()}"]
+    # Prepend agent context to system prompt
+    global AGENT_CONTEXT
+    context = getattr(sys.modules[__name__], "AGENT_CONTEXT", "")
+    full_system = f"{context}\n\n{system_prompt.strip()}" if context else system_prompt.strip()
+    transcript_lines = [f"System: {full_system}"]
     for msg in history:
         prefix = "User" if msg["role"] == "user" else "Assistant"
         transcript_lines.append(f"{prefix}: {msg['content']}")
@@ -104,10 +126,21 @@ def extract_yaml_from_text(text: str) -> str | None:
     fenced = re.findall(r"```(?:yaml)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
     candidates = fenced if fenced else [text]
     for cand in candidates:
+        # if text contains preamble, grab from first 'id:' onward
         if "id:" in cand and "type:" in cand:
+            # try full text
             try:
                 yaml.safe_load(cand)
                 return cand.strip()
+            except Exception:
+                pass
+            # try from first id: line
+            lines = cand.splitlines()
+            try:
+                start = next(i for i,l in enumerate(lines) if l.strip().startswith("id:"))
+                trimmed = "\n".join(lines[start:])
+                yaml.safe_load(trimmed)
+                return trimmed.strip()
             except Exception:
                 continue
     return None
@@ -324,6 +357,9 @@ def handle_post_option(option: str, artifacts: List[str]):
 def main():
     os.chdir(REPO_ROOT)
     banner()
+    global AGENT_CONTEXT
+    AGENT_CONTEXT = load_and_display_context()
+    print()
     global _IMPROVEMENT_QUEUE
     _IMPROVEMENT_QUEUE = None
     while True:
