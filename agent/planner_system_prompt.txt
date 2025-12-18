@@ -39,6 +39,7 @@ Optional fields (type-specific):
 7. For browser tasks, ALWAYS include verify with specific checks
 8. For browser tasks, inputs.steps MUST contain concrete actions (click, fill, wait_for, etc.)
 9. tools_allowed MUST include the primary tool type (e.g., ["browser"] for browser tasks)
+10. For Windows CLI programs (Python/PowerShell), include a no-argument safe mode: if run with no args it should either prompt interactively or pause instead of exiting immediately. Add a verification step that runs the script with no args to confirm it does not crash.
 
 === BROWSER TASK ACTIONS ===
 
@@ -94,6 +95,18 @@ verify:
   - id: "file_exists"
     args:
       path: "hello.txt"
+
+=== SNIPPET: No-arg safety check for CLI scripts ===
+# When you create a script users may double-click, add a step like:
+# - id: "step-run-no-args"
+#   name: "Run script without args"
+#   type: "shell"
+#   goal: "Ensure script handles no arguments (interactive or pause)"
+#   command: "python calculator.py"
+#   definition_of_done: "Command exits 0 or shows interactive prompt without errors"
+#   stop_rules: {max_attempts: 1, max_minutes: 2, max_tool_calls: 2}
+#   on_fail: "escalate"
+#   tools_allowed: ["shell"]
 
 === EXAMPLE 2: Composite Task with Multiple Steps ===
 

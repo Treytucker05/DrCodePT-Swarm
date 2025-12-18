@@ -1,0 +1,26 @@
+{
+  "playbooks": [
+    {
+      "id": "6f5c3a740f80",
+      "name": "Playbook: Create Python CLI Calculator",
+      "tags": [
+        "composite",
+        "file_operations",
+        "scripting"
+      ],
+      "success_count": 1,
+      "created_at": "2025-12-18T13:46:12.031194"
+    }
+  ],
+  "tags": {
+    "composite": [
+      "6f5c3a740f80"
+    ],
+    "file_operations": [
+      "6f5c3a740f80"
+    ],
+    "scripting": [
+      "6f5c3a740f80"
+    ]
+  }
+}

@@ -1,0 +1,44 @@
+id: "task-yahoo-mail-login"
+name: "Yahoo Mail Login"
+type: "browser"
+goal: "Log into Yahoo Mail and reach the inbox"
+definition_of_done: "Yahoo Mail inbox is visible after successful login"
+stop_rules:
+  max_attempts: 2
+  max_minutes: 8
+  max_tool_calls: 12
+on_fail: "escalate"
+login_site: "yahoo"
+inputs:
+  steps:
+    - action: "goto"
+      url: "https://mail.yahoo.com"
+    - action: "wait_for"
+      selector: "input[name='username']"
+      timeout_ms: 15000
+    - action: "fill"
+      selector: "input[name='username']"
+      value: "{{YAHOO_EMAIL}}"
+    - action: "click"
+      selector: "input#login-signin"
+      timeout_ms: 10000
+    - action: "wait_for"
+      selector: "input[name='password']"
+      timeout_ms: 15000
+    - action: "fill"
+      selector: "input[name='password']"
+      value: "{{YAHOO_PASSWORD}}"
+    - action: "click"
+      selector: "button#login-signin, input#login-signin"
+      timeout_ms: 10000
+    - action: "wait_for"
+      text: "Inbox"
+      timeout_ms: 20000
+    - action: "screenshot"
+      path: "runs/yahoo_inbox.png"
+tools_allowed:
+  - "browser"
+verify:
+  - id: "page_contains"
+    args:
+      text: "Inbox"
