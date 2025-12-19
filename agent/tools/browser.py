@@ -64,7 +64,10 @@ class BrowserTool(ToolAdapter):
 
                 if action == "goto":
                     url = step.get("url")
-                    await page.goto(url, wait_until="load", timeout=timeout)
+                    wait_until = str(step.get("wait_until") or "load").lower()
+                    if wait_until not in {"load", "domcontentloaded", "networkidle"}:
+                        wait_until = "load"
+                    await page.goto(url, wait_until=wait_until, timeout=timeout)
 
                 elif action == "click":
                     if selector:
@@ -215,6 +218,7 @@ class BrowserTool(ToolAdapter):
 
         run_path = inputs.get("run_path")
         session_state_path = getattr(task, "session_state_path", None)
+        headless_override = inputs.get("headless", getattr(task, "headless", None))
 
         try:
             from playwright.async_api import async_playwright
@@ -229,7 +233,18 @@ class BrowserTool(ToolAdapter):
 
         async def runner():
             async with async_playwright() as p:
-                headless = os.getenv("BROWSER_HEADLESS", "true").lower() != "false"
+                if isinstance(headless_override, str):
+                    headless_override_bool = headless_override.strip().lower() not in {"false", "0", "no", "off"}
+                elif isinstance(headless_override, bool):
+                    headless_override_bool = headless_override
+                else:
+                    headless_override_bool = None
+
+                headless = (
+                    headless_override_bool
+                    if headless_override_bool is not None
+                    else os.getenv("BROWSER_HEADLESS", "true").lower() != "false"
+                )
                 launch_kwargs = {"headless": headless}
                 if not headless:
                     launch_kwargs["slow_mo"] = 100

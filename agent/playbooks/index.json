@@ -3,12 +3,28 @@
     "name": "Clean Yahoo Spam",
     "description": "Log into Yahoo Mail and empty the spam folder",
     "triggers": ["clean yahoo spam", "yahoo spam", "clean my spam", "empty spam"],
+    "session_state_path": "sessions/yahoo_state.json",
     "steps": [
       {
         "type": "browser",
         "description": "Open Yahoo Mail (inbox)",
         "action": "goto",
-        "url": "https://mail.yahoo.com/d"
+        "url": "https://mail.yahoo.com/d",
+        "timeout_ms": 60000,
+        "wait_until": "domcontentloaded"
+      },
+      {
+        "type": "browser",
+        "description": "Wait for mailbox UI to load",
+        "action": "wait_for",
+        "selector": "a[data-test-folder-name='Spam'], a[aria-label='Spam']",
+        "timeout_ms": 300000
+      },
+      {
+        "type": "browser",
+        "description": "Save logged-in session (for next time)",
+        "action": "save_storage_state",
+        "path": "sessions/yahoo_state.json"
       },
       {
         "type": "browser",
@@ -29,6 +45,20 @@
         "description": "Confirm empty spam (if prompted)",
         "action": "click_optional",
         "selector": "button[data-test-id='primary-button'], button[data-test-id='confirmation-dialog-ok-button']",
+        "timeout_ms": 15000
+      },
+      {
+        "type": "browser",
+        "description": "Select all spam (fallback)",
+        "action": "click_optional",
+        "selector": "[data-test-id='checkbox-select-all'], [data-test-id='checkbox-selectAll'], input[aria-label='Select all']",
+        "timeout_ms": 15000
+      },
+      {
+        "type": "browser",
+        "description": "Delete selected (fallback)",
+        "action": "click_optional",
+        "selector": "[data-test-id='toolbar-delete'], button[title='Delete'], [data-test-id='delete']",
         "timeout_ms": 15000
       }
     ],

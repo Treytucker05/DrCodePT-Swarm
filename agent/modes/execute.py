@@ -189,6 +189,15 @@ def _run_id(prefix: str) -> Path:
     return RUNS_DIR / f"{ts}_{_slugify(prefix)[:40]}"
 
 
+def _resolve_session_state_path(session_state_path: Optional[str]) -> Optional[Path]:
+    if not session_state_path:
+        return None
+    p = Path(session_state_path)
+    if p.is_absolute():
+        return p
+    return (BASE_DIR / p).resolve()
+
+
 def _coerce_browser_step(step: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(step)
     out.pop("type", None)
@@ -225,10 +234,13 @@ def execute_playbook(playbook_id: str, playbook_data: dict, *, run_path: Optiona
     browser_tool = BrowserTool()
 
     # Some BrowserTool features read attributes from a task object.
+    session_state_path = playbook_data.get("session_state_path")
+    resolved_session_state = _resolve_session_state_path(session_state_path)
     browser_task = SimpleNamespace(
         login_site=playbook_data.get("login_site"),
-        session_state_path=playbook_data.get("session_state_path"),
+        session_state_path=str(resolved_session_state) if resolved_session_state else None,
         url=playbook_data.get("url"),
+        headless=playbook_data.get("headless"),
     )
 
     pending_browser: List[Dict[str, Any]] = []
@@ -238,12 +250,21 @@ def execute_playbook(playbook_id: str, playbook_data: dict, *, run_path: Optiona
         if not pending_browser:
             return True
 
+        use_session_state = bool(resolved_session_state and resolved_session_state.is_file())
+        headless_setting = playbook_data.get("headless")
+        if headless_setting is None and session_state_path:
+            # Bootstrap sessions in headed mode, then run headless once a session exists.
+            headless_setting = True if use_session_state else False
+
         inputs = {
             "steps": pending_browser,
-            "login_site": playbook_data.get("login_site"),
+            "login_site": None if use_session_state else playbook_data.get("login_site"),
             "run_path": str(run_path),
             "url": playbook_data.get("url"),
+            "headless": headless_setting,
         }
+        browser_task.login_site = inputs["login_site"]
+        browser_task.headless = headless_setting
         result = browser_tool.execute(browser_task, inputs)
         if result.success:
             pending_browser = []
@@ -268,6 +289,34 @@ def execute_playbook(playbook_id: str, playbook_data: dict, *, run_path: Optiona
                 print(f"{YELLOW}    Evidence:{RESET} {shot}")
             if html:
                 print(f"{YELLOW}    Evidence:{RESET} {html}")
+
+            # Helpful guidance for common login gates (Yahoo 2FA / verification, sign-in redirects).
+            try:
+                if html and Path(html).is_file():
+                    blob = Path(html).read_text(encoding="utf-8", errors="ignore")[:60000]
+                    login_gate = any(k in blob for k in ("id=\"login-username\"", "login-username-form"))
+                    verify_gate = any(
+                        k in blob
+                        for k in (
+                            "challenge-selector",
+                            "Is it really you",
+                            "verify your identity",
+                            "Push notification",
+                            "Text message",
+                        )
+                    )
+                    if verify_gate or login_gate:
+                        print(
+                            f"{YELLOW}[ACTION REQUIRED]{RESET} Yahoo is blocking automated sign-in (verification/2FA)."
+                        )
+                        print(
+                            f"{YELLOW}From the `agent` folder run:{RESET} python -m sessions.capture_session --site yahoo --url https://mail.yahoo.com/d"
+                        )
+                        print(
+                            f"{YELLOW}Log in manually, complete verification, close the browser, then rerun:{RESET} clean my yahoo spam"
+                        )
+            except Exception:
+                pass
         return False
 
     steps = list(_iter_steps(playbook_data))
@@ -485,4 +534,3 @@ Rules:
     playbooks[pb_id] = playbook
     save_playbooks(playbooks)
     print(f"{GREEN}[SAVED]{RESET} Playbook '{name}' saved as '{pb_id}'.")
-
