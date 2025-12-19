@@ -240,8 +240,8 @@
 
 **Credentials:**
 - `.env` files (keep secret, never commit)
-- Blackboard: frtucker / OmmarAnnie1!
-- Anki: treytucker05@yahoo.com / Turtle1!
+- Blackboard: <YOUR_BLACKBOARD_USERNAME> / <YOUR_BLACKBOARD_PASSWORD>
+- Anki: <YOUR_ANKI_EMAIL> / <YOUR_ANKI_PASSWORD>
 
 ---
 

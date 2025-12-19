@@ -15,16 +15,25 @@ BASE_DIR = Path(__file__).resolve().parent
 
 def get_saved_credentials() -> List[str]:
     """Return list of sites with saved credentials."""
-    cred_file = BASE_DIR / "memory" / "credentials.json"
     sites: List[str] = []
 
-    if cred_file.exists():
-        try:
-            data = json.loads(cred_file.read_text())
-            if isinstance(data, dict):
-                sites.extend(list(data.keys()))
-        except Exception:
-            pass
+    for filename in ["credential_store.json", "credentials.json"]:
+        cred_file = BASE_DIR / "memory" / filename
+        if cred_file.exists():
+            try:
+                data = json.loads(cred_file.read_text())
+                if isinstance(data, dict):
+                    if "entries" in data:
+                        for entry in data["entries"].values():
+                            site = entry.get("site")
+                            if site and site not in sites:
+                                sites.append(site)
+                    else:
+                        for k in data.keys():
+                            if k not in sites:
+                                sites.append(k)
+            except Exception:
+                pass
 
     playbooks_dir = BASE_DIR / "memory" / "site_playbooks"
     if playbooks_dir.exists():

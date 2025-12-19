@@ -2,7 +2,7 @@
 Minimal MCP server (FastMCP) exposing a few helper tools for PT Study Brain.
 
 Transports:
-- streamable-http on http://0.0.0.0:8765/mcp  (pick this for ChatGPT connector)
+- streamable-http on http://127.0.0.1:8765/mcp  (safe default; set MCP_HOST=0.0.0.0 to expose)
 - stdio (for local CLI testing)
 """
 
@@ -20,23 +20,27 @@ from googleapiclient.discovery import build
 from mcp.server.fastmcp import FastMCP
 
 # ---- Settings -------------------------------------------------------------
-LOG_DIR = Path(
-    os.environ.get(
-        "PT_BRAIN_LOG_DIR",
-        r"C:\Users\treyt\OneDrive\Desktop\pt-study-sop\brain\session_logs",
-    )
-)
+ROOT_DIR = Path(__file__).resolve().parents[1]
 
-ROOT_DIR = Path(r"C:\Users\treyt\OneDrive\Desktop\DrCodePT-Swarm")
+# Prefer a repo-relative default unless the user overrides it via env.
+LOG_DIR = Path(os.environ.get("PT_BRAIN_LOG_DIR", str(ROOT_DIR / "session_logs")))
+
+# Store OAuth secrets/tokens outside the repo by default.
+_default_config_root = Path(
+    os.environ.get("APPDATA")
+    or os.environ.get("XDG_CONFIG_HOME")
+    or str(Path.home() / ".config")
+)
+SECRETS_DIR = Path(os.environ.get("PT_BRAIN_SECRETS_DIR", str(_default_config_root / "pt-brain-mcp")))
 
 # --- Google Calendar OAuth settings ---------------------------------------
 # Path to your OAuth client JSON from Google Cloud.
 GCAL_CLIENT_SECRET = Path(
-    os.environ.get("GOOGLE_CLIENT_SECRET_JSON", ROOT_DIR / "google_client_secret.json")
+    os.environ.get("GOOGLE_CLIENT_SECRET_JSON", str(SECRETS_DIR / "google_client_secret.json"))
 )
 # Where the user token will be cached after the first consent flow.
 GCAL_TOKEN_PATH = Path(
-    os.environ.get("GOOGLE_CALENDAR_TOKEN_JSON", ROOT_DIR / "google_calendar_token.json")
+    os.environ.get("GOOGLE_CALENDAR_TOKEN_JSON", str(SECRETS_DIR / "google_calendar_token.json"))
 )
 GCAL_SCOPES = [
     # Change to the minimal scopes you need; this allows create/update/delete.
@@ -51,8 +55,8 @@ WHITELISTED_FILES = {
 server = FastMCP(
     name="PT Brain MCP",
     instructions="Helper tools for PT Study Brain (list and read session logs).",
-    host="0.0.0.0",
-    port=8765,
+    host=os.environ.get("MCP_HOST", "127.0.0.1"),
+    port=int(os.environ.get("MCP_PORT", "8765")),
     streamable_http_path="/mcp",
 )
 
@@ -85,6 +89,7 @@ def _load_calendar_service(force_refresh: bool = False):
             )
             # Port 0 picks a free port and opens a local browser tab for consent.
             creds = flow.run_local_server(port=0, access_type="offline", prompt="consent")
+        GCAL_TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
         GCAL_TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
 
     return build("calendar", "v3", credentials=creds)

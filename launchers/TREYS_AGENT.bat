@@ -1,5 +1,5 @@
 @echo off
-title Trey's Agent - Codex + Ollama Team
+title Trey's Agent
 cd /d "%~dp0..\agent"
-python unified_cli.py
+python treys_agent.py
 pause

@@ -76,9 +76,10 @@ class BrowserTool(ToolAdapter):
 
                 elif action == "click_optional":
                     if selector:
-                        handle = await page.query_selector(selector)
-                        if handle:
-                            await handle.click(timeout=timeout)
+                        try:
+                            await page.click(selector, timeout=timeout)
+                        except Exception:
+                            pass
                     elif text:
                         try:
                             await page.get_by_text(text).click(timeout=timeout)
@@ -228,7 +229,10 @@ class BrowserTool(ToolAdapter):
 
         async def runner():
             async with async_playwright() as p:
-                launch_kwargs = {"headless": True}
+                headless = os.getenv("BROWSER_HEADLESS", "true").lower() != "false"
+                launch_kwargs = {"headless": headless}
+                if not headless:
+                    launch_kwargs["slow_mo"] = 100
                 exe = _find_chromium_executable()
                 if exe:
                     launch_kwargs["executable_path"] = exe

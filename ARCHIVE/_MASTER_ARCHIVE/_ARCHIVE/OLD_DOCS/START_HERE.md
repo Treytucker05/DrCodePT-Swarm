@@ -151,8 +151,8 @@ C:\PT School\
 ## 🔐 Credentials & Config
 
 **Anki Access:**
-- Email: `treytucker05@yahoo.com`
-- Password: `Turtle1!` (encrypted in system)
+- Email: `<YOUR_ANKI_EMAIL>`
+- Password: `<YOUR_ANKI_PASSWORD>` (stored locally)
 
 **API Configuration:**
 - FastMCP URL: `http://localhost:8000`

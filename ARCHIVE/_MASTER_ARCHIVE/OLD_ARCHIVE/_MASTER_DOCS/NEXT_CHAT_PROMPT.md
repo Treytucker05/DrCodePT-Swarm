@@ -36,8 +36,8 @@ We just completed the master plan and architecture review for my AI study automa
 - Verify end-to-end
 
 **Credentials on File:**
-- Blackboard: frtucker / OmmarAnnie1!
-- Anki: treytucker05@yahoo.com / Turtle1!
+- Blackboard: <YOUR_BLACKBOARD_USERNAME> / <YOUR_BLACKBOARD_PASSWORD>
+- Anki: <YOUR_ANKI_EMAIL> / <YOUR_ANKI_PASSWORD>
 - ngrok: configured (see fastmcp-server console)
 
 ---

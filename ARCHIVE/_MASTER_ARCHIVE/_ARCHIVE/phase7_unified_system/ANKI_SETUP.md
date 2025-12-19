@@ -52,9 +52,9 @@ python -c "import requests; r=requests.post('http://localhost:8765', json={'acti
 ### **OPTION 2: AnkiWeb Sync (Cloud-based)**
 
 #### Setup
-Your credentials are already configured:
-- Email: `treytucker05@yahoo.com`
-- Password: Stored in `.env` file (encrypted)
+Configure your AnkiWeb credentials in your local `.env` (never commit it):
+- Email: `<YOUR_ANKI_EMAIL>`
+- Password: `<YOUR_ANKI_PASSWORD>`
 
 #### How It Works
 - Cards sync to your AnkiWeb account
@@ -149,7 +149,7 @@ Expected response:
 {
   "success": true,
   "connected": true,
-  "email": "treytucker05@yahoo.com",
+  "email": "<YOUR_ANKI_EMAIL>",
   "decks": ["Default", "DrCodePT", "Anatomy", ...],
   "type": "AnkiConnect"
 }
@@ -188,8 +188,8 @@ Invoke-WebRequest -Uri http://localhost:5000/api/anki/add-cards `
 ### Already Configured In `.env`:
 ```
 ANTHROPIC_API_KEY=sk-ant-...
-ANKI_EMAIL=treytucker05@yahoo.com
-ANKI_PASSWORD=Turtle1!
+ANKI_EMAIL=<YOUR_ANKI_EMAIL>
+ANKI_PASSWORD=<YOUR_ANKI_PASSWORD>
 ```
 
 ### Files:

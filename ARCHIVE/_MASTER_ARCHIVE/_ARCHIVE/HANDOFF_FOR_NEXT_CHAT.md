@@ -38,7 +38,7 @@
 - Textbooks: `C:\Users\treyt\OneDrive\Desktop\DrCodePT-Swarm\textbooks\`
 
 **Credentials (In Memory):**
-- Anki: treytucker05@yahoo.com / Turtle1!
+- Anki: <YOUR_ANKI_EMAIL> / <YOUR_ANKI_PASSWORD>
 - Claude API: $env:ANTHROPIC_API_KEY (needs to be set)
 - Blackboard: agent/.env (already configured)
 
@@ -169,7 +169,7 @@ Deleted: /ARCHIVE, /meta_agent, 15 old doc files
 ## 🔐 CREDENTIALS (Stored in Memory)
 
 **DO NOT EXPOSE:**
-- Anki: treytucker05@yahoo.com / Turtle1! (encrypted in backend)
+- Anki: <YOUR_ANKI_EMAIL> / <YOUR_ANKI_PASSWORD> (stored locally; never commit)
 - Claude API key: Check $env:ANTHROPIC_API_KEY
 - Blackboard: agent/.env file
 - Ollama: localhost:3001 (local only)
@@ -198,7 +198,7 @@ Deleted: /ARCHIVE, /meta_agent, 15 old doc files
 
 2. **Anki API requires account:**
    - Must have active AnkiWeb account
-   - Credentials: treytucker05@yahoo.com
+   - Credentials: stored locally in `.env` / credential store (never committed)
    - System stores encrypted for auto-add feature
 
 3. **Blackboard changes login:**

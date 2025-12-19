@@ -6,6 +6,8 @@ from typing import Any, Dict, List
 
 import yaml
 
+from agent.logging.redaction import redact
+
 MEMORY_ROOT = Path(__file__).resolve().parents[1] / "memory"
 FAILURE_LOG = MEMORY_ROOT / "failure_cases.jsonl"
 PLAYBOOK_DIR = MEMORY_ROOT / "site_playbooks"
@@ -40,7 +42,7 @@ def record_failure(task_id: str, signature: str, context: Dict[str, Any]):
         "timestamp": datetime.now().isoformat(),
         "task_id": task_id,
         "signature": signature,
-        "context": context,
+        "context": redact(context),
     }
     with open(FAILURE_LOG, "a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")

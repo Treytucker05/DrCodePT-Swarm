@@ -1,3 +1,9 @@
+"""
+Trey's Agent - One Terminal, Codex Powered
+All LLM calls use Codex CLI (codex exec).
+No Ollama dependency.
+"""
+
 from __future__ import annotations
 
 import json
@@ -6,80 +12,73 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Any, Dict, List, Optional
 
 import yaml
-import sys as _sys
-import threading
 
-try:  # optional color
+try:
     from colorama import Fore, Style, init as color_init
 
     color_init()
-    GREEN = Fore.GREEN
-    RED = Fore.RED
-    CYAN = Fore.CYAN
-    YELLOW = Fore.YELLOW
-    RESET = Style.RESET_ALL
-except Exception:  # pragma: no cover - fallback to plain text
+    GREEN, RED, CYAN, YELLOW, RESET = (
+        Fore.GREEN,
+        Fore.RED,
+        Fore.CYAN,
+        Fore.YELLOW,
+        Style.RESET_ALL,
+    )
+except Exception:
     GREEN = RED = CYAN = YELLOW = RESET = ""
-
 
 BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parent
-_sys.path.insert(0, str(REPO_ROOT))
-PLANNER_PROMPT_FILE = BASE_DIR / "planner_system_prompt.txt"
+
+# Ensure imports resolve to the repo-root `agent` package when run from `...\agent`.
+sys.path.insert(0, str(REPO_ROOT))
+
+CODEX_TIMEOUT_SECONDS = int(os.getenv("CODEX_TIMEOUT_SECONDS", "120"))
+CODEX_REASONING_EFFORT = os.getenv("CODEX_REASONING_EFFORT", "medium")
+
 TEMP_PLAN = BASE_DIR / "temp_plan.yaml"
-AGENT_CONTEXT = ""  # Global context loaded at startup
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
-CONVO_LOG = LOG_DIR / "conversations.log"
 PROMPTS_DIR = BASE_DIR / "prompts"
-INTERACTIVE_PLANNER_PROMPT = PROMPTS_DIR / "interactive_planner.txt"
-POST_EXEC_PROMPT = PROMPTS_DIR / "post_execution.txt"
 
 
 def banner():
-    print(f"{CYAN}=== Trey'sAgent - Codex + Ollama Team ==={RESET}")
+    print(f"\n{CYAN}{'=' * 50}")
+    print("   Trey's Agent - Codex Powered")
+    print(f"{'=' * 50}{RESET}\n")
 
 
-def load_planner_prompt() -> str:
-    if not PLANNER_PROMPT_FILE.exists():
-        return "You are a planner."
-    return PLANNER_PROMPT_FILE.read_text(encoding="utf-8")
+def load_prompt(name: str) -> str:
+    """Load a prompt file from prompts directory."""
+    path = PROMPTS_DIR / f"{name}.txt"
+    if path.exists():
+        return path.read_text(encoding="utf-8")
+    return ""
 
 
-def load_and_display_context():
-    """Load context and display to user."""
+def load_context() -> str:
+    """Load agent context (credentials, playbooks, tools)."""
     try:
         from agent.context_loader import format_context_for_display, format_context_for_llm
 
         print(f"{CYAN}[SYSTEM] Loading context...{RESET}")
-        display = format_context_for_display()
-        print(display)
-        llm_context = format_context_for_llm()
-        return llm_context
-    except Exception as exc:
-        print(f"{YELLOW}[WARN] Could not load context: {exc}{RESET}")
+        print(format_context_for_display())
+        return format_context_for_llm()
+    except Exception as e:
+        print(f"{YELLOW}[INFO] Context loader not available: {e}{RESET}")
         return ""
-
-
-def load_prompt_file(path: Path) -> str:
-    if not path.exists():
-        return ""
-    return path.read_text(encoding="utf-8")
-
-
-def log_conversation(role: str, content: str):
-    entry = {"ts": datetime.now().isoformat(), "role": role, "content": content}
-    with CONVO_LOG.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(entry) + "\n")
 
 
 def codex_command() -> list:
+    """Get the codex command."""
     cmd = shutil.which("codex") or shutil.which("codex.ps1")
     if cmd and cmd.lower().endswith(".ps1"):
         return ["powershell", "-File", cmd]
@@ -87,7 +86,7 @@ def codex_command() -> list:
 
 
 class Spinner:
-    def __init__(self, label="Working"):
+    def __init__(self, label: str = "Working"):
         self.label = label
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._spin, daemon=True)
@@ -99,7 +98,6 @@ class Spinner:
             print(f"\r{CYAN}[{self.label}] {frames[idx]}{RESET}", end="", flush=True)
             idx = (idx + 1) % len(frames)
             self._stop.wait(0.2)
-        # clear line
         print("\r" + " " * 60 + "\r", end="", flush=True)
 
     def __enter__(self):
@@ -111,351 +109,372 @@ class Spinner:
         self._thread.join(timeout=1)
 
 
-def codex_chat_turn(system_prompt: str, history: List[Dict[str, str]], label: str = "Codex") -> str:
+def call_codex(prompt: str, save_to: Optional[Path] = None) -> str:
     """
-    Approximate a chat turn by sending history to codex CLI in one shot.
+    Call Codex CLI in non-interactive mode.
+    Returns the response text.
     """
-    # Prepend agent context to system prompt
-    global AGENT_CONTEXT
-    context = getattr(sys.modules[__name__], "AGENT_CONTEXT", "")
-    full_system = f"{context}\n\n{system_prompt.strip()}" if context else system_prompt.strip()
-    transcript_lines = [f"System: {full_system}"]
-    for msg in history:
-        prefix = "User" if msg["role"] == "user" else "Assistant"
-        transcript_lines.append(f"{prefix}: {msg['content']}")
-    prompt = "\n".join(transcript_lines) + "\nAssistant:"
+    # Keep Codex "text-only" here: planning/self-heal/post-chat should not execute shell/MCP tools.
+    cmd = codex_command() + [
+        "exec",
+        "-c",
+        f'model_reasoning_effort="{CODEX_REASONING_EFFORT}"',
+        "--disable",
+        "shell_tool",
+        "--disable",
+        "rmcp_client",
+        "--dangerously-bypass-approvals-and-sandbox",
+    ]
+    if save_to:
+        cmd.extend(["--output-last-message", str(save_to)])
 
-    # use codex exec (non-interactive) to avoid TTY requirement
-    cmd = codex_command() + ["exec", "--dangerously-bypass-approvals-and-sandbox"]
     env = os.environ.copy()
-    env.setdefault("PYTHONIOENCODING", "utf-8")
-    env.setdefault("PYTHONUTF8", "1")
-    start = time.time()
-    with Spinner(label) as _sp:
-        proc = subprocess.run(
-            cmd,
-            input=prompt,
-            text=True,
-            encoding="utf-8",
-            errors="ignore",
-            capture_output=True,
-            env=env,
-            cwd=str(REPO_ROOT),
-        )
-    elapsed = time.time() - start
-    output = (proc.stdout or "").strip()
-    if proc.returncode != 0 or not output:
-        err = (proc.stderr or "").strip()
-        msg = f"[codex error {proc.returncode}] {err}" if err else "[codex produced no output]"
-        return msg
-    print(f"{GREEN}[{label} done]{RESET} ({elapsed:.1f}s)")
-    return output
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+
+    try:
+        spinner_ctx = Spinner("CODEX") if sys.stdout.isatty() else nullcontext()
+        with spinner_ctx:
+            proc = subprocess.run(
+                cmd,
+                input=prompt,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                capture_output=True,
+                env=env,
+                cwd=str(REPO_ROOT),
+                timeout=CODEX_TIMEOUT_SECONDS,
+            )
+    except FileNotFoundError:
+        return "[CODEX ERROR] Codex CLI not found on PATH."
+    except subprocess.TimeoutExpired:
+        return "[CODEX ERROR] Codex CLI timed out."
+
+    if proc.returncode != 0:
+        error = proc.stderr.strip() if proc.stderr else "Unknown error"
+        return f"[CODEX ERROR] {error}"
+
+    return proc.stdout.strip() if proc.stdout else ""
 
 
-def extract_yaml_from_text(text: str) -> str | None:
-    fenced = re.findall(r"```(?:yaml)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
-    candidates = fenced if fenced else [text]
-    for cand in candidates:
-        # if text contains preamble, grab from first 'id:' onward
-        if "id:" in cand and "type:" in cand:
-            # try full text
+def interactive_planning(goal: str, context: str) -> Optional[str]:
+    """
+    Have Codex ask clarifying questions, then generate YAML.
+    Returns the YAML plan or None.
+    """
+    system_prompt = load_prompt("interactive_planner")
+    if not system_prompt:
+        system_prompt = """You are a task planning assistant.
+Ask 2-3 clarifying questions about the user's goal, then generate a YAML task plan.
+When ready, output the YAML starting with 'id:' and ending with the complete plan."""
+
+    full_prompt = f"{context}\n\n{system_prompt}\n\nUser's goal: {goal}"
+
+    print(f"\n{CYAN}[CODEX]{RESET} Let me understand your goal better...")
+
+    for _turn in range(6):  # Max 6 turns
+        response = call_codex(full_prompt)
+
+        if response.startswith("[CODEX ERROR]"):
+            print(f"{RED}{response}{RESET}")
+            return None
+
+        print(f"\n{CYAN}[CODEX]{RESET} {response}")
+
+        # Check if response contains YAML
+        yaml_match = extract_yaml(response)
+        if yaml_match:
+            return yaml_match
+
+        # Get user input
+        user_input = input(f"\n{GREEN}[YOU]{RESET} ").strip()
+        if not user_input:
+            continue
+        if user_input.lower() in ["exit", "quit", "cancel"]:
+            return None
+
+        full_prompt = f"{full_prompt}\n\nAssistant: {response}\n\nUser: {user_input}\n\nAssistant:"
+
+    print(f"{RED}[ERROR] Could not generate YAML plan after multiple attempts.{RESET}")
+    return None
+
+
+def extract_yaml(text: str) -> Optional[str]:
+    """Extract YAML from text (handles code fences)."""
+    fenced = re.findall(r"```(?:yaml)?\\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
+    if fenced:
+        candidates: List[str] = fenced
+    else:
+        m = re.search(r"(?m)^\\s*id\\s*:\\s*.+$", text)
+        candidates = [text[m.start() :]] if m else [text]
+
+    for candidate in candidates:
+        candidate = candidate.strip()
+        try:
+            loaded = yaml.safe_load(candidate)
+        except Exception:
+            continue
+        if isinstance(loaded, dict) and "id" in loaded and "type" in loaded:
+            return candidate
+    return None
+
+
+def execute_plan() -> Dict[str, Any]:
+    """Execute the plan using supervisor."""
+    start_time = time.time()
+
+    cmd = [sys.executable, "-m", "agent.supervisor.supervisor", str(TEMP_PLAN)]
+    proc = subprocess.run(cmd, cwd=str(REPO_ROOT))
+
+    duration = time.time() - start_time
+    success = proc.returncode == 0
+
+    return {
+        "success": success,
+        "exit_code": proc.returncode,
+        "duration": round(duration, 1),
+        "artifacts": find_artifacts(start_time),
+    }
+
+
+def find_artifacts(since: float) -> List[str]:
+    """Find files created/modified since timestamp."""
+    artifacts: List[str] = []
+    allowed = {".py", ".txt", ".md", ".json", ".yaml", ".yml", ".html", ".css", ".js"}
+
+    for root, _, files in os.walk(REPO_ROOT):
+        for f in files:
+            path = Path(root) / f
             try:
-                yaml.safe_load(cand)
-                return cand.strip()
-            except Exception:
-                pass
-            # try from first id: line
-            lines = cand.splitlines()
-            try:
-                start = next(i for i,l in enumerate(lines) if l.strip().startswith("id:"))
-                trimmed = "\n".join(lines[start:])
-                yaml.safe_load(trimmed)
-                return trimmed.strip()
+                if path.stat().st_mtime >= since and path.suffix.lower() in allowed:
+                    rel = path.relative_to(REPO_ROOT)
+                    artifacts.append(str(rel))
             except Exception:
                 continue
+
+    return artifacts[:20]
+
+
+def self_heal(goal: str, error: str, yaml_content: str, context: str) -> Optional[str]:
+    """
+    Use Codex to analyze failure and generate corrected YAML.
+    Returns corrected YAML or None.
+    """
+    print(f"\n{YELLOW}[SELF-HEALING] Analyzing failure with Codex...{RESET}")
+
+    prompt = f"""{context}
+
+You are debugging a failed task. Analyze the error and generate a corrected YAML plan.
+
+ORIGINAL GOAL: {goal}
+
+FAILED YAML:
+{yaml_content}
+
+ERROR:
+{error}
+
+Instructions:
+1. Analyze what went wrong
+2. Explain the fix briefly
+3. Output the corrected YAML plan
+
+Start your response with your analysis, then output the corrected YAML."""
+
+    response = call_codex(prompt)
+
+    if response.startswith("[CODEX ERROR]"):
+        print(f"{RED}{response}{RESET}")
+        return None
+
+    print(f"\n{CYAN}[CODEX]{RESET} {response[:500]}...")
+
+    corrected = extract_yaml(response)
+    if corrected:
+        print(f"\n{GREEN}[SELF-HEALING] Generated corrected plan!{RESET}")
+        return corrected
+
+    print(f"{RED}[SELF-HEALING] Could not extract corrected YAML.{RESET}")
     return None
 
 
-def interactive_planning_with_codex(initial_goal: str) -> str | None:
-    system_prompt = load_prompt_file(INTERACTIVE_PLANNER_PROMPT)
-    history: List[Dict[str, str]] = [{"role": "user", "content": initial_goal}]
-    log_conversation("user", initial_goal)
-    print(f"{CYAN}[CODEX] Let's refine your goal...{RESET}")
-    for _ in range(8):  # max turns
-        reply = codex_chat_turn(system_prompt, history, label="Planning")
-        log_conversation("assistant", reply)
-        print(f"{CYAN}[CODEX]{RESET} {reply}")
-        if reply.startswith("[codex error"):
-            print(f"{RED}[WARN]{RESET} Codex CLI returned an error; try again or check codex install.")
-        yaml_block = extract_yaml_from_text(reply)
-        if yaml_block:
-            try:
-                yaml.safe_load(yaml_block)
-                return yaml_block
-            except Exception:
-                pass
-        user = input(f"{CYAN}[YOU]{RESET} ").strip()
-        log_conversation("user", user)
-        if not user:
-            continue
-        history.append({"role": "assistant", "content": reply})
-        history.append({"role": "user", "content": user})
-    print(f"{RED}[ERROR]{RESET} Could not obtain YAML plan from Codex.")
-    return None
+def post_execution_chat(result: Dict[str, Any], context: str) -> Optional[str]:
+    """
+    Discuss results with user, offer options.
+    Returns next goal if user wants to continue, None otherwise.
+    """
+    system_prompt = load_prompt("post_execution")
+    if not system_prompt:
+        system_prompt = """You are a helpful assistant discussing task results.
+Summarize what was done, list artifacts, and offer numbered options:
+1. Run/open created files
+2. See the code
+3. Make improvements
+4. Create something else
+5. Exit"""
 
+    result_summary = json.dumps(result, indent=2)
+    full_prompt = (
+        f"{context}\n\n{system_prompt}\n\nTask Result:\n{result_summary}\n\n"
+        "Provide a friendly summary and options."
+    )
 
-def post_execution_conversation(task_result: dict) -> str | None:
-    system_prompt = load_prompt_file(POST_EXEC_PROMPT)
-    summary = json.dumps(task_result, indent=2)
-    history: List[Dict[str, str]] = [{"role": "user", "content": f"Task result:\n{summary}"}]
+    response = call_codex(full_prompt)
+    print(f"\n{CYAN}[CODEX]{RESET} {response}")
+
     while True:
-        reply = codex_chat_turn(system_prompt, history, label="Post-run")
-        log_conversation("assistant", reply)
-        print(f"{CYAN}[CODEX]{RESET} {reply}")
-        user = input(f"{CYAN}[YOU]{RESET} ").strip()
-        log_conversation("user", user)
-        if user.lower() in {"exit", "quit"}:
-            return "exit"
-        if user.lower() in {"next", "new", "done"}:
-            return None
-        if user.isdigit():
-            return f"option:{user}"
-        if user.lower().startswith("improve") or "add" in user.lower():
-            return user
-        if user:
-            history.append({"role": "assistant", "content": reply})
-            history.append({"role": "user", "content": user})
-        else:
+        user_input = input(f"\n{GREEN}[YOU]{RESET} ").strip()
+
+        if not user_input or user_input.lower() in ["done", "next", "new", "5"]:
             return None
 
+        if user_input.lower() in ["exit", "quit"]:
+            return "EXIT"
 
-def _truncate(text: str, limit: int = 120) -> str:
-    text = text.replace("\n", " ").strip()
-    return text if len(text) <= limit else text[: limit - 3] + "..."
+        if user_input == "1":
+            open_artifacts(result.get("artifacts", []))
+            continue
 
+        if user_input == "2":
+            show_code(result.get("artifacts", []))
+            continue
 
-def summarize_plan(plan: dict):
-    if not isinstance(plan, dict):
-        print("  (unable to summarize)")
-        return
-    print(f"  Goal: {plan.get('goal','(no goal)')}")
-    print(f"  Definition of done: {plan.get('definition_of_done','(not specified)')}")
-    steps = plan.get("steps") or []
-    if steps:
-        print("  Steps:")
-        for idx, step in enumerate(steps, 1):
-            name = step.get("name") or step.get("id") or f"step-{idx}"
-            stype = step.get("type")
-            goal = step.get("goal") or ""
-            detail = ""
-            if stype == "shell":
-                detail = _truncate(step.get("command", ""))
-            elif stype == "browser":
-                detail = step.get("url", "")
-            elif stype == "python":
-                detail = _truncate(step.get("script", ""))
-            print(f"    {idx}. [{stype}] {name} — {goal} {('(cmd: ' + detail + ')') if detail else ''}")
-    else:
-        print("  (no steps listed)")
+        if user_input in ["3", "4"] or "add" in user_input.lower() or "change" in user_input.lower():
+            if user_input in ["3", "4"]:
+                improvement = input(f"{GREEN}What would you like to change?{RESET} ").strip()
+                return improvement if improvement else None
+            return user_input
+
+        # Continue conversation
+        full_prompt = f"{full_prompt}\n\nUser: {user_input}\n\nAssistant:"
+        response = call_codex(full_prompt)
+        print(f"\n{CYAN}[CODEX]{RESET} {response}")
 
 
-def display_plan():
-    print(f"{YELLOW}--- Generated Plan ({TEMP_PLAN}) ---{RESET}")
-    content = TEMP_PLAN.read_text(encoding="utf-8")
-    print(content)
-    print(f"{YELLOW}------------------------------------{RESET}")
-    try:
-        data = yaml.safe_load(content)
-        print(f"{GREEN}Plain-English summary:{RESET}")
-        summarize_plan(data)
-    except Exception:
-        print(f"{RED}[WARN]{RESET} Could not parse YAML for summary.")
-
-
-def open_created_files(artifacts: List[str]):
+def open_artifacts(artifacts: List[str]):
+    """Open/run artifact files."""
     if not artifacts:
         print("No artifacts to open.")
         return
-    for path in artifacts:
-        p = Path(path)
-        if not p.exists():
-            print(f"{RED}Missing:{RESET} {path}")
+
+    for artifact in artifacts[:5]:
+        path = REPO_ROOT / artifact
+        if not path.exists():
             continue
-        suffix = p.suffix.lower()
+
+        print(f"\nOpening: {artifact}")
         try:
-            if suffix == ".py":
-                run = input(f"Run {p.name}? (y/n) ").strip().lower()
+            if path.suffix == ".py":
+                run = input(f"Run {path.name}? (y/n) ").strip().lower()
                 if run == "y":
-                    creationflag = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-                    subprocess.Popen([sys.executable, str(p)], creationflags=creationflag, cwd=str(p.parent))
+                    subprocess.Popen(
+                        [sys.executable, str(path)],
+                        creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+                    )
                 else:
-                    os.startfile(str(p))
-            elif p.is_dir():
-                os.startfile(str(p))
+                    os.startfile(str(path))
             else:
-                os.startfile(str(p))
-        except Exception as exc:
-            print(f"{RED}Could not open {p}: {exc}{RESET}")
+                os.startfile(str(path))
+        except Exception as e:
+            print(f"{RED}Could not open: {e}{RESET}")
 
 
-def find_recent_artifacts(start_ts: float) -> List[str]:
-    artifacts = []
-    roots = [REPO_ROOT, REPO_ROOT / "agent", REPO_ROOT / "launchers"]
-    allowed_suffixes = {".py", ".txt", ".md", ".json", ".yaml", ".yml"}
-    for base in roots:
-        if not base.exists():
-            continue
-        for root, _, files in os.walk(base):
-            for f in files:
-                path = Path(root) / f
-                try:
-                    if path.stat().st_mtime >= start_ts and path.suffix.lower() in allowed_suffixes:
-                        artifacts.append(str(path.relative_to(REPO_ROOT)))
-                except FileNotFoundError:
-                    continue
-    return artifacts[:50]
+def show_code(artifacts: List[str]):
+    """Display code from artifacts."""
+    code_files = [a for a in artifacts if a.endswith((".py", ".js", ".html", ".css"))]
+    if not code_files:
+        print("No code files found.")
+        return
 
-
-def generate_plan(goal: str) -> bool:
-    planner_prompt = load_planner_prompt()
-    prompt = f"{planner_prompt}\n\nUser goal:\n{goal}\n\nReturn ONLY the YAML plan."
-    cmd = codex_command() + ["exec", "--output-last-message", str(TEMP_PLAN)]
-    env = os.environ.copy()
-    env.setdefault("PYTHONIOENCODING", "utf-8")
-    env.setdefault("PYTHONUTF8", "1")
-    proc = subprocess.run(
-        cmd,
-        input=prompt,
-        text=True,
-        encoding="utf-8",
-        errors="ignore",
-        capture_output=True,
-        env=env,
-        cwd=str(REPO_ROOT),
-    )
-    if proc.returncode != 0:
-        print(f"{RED}[ERROR] codex exec failed ({proc.returncode}){RESET}")
-        if proc.stderr:
-            print(proc.stderr.strip())
-        return False
-    if not TEMP_PLAN.exists():
-        print(f"{RED}[ERROR] Plan file not created at {TEMP_PLAN}{RESET}")
-        return False
-    try:
-        yaml.safe_load(TEMP_PLAN.read_text(encoding="utf-8"))
-    except Exception as exc:
-        print(f"{RED}[ERROR] Generated plan is not valid YAML: {exc}{RESET}")
-        return False
-    return True
-
-
-def execute_plan() -> int:
-    start = time.time()
-    cmd = [sys.executable, "-m", "agent.supervisor.supervisor", str(TEMP_PLAN)]
-    proc = subprocess.run(cmd, cwd=str(REPO_ROOT))
-    duration = time.time() - start
-    status = "SUCCESS" if proc.returncode == 0 else "FAIL"
-    color = GREEN if proc.returncode == 0 else RED
-    print(f"{color}[{status}] Execution finished in {duration:.1f}s (code {proc.returncode}){RESET}")
-    return proc.returncode
-
-
-def handle_post_option(option: str, artifacts: List[str]):
-    num = option.split(":")[-1]
-    if num == "1":
-        open_created_files(artifacts)
-    elif num == "2":
-        for a in artifacts:
-            p = REPO_ROOT / a
-            if p.exists() and p.is_file():
-                print(f"\n--- {a} ---")
-                try:
-                    print(p.read_text(encoding="utf-8"))
-                except Exception as exc:
-                    print(f"[unable to read: {exc}]")
-    elif num == "3":
-        print("You can ask Codex to explain; type a question in the post-run chat.")
-    elif num == "4":
-        improvement = input("What improvement do you want? ").strip()
-        if improvement:
-            global _IMPROVEMENT_QUEUE  # type: ignore
-            _IMPROVEMENT_QUEUE = improvement
-    elif num == "5":
-        print("Okay, let's start a new goal.")
+    for artifact in code_files[:3]:
+        path = REPO_ROOT / artifact
+        if path.exists():
+            print(f"\n{YELLOW}--- {artifact} ---{RESET}")
+            try:
+                content = path.read_text(encoding="utf-8")
+                print(content[:2000])
+                if len(content) > 2000:
+                    print(f"\n... ({len(content) - 2000} more characters)")
+            except Exception as e:
+                print(f"Could not read: {e}")
 
 
 def main():
-    os.chdir(REPO_ROOT)
     banner()
-    global AGENT_CONTEXT
-    AGENT_CONTEXT = load_and_display_context()
+
+    # Load context
+    context = load_context()
     print()
-    global _IMPROVEMENT_QUEUE
-    _IMPROVEMENT_QUEUE = None
+
     while True:
         try:
-            goal = input(f"{CYAN}Enter goal (or 'exit'): {RESET}").strip()
+            goal = input(f"{CYAN}Enter goal (or 'exit'):{RESET} ").strip()
         except KeyboardInterrupt:
-            print("\nBye!")
+            print("\nGoodbye!")
             return
 
         if not goal:
             continue
-        if goal.lower() in {"exit", "quit"}:
-            print("Exiting.")
+        if goal.lower() in ["exit", "quit"]:
+            print("Goodbye!")
             return
 
-        # Phase 1: interactive planning
-        yaml_text = interactive_planning_with_codex(goal)
-        if not yaml_text:
+        # Phase 1: Interactive Planning
+        yaml_content = interactive_planning(goal, context)
+        if not yaml_content:
             continue
-        TEMP_PLAN.write_text(yaml_text, encoding="utf-8")
 
-        display_plan()
-        choice = input("Execute this plan? (Y/n/edit): ").strip().lower() or "y"
+        # Save and display plan
+        TEMP_PLAN.write_text(yaml_content, encoding="utf-8")
+        print(f"\n{YELLOW}--- Generated Plan ---{RESET}")
+        print(yaml_content[:1500])
+        if len(yaml_content) > 1500:
+            print("... (truncated)")
+        print(f"{YELLOW}------------------------{RESET}")
+
+        # Confirm execution
+        choice = input(f"\n{GREEN}Execute this plan? (Y/n/edit):{RESET} ").strip().lower() or "y"
         if choice == "n":
             continue
         if choice == "edit":
             subprocess.run(["notepad", str(TEMP_PLAN)])
-            try:
-                yaml.safe_load(TEMP_PLAN.read_text(encoding="utf-8"))
-            except Exception as exc:
-                print(f"{RED}[ERROR] Plan after edit is invalid YAML: {exc}{RESET}")
-                continue
+            yaml_content = TEMP_PLAN.read_text(encoding="utf-8")
 
-        start_ts = time.time()
-        print(f"{CYAN}[EXEC] Running plan...{RESET}")
-        code = execute_plan()
-        success = code == 0
-        artifacts = find_recent_artifacts(start_ts)
-        result = {
-            "success": success,
-            "exit_code": code,
-            "artifacts": artifacts,
-            "started_at": start_ts,
-            "finished_at": time.time(),
-        }
-        if success:
-            print(f"{GREEN}[SUCCESS]{RESET} Task completed.")
-        else:
-            print(f"{RED}[FAIL]{RESET} Task failed (code {code}).")
-        if artifacts:
-            print("Artifacts:")
-            for a in artifacts:
+        # Phase 2: Execute
+        print(f"\n{CYAN}[EXECUTING]{RESET} Running task...")
+        result = execute_plan()
+
+        # Handle failure with self-healing
+        if not result["success"]:
+            print(f"\n{RED}[FAILED] Task failed (exit code {result['exit_code']}){RESET}")
+
+            retry = input(f"{YELLOW}Try self-healing? (y/n):{RESET} ").strip().lower()
+            if retry == "y":
+                corrected = self_heal(goal, f"Exit code {result['exit_code']}", yaml_content, context)
+                if corrected:
+                    TEMP_PLAN.write_text(corrected, encoding="utf-8")
+                    print(f"\n{CYAN}[RETRYING]{RESET} Executing corrected plan...")
+                    result = execute_plan()
+
+        # Show result
+        status = "SUCCESS" if result["success"] else "FAILED"
+        color = GREEN if result["success"] else RED
+        print(f"\n{color}[{status}] Completed in {result['duration']}s{RESET}")
+
+        if result["artifacts"]:
+            print(f"\n{GREEN}Artifacts created:{RESET}")
+            for a in result["artifacts"][:10]:
                 print(f"  - {a}")
 
-        next_action = post_execution_conversation(result)
-        if next_action == "exit":
-            break
-        if next_action and next_action.startswith("option:"):
-            handle_post_option(next_action, artifacts)
-            continue
-        if _IMPROVEMENT_QUEUE:
-            goal = _IMPROVEMENT_QUEUE
-            _IMPROVEMENT_QUEUE = None
-            continue
-        if next_action:
-            goal = next_action
+        # Phase 3: Post-execution chat
+        next_goal = post_execution_chat(result, context)
+
+        if next_goal == "EXIT":
+            print("Goodbye!")
+            return
+        elif next_goal:
+            goal = next_goal
             continue
 
 

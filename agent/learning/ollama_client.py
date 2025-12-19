@@ -13,17 +13,40 @@ import json
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import os
+import threading
+from collections import deque
 
 import requests
 
+from agent.logging.redaction import redact
+
 BASE_URL = "http://127.0.0.1:11434/api/generate"
-PRIMARY_MODEL = "qwen2.5:7b-instruct"
-FALLBACK_MODEL = "gemma3:4b"
+PRIMARY_MODEL = os.getenv("OLLAMA_PRIMARY_MODEL", "qwen2.5:7b-instruct")
+FALLBACK_MODEL = os.getenv("OLLAMA_FALLBACK_MODEL", "gemma3:4b")
 TIMEOUT_SECONDS = 30
 MAX_RETRIES = 3
 
 LOG_PATH = Path(__file__).resolve().parents[1] / "logging" / "ollama_calls.log"
 LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+# rate limiting
+_call_times: deque = deque(maxlen=10)
+_rate_lock = threading.Lock()
+
+
+def _check_rate_limit():
+    """Enforce rate limiting (10 calls / 60s)."""
+    now = time.time()
+    with _rate_lock:
+        while _call_times and now - _call_times[0] > 60:
+            _call_times.popleft()
+        if len(_call_times) >= 10 and _call_times:
+            wait = 60 - (now - _call_times[0])
+            if wait > 0:
+                print(f"[OLLAMA] Rate limited. Waiting {wait:.1f}s...")
+                time.sleep(wait)
+        _call_times.append(time.time())
 
 
 def _log_call(fn: str, model: str, prompt: str, success: bool, latency: float, error: Optional[str] = None):
@@ -31,10 +54,10 @@ def _log_call(fn: str, model: str, prompt: str, success: bool, latency: float, e
         "timestamp": time.time(),
         "function": fn,
         "model": model,
-        "prompt_preview": prompt[:180],
+        "prompt_preview": redact(prompt[:180]),
         "success": success,
         "latency_s": round(latency, 3),
-        "error": error,
+        "error": redact(error) if error else None,
     }
     with LOG_PATH.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry) + "\n")
@@ -61,6 +84,7 @@ def _call_ollama(prompt: str, model: str = PRIMARY_MODEL, **overrides) -> Tuple[
     Core call helper.
     Returns (success, model_used, raw_response_text)
     """
+    _check_rate_limit()
     payload = {"model": model, "prompt": prompt, "stream": False}
     payload.update(overrides)
 
@@ -160,10 +184,20 @@ def summarize_research(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     return data
 
 
+def is_ollama_running() -> bool:
+    """Quick check if Ollama server is responding."""
+    try:
+        resp = requests.get("http://127.0.0.1:11434/api/tags", timeout=3)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
 __all__ = [
     "generate_yaml_plan",
     "analyze_failure",
     "extract_patterns",
     "review_code",
     "summarize_research",
+    "is_ollama_running",
 ]

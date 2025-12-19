@@ -100,7 +100,7 @@ Cards available for review!
 - **Setup:** Already configured
 - **Requirements:** Internet connection
 - **Best for:** Mobile access via AnkiDroid
-- **Uses:** treytucker05@yahoo.com credentials
+- **Uses:** your AnkiWeb credentials from `.env`
 
 **Automatic Fallback:** Backend tries desktop first, then AnkiWeb
 
@@ -191,7 +191,7 @@ Expected:
 {
   "success": true,
   "connected": true,
-  "email": "treytucker05@yahoo.com",
+  "email": "<YOUR_ANKI_EMAIL>",
   "decks": ["Default", "DrCodePT", "Anatomy", ...],
   "type": "AnkiConnect"
 }
@@ -242,8 +242,8 @@ DASHBOARD UPDATES showing cards added
 ### Already Configured
 ```
 ANTHROPIC_API_KEY = sk-ant-[your key]
-ANKI_EMAIL = treytucker05@yahoo.com
-ANKI_PASSWORD = Turtle1!
+ANKI_EMAIL = <YOUR_ANKI_EMAIL>
+ANKI_PASSWORD = <YOUR_ANKI_PASSWORD>
 ```
 
 ### Location

@@ -17,6 +17,64 @@ FAILURES_ROOT = Path(__file__).resolve().parents[1] / "failures"
 HANDOFF_ROOT = Path(__file__).resolve().parents[1] / "handoff"
 
 
+class _YamlDumper(yaml.SafeDumper):
+    pass
+
+
+def _represent_str(dumper: yaml.SafeDumper, value: str) -> yaml.nodes.ScalarNode:
+    if "\n" in value:
+        return dumper.represent_scalar("tag:yaml.org,2002:str", value, style="|")
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value)
+
+
+_YamlDumper.add_representer(str, _represent_str)
+
+
+def _dump_yaml(payload: Any) -> str:
+    return yaml.safe_dump(payload, Dumper=_YamlDumper, sort_keys=False, allow_unicode=True)
+
+
+def _slim_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Reduce noisy/heavy fields in run events for LLM payloads."""
+    slim: List[Dict[str, Any]] = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        event_copy = dict(event)
+        data = event_copy.get("data")
+        if isinstance(data, dict):
+            data_copy = dict(data)
+            meta = data_copy.get("metadata")
+            if isinstance(meta, dict) and meta.get("dom_snapshot"):
+                meta_copy = dict(meta)
+                meta_copy.pop("dom_snapshot", None)
+                if meta_copy:
+                    data_copy["metadata"] = meta_copy
+                else:
+                    data_copy.pop("metadata", None)
+            event_copy["data"] = data_copy
+        slim.append(event_copy)
+    return slim
+
+
+def _latest_failure_evidence(run_path: Path) -> Dict[str, str | None]:
+    evidence_dir = Path(run_path) / "evidence"
+    if not evidence_dir.is_dir():
+        return {"screenshot": None, "html": None}
+
+    def latest(pattern: str) -> str | None:
+        candidates = list(evidence_dir.glob(pattern))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return str(candidates[0])
+
+    return {
+        "screenshot": latest("failure_*.png"),
+        "html": latest("failure_*.html"),
+    }
+
+
 def _last_events(run_path: Path, n: int = 10) -> List[Dict]:
     events_file = Path(run_path) / "events.jsonl"
     if not events_file.is_file():
@@ -44,6 +102,7 @@ def self_heal_browser_failure(run_path: Path, task, metadata: Dict[str, Any]) ->
     heal_dir.mkdir(parents=True, exist_ok=True)
 
     dom_snapshot = (metadata or {}).get("dom_snapshot") or "No DOM Snapshot Available"
+    evidence = (metadata or {}).get("evidence") or _latest_failure_evidence(run_path)
     failed_step = {}
     if hasattr(task, "dict"):
         try:
@@ -58,17 +117,18 @@ def self_heal_browser_failure(run_path: Path, task, metadata: Dict[str, Any]) ->
         "url": getattr(task, "url", ""),
         "failed_step": failed_step,
         "failure_reason": (metadata or {}).get("error", "Unknown browser error"),
+        "evidence": _serialize_for_yaml(evidence),
         "dom_snapshot": dom_snapshot,
         "instruction": (
             "The previous step failed. Analyze the DOM snapshot and the failed step to generate a single, corrected "
             "step (a dictionary) that should be executed next. Output ONLY the corrected step dictionary."
         ),
-        "last_10_events": _last_events(run_path),
+        "last_10_events": _slim_events(_last_events(run_path)),
         "timestamp": datetime.now().isoformat(),
     })
 
     dest = heal_dir / f"self_heal_payload_{datetime.now().strftime('%Y%m%d_%H%M%S')}.yaml"
-    dest.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    dest.write_text(_dump_yaml(payload), encoding="utf-8")
 
     print("\n--- SELF-HEAL TRIGGERED ---")
     print(f"Payload saved to: {dest}")
@@ -104,7 +164,7 @@ def escalate(run_path: Path, reason: str, task_id: str = "", blocking_question: 
         "evidence_path": evidence_path,
         "last_10_events": _last_events(run_path),
     }
-    (dest_dir / "escalation.yaml").write_text(yaml.safe_dump(packet), encoding="utf-8")
+    (dest_dir / "escalation.yaml").write_text(_dump_yaml(packet), encoding="utf-8")
     finalize_run(run_path, "escalated", f"Escalated: {reason}")
 
 
@@ -125,7 +185,7 @@ def trigger_handoff(run_path: Path, task, evidence):
         "instructions": "Complete the required action then create CONTINUE.flag",
         "resume_from": getattr(task, "id", ""),
     }
-    waiting.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    waiting.write_text(_dump_yaml(payload), encoding="utf-8")
     handoff_event = Path(run_path) / "events.jsonl"
     if handoff_event.is_file():
         handoff_event.write_text(handoff_event.read_text() + "")

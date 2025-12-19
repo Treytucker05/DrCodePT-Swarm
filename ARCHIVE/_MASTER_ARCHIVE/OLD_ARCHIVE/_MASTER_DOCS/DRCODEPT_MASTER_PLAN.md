@@ -40,7 +40,7 @@
 - Stores study materials in SQLite/JSON for search + retrieval
 
 **Credentials:**
-- Anki: treytucker05@yahoo.com / Turtle1! (encrypted on disk)
+- Anki: <YOUR_ANKI_EMAIL> / <YOUR_ANKI_PASSWORD> (stored locally)
 
 ---
 
@@ -60,8 +60,8 @@
 - `claude_handler.py` — Integration with Claude tools
 
 **Credentials:**
-- Username: frtucker
-- Password: OmmarAnnie1! (env var)
+- Username: <YOUR_BLACKBOARD_USERNAME>
+- Password: <YOUR_BLACKBOARD_PASSWORD> (env var)
 - Base URL: https://utmb.blackboard.com
 
 **Current Blockers:**
@@ -243,8 +243,8 @@ FLOW: You → Claude → Tools → Extract/Generate/Push → Anki
 - `PROGRAMS/blackboard-agent/COURSE_URLS.txt` — 5 hardcoded course URLs (to be created)
 
 **Credentials (Encrypted):**
-- Anki: treytucker05@yahoo.com / Turtle1!
-- Blackboard: frtucker / OmmarAnnie1!
+- Anki: <YOUR_ANKI_EMAIL> / <YOUR_ANKI_PASSWORD>
+- Blackboard: <YOUR_BLACKBOARD_USERNAME> / <YOUR_BLACKBOARD_PASSWORD>
 
 **Documentation:**
 - `_MASTER_DOCS/DRCODEPT_MASTER_PLAN.md` ← You are here

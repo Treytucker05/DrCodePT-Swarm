@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
 
+from agent.logging.redaction import redact
+
 RUNS_ROOT = Path(__file__).resolve().parents[1] / "runs"
 
 
@@ -46,7 +48,7 @@ def log_event(run_path: Path, event_type: str, data: Dict[str, Any]):
     payload = {
         "timestamp": datetime.now().isoformat(),
         "event": event_type,
-        "data": data,
+        "data": redact(data),
     }
     events_file = Path(run_path) / "events.jsonl"
     with events_file.open("a", encoding="utf-8") as f:

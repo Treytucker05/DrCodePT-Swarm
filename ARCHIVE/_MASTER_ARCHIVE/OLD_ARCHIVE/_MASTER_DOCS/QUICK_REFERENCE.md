@@ -73,13 +73,13 @@ Expected: Cards appear in Anki within 5 minutes
 
 **Blackboard Login:**
 - URL: https://utmb.blackboard.com
-- Username: frtucker
-- Password: OmmarAnnie1! (stored in .env)
+- Username: <YOUR_BLACKBOARD_USERNAME>
+- Password: <YOUR_BLACKBOARD_PASSWORD> (stored in .env)
 
 **Anki:**
 - Local: 127.0.0.1:8765 (AnkiConnect)
-- Email: treytucker05@yahoo.com
-- Password: Turtle1! (encrypted)
+- Email: <YOUR_ANKI_EMAIL>
+- Password: <YOUR_ANKI_PASSWORD> (stored locally)
 
 **ngrok:**
 - Token: (stored in .env)

@@ -1,0 +1,39 @@
+{
+  "yahoo-clean-spam": {
+    "name": "Clean Yahoo Spam",
+    "description": "Log into Yahoo Mail and empty the spam folder",
+    "triggers": ["clean yahoo spam", "yahoo spam", "clean my spam", "empty spam"],
+    "steps": [
+      {
+        "type": "browser",
+        "description": "Open Yahoo Mail (inbox)",
+        "action": "goto",
+        "url": "https://mail.yahoo.com/d"
+      },
+      {
+        "type": "browser",
+        "description": "Click Spam folder",
+        "action": "click",
+        "selector": "a[data-test-folder-name='Spam'], a[aria-label='Spam']",
+        "timeout_ms": 30000
+      },
+      {
+        "type": "browser",
+        "description": "Empty spam folder (if available)",
+        "action": "click_optional",
+        "selector": "button[data-test-id='empty-folder'], button[title='Empty Spam']",
+        "timeout_ms": 15000
+      },
+      {
+        "type": "browser",
+        "description": "Confirm empty spam (if prompted)",
+        "action": "click_optional",
+        "selector": "button[data-test-id='primary-button'], button[data-test-id='confirmation-dialog-ok-button']",
+        "timeout_ms": 15000
+      }
+    ],
+    "login_site": "yahoo",
+    "created": "2025-12-19",
+    "type": "browser"
+  }
+}

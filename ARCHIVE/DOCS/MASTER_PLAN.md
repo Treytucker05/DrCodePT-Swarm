@@ -137,7 +137,7 @@ You ask your agent to do something (move files, research a topic, generate study
 - Your PERRIO Protocol as the logic framework
 - Claude/ChatGPT to generate cards
 - AnkiConnect to send cards to Anki
-- Anki credentials: treytucker05@yahoo.com
+- Anki credentials: <YOUR_ANKI_EMAIL>
 
 **Current Status:** âœ… Mostly done (ChatGPT + Anki integration working)
 

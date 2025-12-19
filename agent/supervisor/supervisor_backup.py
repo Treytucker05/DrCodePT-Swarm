@@ -281,6 +281,8 @@ def run_task(task_or_path):
                     heal_metadata = dict(result.metadata)
                     if result.error:
                         heal_metadata["error"] = result.error
+                    if getattr(result, "evidence", None):
+                        heal_metadata["evidence"] = result.evidence
                     self_heal_browser_failure(run_path, step, heal_metadata)
             
             # Verify

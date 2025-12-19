@@ -140,8 +140,8 @@ Database: `PROGRAMS/blackboard-agent/opstore.db`
 ## 🔐 CREDENTIALS & CONFIG
 
 **Anki:**
-- Email: treytucker05@yahoo.com
-- Password: Turtle1! (encrypted in system)
+- Email: <YOUR_ANKI_EMAIL>
+- Password: <YOUR_ANKI_PASSWORD> (stored locally)
 
 **API:**
 - Dashboard API runs on: localhost:7400
@@ -254,4 +254,3 @@ Used in: PROGRAMS/card-generator/
 **Last Updated:** November 12, 2025  
 **Confidence Level:** 92% (based on comprehensive analysis)  
 **Ready to proceed:** YES  
-

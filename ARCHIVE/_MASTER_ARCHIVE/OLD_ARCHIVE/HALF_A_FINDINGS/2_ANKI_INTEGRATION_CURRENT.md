@@ -7,7 +7,7 @@
 
 ## Existing Code Assets
 - `_ARCHIVE/phase7_unified_system/backend/anki_handler.py` still contains two production-ready adapters: `AnkiConnectHandler` (localhost:8765, auto-creates decks and adds notes) and `AnkiWebHandler` (email/password based). They already handle deck creation, note payload construction, and error messaging.
-- `DIRECTORY_STRUCTURE.md:244-246` documents the Anki credentials (`treytucker05@yahoo.com` / `Turtle1!`, stored encrypted in prior stack). No `.env` in the current repo exposes them yet.
+- `DIRECTORY_STRUCTURE.md:244-246` documents the Anki credentials (`<YOUR_ANKI_EMAIL>` / `<YOUR_ANKI_PASSWORD>`, stored locally). No `.env` in the current repo exposes them.
 - There is no shared utility module that current code imports, so HALF B will need to either resurrect the archived handler or create a thin wrapper that encapsulates both connection types.
 
 ## Credential & Config Inventory

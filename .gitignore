@@ -7,8 +7,14 @@ agent/.env
 agent/runs/
 runs/
 agent/failures/
+agent/handoff/
 agent/sessions/*_state.json
 agent/memory/credential_store.json
+agent/memory/credential_key.key
+agent/memory/agent_memory.json
+agent/memory/failure_cases.jsonl
+credential_key.key
+*.key
 agent/recordings/
 agent/logs/
 agent/temp_plan.yaml
@@ -17,6 +23,9 @@ agent/tmp_tests/
 calculator.py
 *.log
 *.mp4
+agent/screenshot.png
+google_client_secret.json
+google_calendar_token.json
 screenshots/*
 !screenshots/.gitkeep
 

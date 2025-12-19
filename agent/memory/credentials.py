@@ -22,7 +22,7 @@ from .memory_manager import load_memory, save_memory
 ROOT = Path(__file__).resolve().parent
 STORE_PATH = ROOT / "credential_store.json"
 KEY_ENV_VAR = "AGENT_CREDENTIAL_KEY"
-KEY_FILE = ROOT / "credential_key.key"
+KEY_FILE = Path(os.path.expanduser("~")) / ".drcodept" / "credential_key.key"
 
 
 class CredentialError(RuntimeError):
@@ -34,9 +34,17 @@ def _load_key() -> bytes:
     if env_key:
         return env_key.encode("utf-8")
 
+    # migrate old location
+    old_key_file = ROOT / "credential_key.key"
+    if old_key_file.is_file() and not KEY_FILE.is_file():
+        KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        KEY_FILE.write_bytes(old_key_file.read_bytes())
+        print(f"[INFO] Migrated credential key to {KEY_FILE}")
+
     if KEY_FILE.is_file():
         return KEY_FILE.read_bytes()
 
+    KEY_FILE.parent.mkdir(parents=True, exist_ok=True)
     new_key = Fernet.generate_key()
     KEY_FILE.write_bytes(new_key)
     try:

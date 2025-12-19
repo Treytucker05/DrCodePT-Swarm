@@ -30,4 +30,3 @@ class ShellTool(ToolAdapter):
             )
         except Exception as exc:  # pragma: no cover
             return ToolResult(False, error=str(exc))
-
