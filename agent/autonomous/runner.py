@@ -139,8 +139,12 @@ class AgentRunner:
         last_plan_hash: Optional[str] = None
         last_state_fingerprint = state.state_fingerprint()
         same_state_steps = 0
+        exploration_nudge_next = False
+        exploration_reason = ""
+        loop_nudge_used = False
 
         current_plan: Optional[Plan] = None
+        step_snapshots_taken: set[str] = set()
 
         try:
             while True:
@@ -198,11 +202,28 @@ class AgentRunner:
                 memories = self._retrieve_memories(memory_store, task)
 
                 if self.planner_cfg.mode == "react":
+                    nudge_task = task
+                    if exploration_nudge_next:
+                        nudge_task = (
+                            task
+                            + " Exploration nudge: take one lightweight exploration step "
+                            + "(web: scroll/search/expand menus; desktop: scroll/alt-tab/resnapshot)."
+                        )
                     plan = self._call_llm_with_retry(
                         tracer=tracer,
                         where="plan",
-                        fn=lambda: planner.plan(task=task, observations=state.observations, memories=memories),
+                        fn=lambda: planner.plan(task=nudge_task, observations=state.observations, memories=memories),
                     )
+                    if exploration_nudge_next and plan is not None:
+                        tracer.log(
+                            {
+                                "type": "exploration_nudge",
+                                "reason": exploration_reason or "stuck",
+                                "planner_response": self._dump(plan),
+                            }
+                        )
+                        exploration_nudge_next = False
+                        exploration_reason = ""
                     if plan is None:
                         return self._stop(
                             tracer=tracer,
@@ -261,7 +282,55 @@ class AgentRunner:
 
                 step = plan.steps[0] if self.planner_cfg.mode == "react" else plan.steps[state.current_step_idx]
 
-                if self.agent_cfg.pre_mortem_enabled:
+                preempted_tool_result: Optional[ToolResult] = None
+                # Approval gate for tools that require explicit confirmation
+                if tools.requires_approval(step.tool_name):
+                    approval_event = {"step_id": step.id, "tool_name": step.tool_name}
+                    approval_error = None
+                    answer = ""
+                    if tools.has_tool("human_ask"):
+                        prompt = f"Approve tool '{step.tool_name}' for step '{step.goal}'? (y/n)"
+                        resp = tools.call("human_ask", {"question": prompt}, ctx)
+                        if not resp.success:
+                            approval_error = resp.error or "approval_failed"
+                        if isinstance(resp.output, dict):
+                            answer = (resp.output.get("answer") or "").strip().lower()
+                        if answer not in {"y", "yes"} and approval_error is None:
+                            approval_error = "approval_denied"
+                        tracer.log(
+                            {
+                                "type": "approval",
+                                "status": "approved" if approval_error is None else "denied",
+                                "answer": answer,
+                                "error": approval_error,
+                                **approval_event,
+                            }
+                        )
+                    else:
+                        approval_error = "no_human_ask"
+                        tracer.log({"type": "approval", "status": "no_human_ask", **approval_event})
+                    if approval_error is not None:
+                        preempted_tool_result = ToolResult(
+                            success=False,
+                            error=approval_error,
+                            metadata={
+                                "approval_required": True,
+                                "approval_answer": answer,
+                                "approval_error": approval_error,
+                                "suggested_reflection": "replan",
+                            },
+                        )
+                        tracer.log(
+                            {
+                                "type": "error_report",
+                                "step_id": step.id,
+                                "status": "blocked" if approval_error in {"approval_denied", "no_human_ask"} else "failed",
+                                "reason": "approval_required",
+                                "data": {"tool_name": step.tool_name, "answer": answer, "error": approval_error},
+                            }
+                        )
+
+                if preempted_tool_result is None and self.agent_cfg.pre_mortem_enabled:
                     prem = self._call_llm_with_retry(
                         tracer=tracer,
                         where="premortem",
@@ -270,66 +339,142 @@ class AgentRunner:
                     )
                     tracer.log({"type": "premortem", "step_id": step.id, "data": prem})
 
-                # Preconditions check (if provided)
-                pre_ok, missing, notes = self._check_conditions(
-                    llm=tracked_llm,
-                    kind="preconditions",
-                    conditions=step.preconditions,
-                    step=step,
-                    observation=state.observations[-1],
-                )
-                if not pre_ok:
-                    recovered_obs = self._attempt_recovery(tools=tools, ctx=ctx, step=step, tracer=tracer)
-                    if recovered_obs is not None:
-                        state.add_observation(recovered_obs)
-                        pre_ok, missing, notes = self._check_conditions(
-                            llm=tracked_llm,
-                            kind="preconditions",
-                            conditions=step.preconditions,
-                            step=step,
-                            observation=recovered_obs,
-                        )
-
-                if not pre_ok:
-                    tool_result = ToolResult(
-                        success=False,
-                        error="preconditions_failed",
-                        metadata={"preconditions_failed": True, "missing": missing, "notes": notes},
-                    )
-                else:
-                    tool_result = self._call_tool_with_retry(tools, ctx, step.tool_name, step.tool_args, tracer)
-
-                    # Postconditions check (if provided)
-                    post_ok, post_missing, post_notes = self._check_conditions(
+                if preempted_tool_result is None:
+                    # Preconditions check (if provided)
+                    pre_ok, pre_report = self._check_conditions(
                         llm=tracked_llm,
-                        kind="postconditions",
-                        conditions=step.postconditions,
+                        kind="preconditions",
+                        conditions=step.preconditions,
                         step=step,
-                        observation=perceptor.tool_result_to_observation(step.tool_name, tool_result),
+                        observation=state.observations[-1],
                     )
-                    if not post_ok:
+                    if not pre_ok:
                         recovered_obs = self._attempt_recovery(tools=tools, ctx=ctx, step=step, tracer=tracer)
                         if recovered_obs is not None:
                             state.add_observation(recovered_obs)
-                            post_ok, post_missing, post_notes = self._check_conditions(
+                            pre_ok, pre_report = self._check_conditions(
                                 llm=tracked_llm,
-                                kind="postconditions",
-                                conditions=step.postconditions,
+                                kind="preconditions",
+                                conditions=step.preconditions,
                                 step=step,
                                 observation=recovered_obs,
                             )
-                    if not post_ok:
+
+                    if not pre_ok:
+                        severity = "minor_repair"
+                        if isinstance(pre_report, dict):
+                            failed = pre_report.get("failed") or []
+                            if isinstance(failed, list) and len(failed) > 2:
+                                severity = "replan"
                         tool_result = ToolResult(
                             success=False,
-                            output=tool_result.output,
-                            error="postconditions_failed",
-                            metadata={"postconditions_failed": True, "missing": post_missing, "notes": post_notes},
+                            output=pre_report,
+                            error="preconditions_failed",
+                            metadata={
+                                "preconditions_failed": True,
+                                "condition_report": pre_report,
+                                "suggested_reflection": severity,
+                            },
                         )
+                        tracer.log(
+                            {
+                                "type": "condition_check",
+                                "step_id": step.id,
+                                "kind": "preconditions",
+                                "report": pre_report,
+                            }
+                        )
+                        tracer.log(
+                            {
+                                "type": "error_report",
+                                "step_id": step.id,
+                                "status": "failed",
+                                "reason": "preconditions_failed",
+                                "data": pre_report,
+                            }
+                        )
+                    else:
+                        tool_result = self._call_tool_with_retry(tools, ctx, step.tool_name, step.tool_args, tracer)
+
+                        # Postconditions check (if provided)
+                        post_ok, post_report = self._check_conditions(
+                            llm=tracked_llm,
+                            kind="postconditions",
+                            conditions=step.postconditions,
+                            step=step,
+                            observation=perceptor.tool_result_to_observation(step.tool_name, tool_result),
+                        )
+                        if not post_ok:
+                            recovered_obs = self._attempt_recovery(tools=tools, ctx=ctx, step=step, tracer=tracer)
+                            if recovered_obs is not None:
+                                state.add_observation(recovered_obs)
+                                post_ok, post_report = self._check_conditions(
+                                    llm=tracked_llm,
+                                    kind="postconditions",
+                                    conditions=step.postconditions,
+                                    step=step,
+                                    observation=recovered_obs,
+                                )
+                        if not post_ok:
+                            severity = "minor_repair"
+                            if isinstance(post_report, dict):
+                                failed = post_report.get("failed") or []
+                                if isinstance(failed, list) and len(failed) > 2:
+                                    severity = "replan"
+                            tool_result = ToolResult(
+                                success=False,
+                                output=tool_result.output,
+                                error="postconditions_failed",
+                                metadata={
+                                    "postconditions_failed": True,
+                                    "condition_report": post_report,
+                                    "suggested_reflection": severity,
+                                },
+                            )
+                            tracer.log(
+                                {
+                                    "type": "condition_check",
+                                    "step_id": step.id,
+                                    "kind": "postconditions",
+                                    "report": post_report,
+                                }
+                            )
+                            tracer.log(
+                                {
+                                    "type": "error_report",
+                                    "step_id": step.id,
+                                    "status": "failed",
+                                    "reason": "postconditions_failed",
+                                    "data": post_report,
+                                }
+                            )
+                else:
+                    tool_result = preempted_tool_result
+
+                # Capture UI snapshot for web/desktop steps or on failure (once per step).
+                snapshot = self._maybe_capture_ui_snapshot(
+                    tools=tools,
+                    ctx=ctx,
+                    step=step,
+                    tool_result=tool_result,
+                    tracer=tracer,
+                    step_snapshots_taken=step_snapshots_taken,
+                )
+                if snapshot is not None:
+                    # Store only a lightweight reference to avoid circular nesting
+                    tool_result.metadata["ui_snapshot"] = {
+                        "step_id": snapshot.get("step_id"),
+                        "tool_category": snapshot.get("tool_category"),
+                        "has_screenshot": bool(snapshot.get("ui_snapshot", {}).get("screenshot")),
+                    }
 
                 obs = perceptor.tool_result_to_observation(step.tool_name, tool_result)
                 state.add_observation(obs)
 
-                if tool_result.metadata.get("unsafe_blocked") is True or tool_result.metadata.get("approval_required") is True:
+                if tool_result.metadata.get("approval_required") and "suggested_reflection" not in tool_result.metadata:
+                    tool_result.metadata["suggested_reflection"] = "replan"
+
+                if tool_result.metadata.get("unsafe_blocked") is True:
                     tracer.log(
                         {
                             "type": "step",
@@ -349,7 +494,7 @@ class AgentRunner:
                         tracer=tracer,
                         memory_store=memory_store,
                         success=False,
-                        reason="approval_required" if tool_result.metadata.get("approval_required") else "unsafe_action_blocked",
+                        reason="unsafe_action_blocked",
                         steps=steps_executed + 1,
                         run_id=run_id,
                         llm_stats=tracked_llm,
@@ -374,6 +519,9 @@ class AgentRunner:
                         task=task,
                         state=state,
                     )
+
+                if tool_result.metadata.get("suggested_reflection") in {"minor_repair", "replan"}:
+                    reflection.status = tool_result.metadata["suggested_reflection"]
 
                 tracer.log(
                     {
@@ -403,6 +551,10 @@ class AgentRunner:
                 else:
                     same_state_steps = 0
                     last_state_fingerprint = current_fp
+                if same_state_steps == max(1, self.cfg.no_state_change_threshold - 1):
+                    if self.planner_cfg.mode == "react":
+                        exploration_nudge_next = True
+                        exploration_reason = "no_state_change"
                 if same_state_steps >= self.cfg.no_state_change_threshold:
                     return self._stop(
                         tracer=tracer,
@@ -420,17 +572,22 @@ class AgentRunner:
 
                 action_signature = f"{step.tool_name}:{_json_dumps(step.tool_args)}"
                 if loop_detector.update(action_signature, state.state_fingerprint()):
-                    return self._stop(
-                        tracer=tracer,
-                        memory_store=memory_store,
-                        success=False,
-                        reason="loop_detected",
-                        steps=steps_executed,
-                        run_id=run_id,
-                        llm_stats=tracked_llm,
-                        task=task,
-                        state=state,
-                    )
+                    if self.planner_cfg.mode == "react" and not loop_nudge_used:
+                        exploration_nudge_next = True
+                        exploration_reason = "loop_detected"
+                        loop_nudge_used = True
+                    else:
+                        return self._stop(
+                            tracer=tracer,
+                            memory_store=memory_store,
+                            success=False,
+                            reason="loop_detected",
+                            steps=steps_executed,
+                            run_id=run_id,
+                            llm_stats=tracked_llm,
+                            task=task,
+                            state=state,
+                        )
 
                 if step.tool_name == "finish" and tool_result.success:
                     return self._stop(
@@ -636,14 +793,20 @@ class AgentRunner:
         conditions: List[str],
         step: Step,
         observation: Observation,
-    ) -> tuple[bool, List[str], str]:
+    ) -> tuple[bool, Dict[str, Any]]:
         if not conditions:
-            return True, [], ""
+            return True, {"ok": True, "failed": []}
+        obs_view = {
+            "source": observation.source,
+            "errors": observation.errors,
+            "salient_facts": observation.salient_facts[:5],
+            "parsed": observation.parsed,
+        }
         payload = {
             "kind": kind,
             "conditions": conditions,
             "step": self._dump(step),
-            "observation": self._dump(observation),
+            "observation": obs_view,
         }
         prompt = (
             "Evaluate whether the listed conditions are satisfied given the observation.\n"
@@ -652,14 +815,14 @@ class AgentRunner:
         )
         try:
             data = llm.reason_json(prompt, schema_path=llm_schemas.CONDITION_CHECK)
-            satisfied = bool(data.get("satisfied"))
-            missing = data.get("missing") or []
-            notes = data.get("notes") or ""
-            if not isinstance(missing, list):
-                missing = []
-            return satisfied, [str(m) for m in missing], str(notes)
+            ok = bool(data.get("ok"))
+            failed = data.get("failed") or []
+            if not isinstance(failed, list):
+                failed = []
+            report = {"ok": ok, "failed": failed}
+            return ok, report
         except Exception:
-            return True, [], ""
+            return True, {"ok": True, "failed": []}
 
     def _attempt_recovery(
         self,
@@ -708,6 +871,51 @@ class AgentRunner:
             tracer.log({"type": "recovery", "tool": "desktop", "result": self._dump(result)})
         return obs
 
+    def _tool_category(self, tool_name: str) -> Optional[str]:
+        if tool_name.startswith("web_"):
+            return "web"
+        if tool_name.startswith("desktop"):
+            return "desktop"
+        return None
+
+    def _maybe_capture_ui_snapshot(
+        self,
+        *,
+        tools: ToolRegistry,
+        ctx: RunContext,
+        step: Step,
+        tool_result: ToolResult,
+        tracer: JsonlTracer,
+        step_snapshots_taken: set[str],
+    ) -> Optional[Dict[str, Any]]:
+        if step.id in step_snapshots_taken:
+            return None
+        category = self._tool_category(step.tool_name)
+        if category is None:
+            return None
+        # Capture once per step; prefer existing screenshot paths if provided.
+        snapshot = None
+        if isinstance(tool_result.output, dict):
+            if tool_result.output.get("screenshot"):
+                snapshot = tool_result.output
+        if snapshot is None:
+            if category == "web" and tools.has_tool("web_gui_snapshot"):
+                url = None
+                if isinstance(step.tool_args, dict):
+                    url = step.tool_args.get("url")
+                if isinstance(url, str) and url:
+                    result = tools.call("web_gui_snapshot", {"url": url, "include_screenshot": True}, ctx)
+                    snapshot = result.output if isinstance(result.output, dict) else {"error": result.error}
+            if category == "desktop" and tools.has_tool("desktop_som_snapshot"):
+                result = tools.call("desktop_som_snapshot", {}, ctx)
+                snapshot = result.output if isinstance(result.output, dict) else {"error": result.error}
+        if snapshot is None:
+            return None
+        step_snapshots_taken.add(step.id)
+        event = {"step_id": step.id, "tool_category": category, "ui_snapshot": snapshot}
+        tracer.log({"type": "ui_snapshot", **event})
+        return event
+
     def _call_llm_with_retry(
         self,
         *,
@@ -751,34 +959,86 @@ class AgentRunner:
     ) -> None:
         if store is None:
             return
+        allowed_kinds = {"experience", "procedure", "knowledge", "user_info"}
         try:
             if step.tool_name == "web_fetch" and tool_result.success and isinstance(tool_result.output, dict):
                 url = tool_result.output.get("url")
                 text = tool_result.output.get("text") or ""
                 if url and text:
-                    store.upsert(
+                    rec_id = store.upsert(
                         kind="knowledge",
                         key=str(url),
                         content=str(text)[:4000],
                         metadata={"source": "web_fetch", "task": task, "run_id": run_id},
                     )
+                    tracer.log(
+                        {
+                            "type": "memory_write",
+                            "status": "stored",
+                            "step_id": step.id,
+                            "kind": "knowledge",
+                            "key": str(url),
+                            "record_id": rec_id,
+                            "source": "web_fetch",
+                        }
+                    )
             if reflection.memory_write and isinstance(reflection.memory_write, dict):
                 payload = reflection.memory_write
                 kind = payload.get("kind") or "knowledge"
                 content = payload.get("content") or ""
-                if content:
-                    store.upsert(
+                if kind not in allowed_kinds:
+                    tracer.log(
+                        {
+                            "type": "memory_write",
+                            "status": "skipped",
+                            "step_id": step.id,
+                            "reason": "invalid_kind",
+                            "data": {"kind": kind},
+                        }
+                    )
+                elif kind == "user_info" and not self.agent_cfg.allow_user_info_storage:
+                    tracer.log(
+                        {
+                            "type": "memory_write",
+                            "status": "skipped",
+                            "step_id": step.id,
+                            "reason": "user_info_disabled",
+                            "data": {"kind": kind},
+                        }
+                    )
+                elif content:
+                    rec_id = store.upsert(
                         kind=kind,
                         key=payload.get("key"),
                         content=str(content)[:8000],
                         metadata=payload.get("metadata") or {"task": task, "run_id": run_id},
                     )
+                    tracer.log(
+                        {
+                            "type": "memory_write",
+                            "status": "stored",
+                            "step_id": step.id,
+                            "kind": kind,
+                            "key": payload.get("key"),
+                            "record_id": rec_id,
+                        }
+                    )
             elif reflection.lesson:
-                store.upsert(
+                rec_id = store.upsert(
                     kind="procedure",
                     key=f"lesson:{task[:120]}",
                     content=str(reflection.lesson)[:4000],
                     metadata={"task": task, "run_id": run_id},
+                )
+                tracer.log(
+                    {
+                        "type": "memory_write",
+                        "status": "stored",
+                        "step_id": step.id,
+                        "kind": "procedure",
+                        "key": f"lesson:{task[:120]}",
+                        "record_id": rec_id,
+                    }
                 )
         except Exception as exc:
             tracer.log({"type": "memory_error", "error": str(exc)})

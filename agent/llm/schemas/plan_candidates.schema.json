@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["plans"],
+  "required": ["plans", "fallback_plan"],
   "properties": {
     "plans": {
       "type": "array",
@@ -30,7 +30,12 @@
         }
       }
     },
-    "fallback_plan": { "$ref": "#/$defs/plan" }
+    "fallback_plan": {
+      "anyOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/plan" }
+      ]
+    }
   },
   "$defs": {
     "plan": {
@@ -50,7 +55,7 @@
     "step": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "goal", "rationale_short", "tool_name", "tool_args", "success_criteria"],
+      "required": ["id", "goal", "rationale_short", "tool_name", "tool_args", "success_criteria", "preconditions", "postconditions"],
       "properties": {
         "id": { "type": "string" },
         "goal": { "type": "string" },

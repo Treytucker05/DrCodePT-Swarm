@@ -16,7 +16,7 @@
     "step": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "goal", "rationale_short", "tool_name", "tool_args", "success_criteria"],
+      "required": ["id", "goal", "rationale_short", "tool_name", "tool_args", "success_criteria", "preconditions", "postconditions"],
       "properties": {
         "id": { "type": "string" },
         "goal": { "type": "string" },

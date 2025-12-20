@@ -1322,6 +1322,7 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
             args_model=FileMoveArgs,
             fn=file_move_factory(cfg),
             description="Move files/directories (restricted to run workspace unless unsafe_mode)",
+            approval_required=True,
         )
     )
     reg.register(
@@ -1330,6 +1331,7 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
             args_model=FileDeleteArgs,
             fn=file_delete_factory(cfg),
             description="Delete files/directories (restricted to run workspace unless unsafe_mode)",
+            approval_required=True,
         )
     )
     reg.register(
@@ -1391,6 +1393,7 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
             fn=shell_exec_factory(cfg),
             description="Execute a shell command (unsafe)",
             dangerous=True,
+            approval_required=True,
         )
     )
     try:

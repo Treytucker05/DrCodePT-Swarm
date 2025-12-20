@@ -23,6 +23,7 @@ class ToolSpec:
     fn: ToolFn
     description: str = ""
     dangerous: bool = False
+    approval_required: bool = False
 
 
 class ToolRegistry:
@@ -64,3 +65,7 @@ class ToolRegistry:
         except ValidationError as exc:
             return ToolResult(success=False, error=f"Tool args validation failed: {exc}")
         return spec.fn(ctx, parsed)
+
+    def requires_approval(self, name: str) -> bool:
+        spec = self._tools.get(name)
+        return bool(spec.approval_required) if spec else False

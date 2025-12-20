@@ -110,6 +110,7 @@ class CodexCliClient(LLMClient):
             "--disable",
             "shell_tool",
             "exec",
+            "--skip-git-repo-check",
             "--output-schema",
             str(schema_path),
             "--output-last-message",

@@ -11,7 +11,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "goal"],
+        "required": ["id", "goal", "depends_on", "notes"],
         "properties": {
           "id": { "type": "string" },
           "goal": { "type": "string" },
