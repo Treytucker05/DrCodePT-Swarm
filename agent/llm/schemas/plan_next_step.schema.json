@@ -16,16 +16,24 @@
     "step": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["goal", "tool_name", "tool_args", "success_criteria"],
+      "required": ["id", "goal", "rationale_short", "tool_name", "tool_args", "success_criteria"],
       "properties": {
         "id": { "type": "string" },
         "goal": { "type": "string" },
         "rationale_short": { "type": "string" },
         "tool_name": { "type": "string" },
-        "tool_args": { "type": "object", "additionalProperties": true },
+        "tool_args": { "type": "array", "items": { "$ref": "#/$defs/kv_pair" } },
         "success_criteria": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "kv_pair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "value"],
+      "properties": {
+        "key": { "type": "string" },
+        "value": { "type": "string" }
       }
     }
   }
 }
-

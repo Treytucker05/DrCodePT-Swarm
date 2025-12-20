@@ -11,6 +11,7 @@ from ..models import Observation, Plan, Reflection, Step, ToolResult
 from ..pydantic_compat import model_dump, model_validate
 from ..tools.registry import ToolRegistry
 from .base import Planner
+from .utils import coerce_plan_candidates_dict, coerce_plan_dict
 
 
 class PlanFirstPlanner(Planner):
@@ -50,6 +51,7 @@ class PlanFirstPlanner(Planner):
                 Generate {self._num_candidates} candidate plans and score each 1-10.
                 - Each plan should have <= {self._max_steps} steps and end with a finish step.
                 - Do not use dangerous tools unless unsafe_mode=true.
+                - tool_args must be a list of {{"key":"...","value":"..."}} pairs (values as strings; encode JSON if needed).
 
                 Available tools:
                 {dumps_compact(tool_catalog)}
@@ -63,13 +65,30 @@ class PlanFirstPlanner(Planner):
                 Return STRICT JSON:
                   {{
                     "plans": [
-                      {{"score": 1, "plan": {{"goal": "...", "steps": [ ... ]}}, "notes": "..." }}
+                      {{
+                        "score": 1,
+                        "plan": {{
+                          "goal": "...",
+                          "steps": [
+                            {{
+                              "id":"...",
+                              "goal":"...",
+                              "rationale_short":"...",
+                              "tool_name":"...",
+                              "tool_args":[{{"key":"arg_name","value":"arg_value"}}],
+                              "success_criteria":["..."]
+                            }}
+                          ]
+                        }},
+                        "notes": "..."
+                      }}
                     ]
                   }}
                 Return JSON only.
                 """
             ).strip()
             data = self._llm.complete_json(prompt, schema_path=llm_schemas.PLAN_CANDIDATES)
+            data = coerce_plan_candidates_dict(data)
             best = self._pick_best_candidate(data)
             if best is not None:
                 return best
@@ -82,6 +101,7 @@ class PlanFirstPlanner(Planner):
             Create a concise multi-step plan (<= {self._max_steps} steps) and end with a finish step.
             - Do not use dangerous tools unless unsafe_mode=true.
             - Prefer writing only inside the run workspace unless unsafe_mode=true.
+            - tool_args must be a list of {{"key":"...","value":"..."}} pairs (values as strings; encode JSON if needed).
 
             Available tools:
             {dumps_compact(tool_catalog)}
@@ -93,10 +113,11 @@ class PlanFirstPlanner(Planner):
             {dumps_compact(recent_obs)}
 
             Return STRICT JSON Plan only:
-              {{"goal":"...", "steps":[ ... ]}}
+              {{"goal":"...", "steps":[{{"id":"...","goal":"...","rationale_short":"...","tool_name":"...","tool_args":[{{"key":"arg_name","value":"arg_value"}}],"success_criteria":["..."]}}]}}
             """
         ).strip()
         data = self._llm.complete_json(prompt, schema_path=llm_schemas.PLAN)
+        data = coerce_plan_dict(data)
         return model_validate(Plan, data)
 
     def _pick_best_candidate(self, data: Dict[str, Any]) -> Optional[Plan]:
@@ -172,6 +193,7 @@ class PlanFirstPlanner(Planner):
             """
         ).strip()
         data = self._llm.complete_json(prompt, schema_path=llm_schemas.PLAN)
+        data = coerce_plan_dict(data)
         try:
             return model_validate(Plan, data)
         except Exception:

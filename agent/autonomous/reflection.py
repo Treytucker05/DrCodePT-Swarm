@@ -31,7 +31,7 @@ class Reflector:
             Return STRICT JSON:
               {{
                 "likely_failure_modes": ["..."],
-                "safer_alternative": {{"tool_name":"...", "tool_args":{{...}}, "why":"..."}}
+                "safer_alternative": {{"tool_name":"...", "tool_args":[{{"key":"arg_name","value":"arg_value"}}], "why":"..."}}
               }}
             Return JSON only.
             """

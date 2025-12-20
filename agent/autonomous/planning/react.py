@@ -11,6 +11,7 @@ from ..models import Observation, Plan, Reflection, Step, ToolResult
 from ..pydantic_compat import model_dump, model_validate
 from ..tools.registry import ToolRegistry
 from .base import Planner
+from .utils import coerce_plan_dict
 
 
 class ReActPlanner(Planner):
@@ -42,6 +43,7 @@ class ReActPlanner(Planner):
             - If the goal is already satisfied, output a single step using tool_name="finish" with a short summary.
             - Do not use dangerous tools unless unsafe_mode=true.
             - Prefer minimal, testable actions and specify success_criteria.
+            - tool_args must be a list of {{"key":"...","value":"..."}} pairs (values as strings; encode JSON if needed).
 
             Available tools (name/description/schema):
             {dumps_compact(tool_catalog)}
@@ -55,13 +57,23 @@ class ReActPlanner(Planner):
             Return STRICT JSON matching:
               {{
                 "goal": "<string>",
-                "steps": [{{"id":"<string>", "goal":"<string>", "rationale_short":"<string>", "tool_name":"<string>", "tool_args":{{...}}, "success_criteria":["..."]}}]
+                "steps": [
+                  {{
+                    "id":"<string>",
+                    "goal":"<string>",
+                    "rationale_short":"<string>",
+                    "tool_name":"<string>",
+                    "tool_args":[{{"key":"arg_name","value":"arg_value"}}],
+                    "success_criteria":["..."]
+                  }}
+                ]
               }}
             Return JSON only. No markdown, no prose.
             """
         ).strip()
 
         data = self._llm.complete_json(prompt, schema_path=llm_schemas.PLAN_NEXT_STEP)
+        data = coerce_plan_dict(data)
         plan = model_validate(Plan, data)
 
         # Ensure tool exists; if not, force a replan by returning a finish step with error (runner will treat as failure).
@@ -109,6 +121,7 @@ class ReActPlanner(Planner):
             """
         ).strip()
         data = self._llm.complete_json(prompt, schema_path=llm_schemas.PLAN_NEXT_STEP)
+        data = coerce_plan_dict(data)
         plan = model_validate(Plan, data)
         if plan.steps:
             return Plan(goal=task, steps=[plan.steps[0]])
