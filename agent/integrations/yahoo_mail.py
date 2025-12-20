@@ -58,13 +58,42 @@ def _imap_login():
     return imap
 
 
+def _parse_quoted(value: str) -> str:
+    if not value.startswith('"'):
+        return value
+    out = []
+    i = 1
+    while i < len(value):
+        ch = value[i]
+        if ch == '"':
+            break
+        if ch == "\\" and i + 1 < len(value):
+            out.append(value[i + 1])
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _parse_mailbox(line: str) -> str:
     # Typical IMAP LIST response: '(\\HasNoChildren) "/" "INBOX"'
-    m = re.search(r'\"([^\"]+)\"\\s*$', line)
-    if m:
-        return m.group(1)
-    parts = line.split()
-    return parts[-1] if parts else line
+    # Some servers omit quotes for simple names: '(\\HasNoChildren) "/" INBOX'
+    m = re.search(r'\\)\\s+"[^"]*"\\s+(.+)$', line)
+    name = m.group(1).strip() if m else line.strip().split()[-1]
+    if name.startswith('"'):
+        return _parse_quoted(name)
+    if name.startswith("{"):
+        # Literal; best-effort fallback
+        return name
+    return name
+
+
+def _quote_mailbox(name: str) -> str:
+    if name.startswith('"') and name.endswith('"') and len(name) >= 2:
+        name = name[1:-1]
+    name = name.replace("\\", "\\\\").replace('"', '\\"')
+    return f"\"{name}\""
 
 
 def list_folders() -> List[str]:
@@ -88,9 +117,9 @@ def folder_counts(folders: Optional[List[str]] = None) -> Dict[str, int]:
     """Return message counts per folder (best-effort)."""
     with _imap_login() as imap:
         if folders is None:
-            status, data = imap.list()
-            if status != "OK" or not data:
-                raise RuntimeError("Failed to list folders.")
+        status, data = imap.list()
+        if status != "OK" or not data:
+            raise RuntimeError("Failed to list folders.")
             folders = []
             for item in data:
                 if not item:
@@ -102,7 +131,7 @@ def folder_counts(folders: Optional[List[str]] = None) -> Dict[str, int]:
         counts: Dict[str, int] = {}
         for folder in folders:
             try:
-                status, data = imap.select(f"\"{folder}\"", readonly=True)
+                status, data = imap.select(_quote_mailbox(folder), readonly=True)
                 if status == "OK" and data:
                     counts[folder] = int(data[0])
                 else:
@@ -121,7 +150,7 @@ def iter_headers(
     """Fetch message headers for a folder (optionally limit to newest N)."""
     results: List[Dict[str, Any]] = []
     with _imap_login() as imap:
-        status, _ = imap.select(f"\"{folder}\"", readonly=True)
+        status, _ = imap.select(_quote_mailbox(folder), readonly=True)
         if status != "OK":
             raise RuntimeError(f"Failed to select folder {folder}: {status}")
         status, data = imap.search(None, "ALL")
