@@ -92,7 +92,7 @@ def mode_autonomous(task: str, *, unsafe_mode: bool = False) -> None:
         enable_desktop=_bool_env("AUTO_ENABLE_DESKTOP", True),
         pre_mortem_enabled=_bool_env("AUTO_PRE_MORTEM", False),
         allow_user_info_storage=_bool_env("AUTO_ALLOW_USER_INFO_STORAGE", False),
-        allow_human_ask=_bool_env("AUTO_ALLOW_HUMAN_ASK", False),
+        allow_human_ask=_bool_env("AUTO_ALLOW_HUMAN_ASK", True),
         allow_fs_anywhere=fs_anywhere,
         fs_allowed_roots=tuple(allowed_roots),
     )

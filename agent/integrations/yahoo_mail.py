@@ -3,6 +3,7 @@ from __future__ import annotations
 """Yahoo Mail IMAP/SMTP helpers (app-password based)."""
 
 import imaplib
+import re
 import smtplib
 from email.header import decode_header
 from email.message import EmailMessage
@@ -48,6 +49,108 @@ def _load_creds(site_key: str = "yahoo_imap") -> Dict[str, str]:
     if not username or not password:
         raise RuntimeError("Yahoo IMAP credentials are incomplete.")
     return {"username": username, "password": password}
+
+
+def _imap_login():
+    creds = _load_creds()
+    imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+    imap.login(creds["username"], creds["password"])
+    return imap
+
+
+def _parse_mailbox(line: str) -> str:
+    # Typical IMAP LIST response: '(\\HasNoChildren) "/" "INBOX"'
+    m = re.search(r'\"([^\"]+)\"\\s*$', line)
+    if m:
+        return m.group(1)
+    parts = line.split()
+    return parts[-1] if parts else line
+
+
+def list_folders() -> List[str]:
+    """Return a list of mailbox folders for the account."""
+    with _imap_login() as imap:
+        status, data = imap.list()
+        if status != "OK" or not data:
+            raise RuntimeError("Failed to list folders.")
+        folders: List[str] = []
+        for item in data:
+            if not item:
+                continue
+            line = item.decode("utf-8", errors="replace") if isinstance(item, bytes) else str(item)
+            name = _parse_mailbox(line)
+            if name:
+                folders.append(name)
+        return folders
+
+
+def folder_counts(folders: Optional[List[str]] = None) -> Dict[str, int]:
+    """Return message counts per folder (best-effort)."""
+    with _imap_login() as imap:
+        if folders is None:
+            status, data = imap.list()
+            if status != "OK" or not data:
+                raise RuntimeError("Failed to list folders.")
+            folders = []
+            for item in data:
+                if not item:
+                    continue
+                line = item.decode("utf-8", errors="replace") if isinstance(item, bytes) else str(item)
+                name = _parse_mailbox(line)
+                if name:
+                    folders.append(name)
+        counts: Dict[str, int] = {}
+        for folder in folders:
+            try:
+                status, data = imap.select(f"\"{folder}\"", readonly=True)
+                if status == "OK" and data:
+                    counts[folder] = int(data[0])
+                else:
+                    counts[folder] = 0
+            except Exception:
+                counts[folder] = 0
+        return counts
+
+
+def iter_headers(
+    *,
+    folder: str = "INBOX",
+    limit: Optional[int] = None,
+    progress_cb=None,
+) -> List[Dict[str, Any]]:
+    """Fetch message headers for a folder (optionally limit to newest N)."""
+    results: List[Dict[str, Any]] = []
+    with _imap_login() as imap:
+        status, _ = imap.select(f"\"{folder}\"", readonly=True)
+        if status != "OK":
+            raise RuntimeError(f"Failed to select folder {folder}: {status}")
+        status, data = imap.search(None, "ALL")
+        if status != "OK" or not data or not data[0]:
+            return []
+        ids = data[0].split()
+        if limit:
+            ids = ids[-limit:]
+        total = len(ids)
+        for idx, uid in enumerate(ids, 1):
+            status, msg_data = imap.fetch(uid, "(RFC822.HEADER)")
+            if status != "OK" or not msg_data:
+                continue
+            header_bytes = msg_data[0][1]
+            msg = BytesParser(policy=default).parsebytes(header_bytes)
+            results.append(
+                {
+                    "uid": uid.decode("utf-8", errors="ignore"),
+                    "from": _decode(msg.get("From")),
+                    "to": _decode(msg.get("To")),
+                    "subject": _decode(msg.get("Subject")),
+                    "date": _decode(msg.get("Date")),
+                    "message_id": _decode(msg.get("Message-ID")),
+                    "folder": folder,
+                }
+            )
+            if progress_cb and (idx % 200 == 0 or idx == total):
+                progress_cb(folder, idx, total)
+    return results
 
 
 def list_messages(limit: int = 5, folder: str = "INBOX") -> List[Dict[str, Any]]:
