@@ -1,0 +1,19 @@
+# Codex CLI Configuration
+# Two profiles: reason (no execution) and exec (full execution)
+
+[profiles.reason]
+# Reasoning profile: No command execution, read-only
+approval_policy = "on-request"  # Blocks all command execution
+sandbox = "none"  # No sandbox needed since we're not executing
+description = "Reasoning mode - returns JSON plans without executing code"
+
+[profiles.exec]
+# Execution profile: Full command execution with safety
+approval_policy = "auto"  # Auto-approve safe commands
+sandbox = "docker"  # Use sandbox for safety
+description = "Execution mode - runs commands in sandboxed environment"
+
+# Default profile settings
+[default]
+model = "gpt-4"  # or whatever model you prefer
+timeout = 120

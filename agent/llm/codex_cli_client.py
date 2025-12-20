@@ -189,6 +189,13 @@ class CodexCliClient(LLMClient):
 
         try:
             return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise CodexCliOutputError(
+                "codex exec returned invalid JSON in --output-last-message.\n"
+                f"stdout: {_snippet(stdout)}\n"
+                f"stderr: {_snippet(stderr)}\n"
+                f"output_file_preview: {_snippet(raw)}"
+            ) from exc
 
     def reason_json(
         self,

@@ -1,20 +1,22 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Dict, Any, List
 from pathlib import Path
 
 from agent.core.autonomous_agent import AutonomousAgent
-from agent.tools.yahoo_mail import YahooMail
+from agent.llm.codex_cli_client import CodexCliClient
+from agent.integrations.yahoo_mail import YahooMail
+from agent.llm import schemas as llm_schemas
 
 
 class MailAgent(AutonomousAgent):
     """
-    Autonomous mail agent that uses rule-based reasoning for simple operations.
+    Autonomous mail agent that uses Codex for reasoning (not execution).
 
-    This agent does NOT use codex exec for reasoning (that's an execution mode).
-    Instead, it uses pattern matching and rules to understand user intent.
+    Uses two-stage approach:
+    1. Reasoning: Plain codex with 'reason' profile (no execution)
+    2. Action: Python code executed by the agent (not codex exec)
     """
 
     def __init__(self, llm_client, yahoo_mail, folders: List[str], folder_counts: Dict[str, int]):
@@ -29,81 +31,99 @@ class MailAgent(AutonomousAgent):
 
     def perceive(self, user_input: str, environment_state: Dict[str, Any], action_result: str = "") -> Dict[str, Any]:
         """
-        Rule-based perception: analyze user input using pattern matching.
-        No LLM needed for simple mail operations.
+        Use LLM reasoning (codex --profile reason) to understand user intent and plan actions.
+        This does NOT execute code - it only returns a JSON plan.
         """
+        # Build context for LLM
+        recent_conv = self.memory["conversation"][-3:] if self.memory["conversation"] else []
+        recent_actions = self.memory["actions_taken"][-3:] if self.memory["actions_taken"] else []
+        mistakes = self.memory["mistakes"][-2:] if self.memory["mistakes"] else []
+        successes = self.memory["successes"][-2:] if self.memory["successes"] else []
+
+        # Simplified folder list (top 10)
+        folder_summary = "\n".join([
+            f"- {f} ({self.folder_counts.get(f, 0)} emails)"
+            for f in self.folders[:10]
+        ])
+        if len(self.folders) > 10:
+            folder_summary += f"\n... and {len(self.folders) - 10} more folders"
+
+        prompt = f"""You are a mail organization assistant. Analyze the user's request and decide what action to take.
+
+AVAILABLE FOLDERS:
+{folder_summary}
+
+RECENT CONVERSATION:
+{json.dumps(recent_conv, indent=2) if recent_conv else "None"}
+
+PAST MISTAKES (learn from these):
+{json.dumps(mistakes, indent=2) if mistakes else "None"}
+
+SUCCESSFUL PATTERNS (repeat these):
+{json.dumps(successes, indent=2) if successes else "None"}
+
+USER REQUEST: {user_input}
+
+{f"PREVIOUS ACTION RESULT: {action_result[:300]}" if action_result else ""}
+
+AVAILABLE ACTIONS:
+- scan_folder: Scan a specific folder (requires folder name)
+- create_folder: Create a new folder (requires folder name)
+- show_folders: Display all folders
+- ask_question: Ask user for clarification
+- none: No action needed
+
+RULES:
+- If user says "don't" or "not", respect that
+- Learn from past mistakes
+- Use successful patterns when applicable
+- If unsure, ask for clarification
+
+Return JSON with your analysis."""
+
+        try:
+            # Use reason_json (plain codex, no execution)
+            result = self.llm.reason_json(prompt, schema_path=llm_schemas.MAIL_AGENT)
+            return result
+        except Exception as exc:
+            # Fallback to simple response
+            return {
+                "perception": f"Error: {str(exc)[:100]}",
+                "reasoning": "System error occurred",
+                "plan": ["Show folders as fallback"],
+                "next_action": {"type": "show_folders"},
+                "response": "I encountered an error. Let me show you your folders."
+            }
+
+    def _fallback_perceive(self, user_input: str) -> Dict[str, Any]:
+        """Fallback to rule-based perception if LLM reasoning fails."""
         user_lower = user_input.lower()
 
-        # Pattern matching for common intents
-        if any(word in user_lower for word in ["show", "list", "display", "see"]) and \
+        if any(word in user_lower for word in ["show", "list", "display"]) and \
            any(word in user_lower for word in ["folder", "folders"]):
             return {
                 "perception": "User wants to see folder list",
-                "reasoning": "Detected 'show/list folders' pattern",
-                "plan": ["Display all folders with counts"],
+                "reasoning": "Detected 'show folders' pattern",
                 "next_action": {"type": "show_folders"},
                 "response": "Here are your mail folders:"
             }
 
-        elif any(word in user_lower for word in ["scan", "check", "read", "open"]):
-            # Extract folder name
+        elif any(word in user_lower for word in ["scan", "check", "read"]):
             folder = self._extract_folder_name(user_input)
             if folder:
                 return {
                     "perception": f"User wants to scan folder '{folder}'",
-                    "reasoning": f"Detected 'scan folder' pattern with folder name '{folder}'",
-                    "plan": [f"Scan folder '{folder}'", "Display email summary"],
+                    "reasoning": "Detected 'scan folder' pattern",
                     "next_action": {"type": "scan_folder", "folder": folder},
                     "response": f"Scanning folder '{folder}'..."
                 }
-            else:
-                return {
-                    "perception": "User wants to scan a folder but didn't specify which",
-                    "reasoning": "Detected 'scan' intent but no folder name",
-                    "plan": ["Ask user which folder to scan"],
-                    "next_action": {"type": "ask_question", "question": "Which folder would you like to scan?"},
-                    "response": "Which folder would you like to scan?"
-                }
 
-        elif any(word in user_lower for word in ["create", "make", "add", "new"]) and \
-             any(word in user_lower for word in ["folder"]):
-            # Extract folder name
-            folder = self._extract_folder_name(user_input, after_keywords=["folder", "called", "named"])
-            if folder:
-                return {
-                    "perception": f"User wants to create folder '{folder}'",
-                    "reasoning": f"Detected 'create folder' pattern with name '{folder}'",
-                    "plan": [f"Create folder '{folder}'", "Confirm creation"],
-                    "next_action": {"type": "create_folder", "folder": folder},
-                    "response": f"Creating folder '{folder}'..."
-                }
-            else:
-                return {
-                    "perception": "User wants to create a folder but didn't specify name",
-                    "reasoning": "Detected 'create folder' intent but no name",
-                    "plan": ["Ask user for folder name"],
-                    "next_action": {"type": "ask_question", "question": "What would you like to name the folder?"},
-                    "response": "What would you like to name the new folder?"
-                }
-
-        elif any(word in user_lower for word in ["organize", "sort", "clean", "manage"]):
-            return {
-                "perception": "User wants to organize mail",
-                "reasoning": "Detected 'organize' intent - complex operation",
-                "plan": ["Show folders first", "Ask for organization strategy"],
-                "next_action": {"type": "show_folders"},
-                "response": "Let me show you your folders first, then we can discuss how to organize your mail."
-            }
-
-        else:
-            # Unknown intent
-            return {
-                "perception": f"Unclear request: '{user_input[:50]}'",
-                "reasoning": "No matching pattern found",
-                "plan": ["Ask for clarification"],
-                "next_action": {"type": "ask_question", "question": "I can help you: show folders, scan a folder, or create a folder. What would you like?"},
-                "response": "I can help you with:\n- Show folders\n- Scan a folder\n- Create a folder\n\nWhat would you like to do?"
-            }
+        return {
+            "perception": "Unclear request",
+            "reasoning": "No matching pattern",
+            "next_action": {"type": "ask_question", "question": "What would you like me to do?"},
+            "response": "I can help you: show folders, scan a folder, or create a folder. What would you like?"
+        }
 
     def _extract_folder_name(self, text: str, after_keywords: List[str] = None) -> str:
         """Extract folder name from user input using pattern matching."""
