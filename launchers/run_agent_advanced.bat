@@ -2,27 +2,24 @@
 setlocal enabledelayedexpansion
 
 rem === DrCodePT-Swarm Advanced Agent Launcher ===
-rem This script uses Claude API to generate plans and executes them with your custom supervisor.
+rem This script uses the locally authenticated Codex CLI to generate plans and executes them with your custom supervisor.
 
 set "BASE=%~dp0"
+call "%BASE%_bootstrap_python_env.bat"
+if errorlevel 1 (
+    pause
+    exit /b 1
+)
 cd /d "%BASE%..\agent"
 
-rem Load CLAUDE_API_KEY from .env (ignore comments/blank lines)
-set "CLAUDE_API_KEY="
-if exist ".env" (
-    for /f "usebackq tokens=1,* delims==" %%a in (`findstr /b /i "CLAUDE_API_KEY=" ".env"`) do (
-        set "CLAUDE_API_KEY=%%b"
-    )
-)
-
 echo =================================================================
-echo == DrCodePT-Swarm Advanced Agent (Claude-Powered)
+echo == DrCodePT-Swarm Advanced Agent (Codex CLI)
 echo =================================================================
 echo.
-echo This agent uses Claude API to generate verified, executable plans.
+echo This agent uses your Codex CLI login to generate verified, executable plans.
 echo.
 echo Features:
-echo   - Claude-powered planning
+echo   - Codex CLI-powered planning (no API keys)
 echo   - Custom supervisor execution
 echo   - Automatic verification
 echo   - Self-healing on failure
@@ -41,20 +38,13 @@ if "%GOAL%"=="" (
     exit /b 1
 )
 
-if "%CLAUDE_API_KEY%"=="" (
-    echo.
-    echo [ERROR] CLAUDE_API_KEY is not set. Update agent\.env and try again.
-    pause
-    exit /b 1
-)
-
 echo.
-echo [INFO] Generating plan with Claude API...
+echo [INFO] Generating plan with Codex CLI...
 echo.
 
 rem Call the planner, save YAML to a temp file, then execute it
 set "PLAN_FILE=%TEMP%\drcodept_plan_%RANDOM%.yaml"
-python agent_planner.py "%GOAL%" > "%PLAN_FILE%"
+"%PY%" agent_planner.py "%GOAL%" > "%PLAN_FILE%"
 if errorlevel 1 (
     echo.
     echo [ERROR] Planner failed. See messages above.
@@ -69,7 +59,7 @@ for %%F in ("%PLAN_FILE%") do if %%~zF==0 (
     pause
     exit /b 1
 )
-python codex_bridge.py "%PLAN_FILE%"
+"%PY%" codex_bridge.py "%PLAN_FILE%"
 del "%PLAN_FILE%" >nul 2>&1
 
 echo.

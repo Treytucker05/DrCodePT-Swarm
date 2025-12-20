@@ -1,13 +1,10 @@
-id: test_shell_001
-name: Test Shell Tool
+id: test_shell
+name: Test Shell
 type: shell
-goal: Run echo command and verify it succeeds
-inputs:
-  message: "Hello from agent"
-output:
-  destination: stdout
-  format: text
-definition_of_done: "Echo command exits with code 0 and outputs the message"
+goal: "Exit 0"
+inputs: {}
+output: {}
+definition_of_done: "Command exits 0"
 verify:
   - id: command_exit_zero
     args: {}
@@ -15,8 +12,9 @@ allowed_paths: []
 tools_allowed:
   - shell
 stop_rules:
-  max_attempts: 2
-  max_minutes: 1
-  max_tool_calls: 5
+  max_attempts: 1
+  max_minutes: 2
+  max_tool_calls: 2
 on_fail: abort
-command: echo "Hello from agent"
+command: "exit 0"
+

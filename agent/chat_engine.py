@@ -68,7 +68,8 @@ def chat_reply(user_msg: str) -> str:
         "Local chat (offline). "
         f"Tasks: {', '.join(tasks[:8])}" + ("..." if len(tasks) > 8 else "") + ". "
         f"Recent runs: {run_summaries}. "
-        "Model replies are disabled because OPENAI_API_KEY is not provided and API use is disallowed."
+        "Model replies are disabled in this offline chat mode. Use the autonomous runner (`python -m agent.run`) "
+        "which uses your Codex CLI login (`codex login`)."
     )
 
 

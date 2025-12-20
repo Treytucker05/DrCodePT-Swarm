@@ -4,6 +4,11 @@ setlocal enabledelayedexpansion
 rem === Terminal 2: Executor (Custom Supervisor) ===
 
 set "BASE=%~dp0"
+call "%BASE%_bootstrap_python_env.bat"
+if errorlevel 1 (
+    pause
+    exit /b 1
+)
 cd /d "%BASE%..\agent"
 
 :MAIN_LOOP
@@ -42,7 +47,7 @@ echo [INFO] Executing plan with custom supervisor...
 echo.
 
 rem Execute the plan using codex_bridge.py
-python codex_bridge.py temp_plan.yaml
+"%PY%" codex_bridge.py temp_plan.yaml
 
 echo.
 echo =================================================================

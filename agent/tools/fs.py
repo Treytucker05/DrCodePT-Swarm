@@ -1,87 +1,47 @@
 from __future__ import annotations
 
-"""Filesystem tool with allowlist enforcement."""
+"""
+Filesystem tool (read/write/append).
 
-import shutil
+Safe-by-default: writes should be gated by unsafe_mode by the supervisor.
+"""
+
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from .base import ToolAdapter, ToolResult
-from agent.supervisor.hardening import snapshot_before_write
 
 
-def _resolve_allowed_paths(base_dir: Path, allowed: List[str]) -> List[Path]:
-    resolved = []
-    for p in allowed or []:
-        path_obj = Path(p)
-        if not path_obj.is_absolute():
-            path_obj = (base_dir / path_obj).resolve()
-        else:
-            path_obj = path_obj.resolve()
-        resolved.append(path_obj)
-    return resolved
-
-
-def _is_allowed(target: Path, allowed: List[Path]) -> bool:
-    target = target.resolve()
-    for root in allowed:
-        try:
-            target.relative_to(root)
-            return True
-        except ValueError:
-            continue
-    return False
-
-
-class FilesystemTool(ToolAdapter):
+class FsTool(ToolAdapter):
     tool_name = "fs"
 
     def execute(self, task, inputs: Dict[str, Any]) -> ToolResult:
-        op = inputs.get("op", "read")
-        path_value = inputs.get("path") or getattr(task, "path", None)
-        if not path_value:
-            return ToolResult(False, error="No path provided for fs operation")
+        path = inputs.get("path") or getattr(task, "path", None)
+        if not path:
+            return ToolResult(False, error="fs requires path")
 
-        base_dir = Path(__file__).resolve().parents[1]
-        allowed_roots = _resolve_allowed_paths(base_dir, getattr(task, "allowed_paths", []))
-        target = Path(path_value)
-        if not target.is_absolute():
-            target = (base_dir / target).resolve()
+        mode = (inputs.get("mode") or getattr(task, "mode", None) or "").strip().lower()
+        content = inputs.get("content") if "content" in inputs else getattr(task, "content", None)
 
-        if not _is_allowed(target, allowed_roots):
-            return ToolResult(False, error=f"Path {target} outside allowlist")
+        p = Path(path)
 
-        run_path = inputs.get("run_path")
+        if mode in {"read", ""} and content in (None, ""):
+            if not p.exists():
+                return ToolResult(False, error=f"File not found: {p}")
+            data = p.read_text(encoding="utf-8", errors="replace")
+            return ToolResult(True, output={"path": str(p), "content": data})
 
-        try:
-            if op == "read":
-                content = target.read_text(encoding="utf-8")
-                return ToolResult(True, output={"content": content})
-            if op == "write":
-                data = inputs.get("content", "")
-                if run_path:
-                    snapshot_before_write(Path(run_path), target)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(str(data), encoding="utf-8")
-                return ToolResult(True, output={"bytes_written": len(str(data))})
-            if op == "move":
-                dest = inputs.get("dest")
-                if not dest:
-                    return ToolResult(False, error="Missing dest for move")
-                dest_path = Path(dest)
-                if not dest_path.is_absolute():
-                    dest_path = (base_dir / dest_path).resolve()
-                if not _is_allowed(dest_path, allowed_roots):
-                    return ToolResult(False, error=f"Destination {dest_path} outside allowlist")
-                if run_path:
-                    snapshot_before_write(Path(run_path), target)
-                dest_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(target), str(dest_path))
-                return ToolResult(True, output={"moved_to": str(dest_path)})
-            if op == "search":
-                pattern = inputs.get("pattern", "*")
-                matches = [str(p) for p in target.rglob(pattern)]
-                return ToolResult(True, output={"matches": matches})
-            return ToolResult(False, error=f"Unsupported fs op '{op}'")
-        except Exception as exc:  # pragma: no cover
-            return ToolResult(False, error=str(exc))
+        if content is None:
+            content = ""
+
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if mode == "append":
+            with p.open("a", encoding="utf-8", errors="replace", newline="\n") as f:
+                f.write(str(content))
+        else:
+            p.write_text(str(content), encoding="utf-8", errors="replace")
+        return ToolResult(True, output={"path": str(p), "bytes": len(str(content).encode("utf-8"))})
+
+
+__all__ = ["FsTool"]
+

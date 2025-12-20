@@ -1,39 +1,66 @@
 from __future__ import annotations
 
-"""Tool registry for resolving adapters by task type."""
+from dataclasses import dataclass
+from typing import Dict, Optional
 
-from typing import Dict
-
-from agent.schemas.task_schema import TaskType
-from .api import ApiTool
-from .browser import BrowserTool
-from .fs import FilesystemTool
-from .python_exec import PythonExecTool
-from .shell import ShellTool
-from .desktop import DesktopTool
-from .screen_recorder import ScreenRecorderTool
-from .vision import VisionTool
-from .notify import NotifyTool
-from .code_review import CodeReviewTool
-from .research import ResearchTool
+from .base import ToolAdapter
 
 
-_REGISTRY: Dict[TaskType, object] = {
-    TaskType.browser: BrowserTool(),
-    TaskType.shell: ShellTool(),
-    TaskType.python: PythonExecTool(),
-    TaskType.fs: FilesystemTool(),
-    TaskType.api: ApiTool(),
-    TaskType.desktop: DesktopTool(),
-    TaskType.screen_recorder: ScreenRecorderTool(),
-    TaskType.vision: VisionTool(),
-    TaskType.notify: NotifyTool(),
-    TaskType.code_review: CodeReviewTool(),
-    TaskType.research: ResearchTool(),
-}
+@dataclass(frozen=True)
+class ToolSpec:
+    adapter: ToolAdapter
+    dangerous: bool = False
 
 
-def get_tool(task_type: TaskType):
-    if task_type not in _REGISTRY:
-        raise KeyError(f"No tool registered for task type {task_type}")
-    return _REGISTRY[task_type]
+_TOOLS: Dict[str, ToolSpec] = {}
+
+
+def _register(spec: ToolSpec) -> None:
+    name = spec.adapter.tool_name
+    if not name:
+        raise ValueError("ToolAdapter.tool_name is required")
+    _TOOLS[name] = spec
+
+
+def _init_defaults() -> None:
+    if _TOOLS:
+        return
+
+    # Local imports to keep import-time side effects minimal.
+    from .api import ApiTool
+    from .browser import BrowserTool
+    from .code_review import CodeReviewTool
+    from .desktop import DesktopTool
+    from .fs import FsTool
+    from .notify import NotifyTool
+    from .python_exec import PythonTool
+    from .research import ResearchTool
+    from .screen_recorder import ScreenRecorderTool
+    from .shell import ShellTool
+    from .vision import VisionTool
+
+    _register(ToolSpec(adapter=BrowserTool(), dangerous=True))
+    _register(ToolSpec(adapter=ShellTool(), dangerous=True))
+    _register(ToolSpec(adapter=PythonTool(), dangerous=True))
+    _register(ToolSpec(adapter=FsTool(), dangerous=True))
+    _register(ToolSpec(adapter=ApiTool(), dangerous=False))
+    _register(ToolSpec(adapter=DesktopTool(), dangerous=True))
+    _register(ToolSpec(adapter=VisionTool(), dangerous=True))
+    _register(ToolSpec(adapter=ScreenRecorderTool(), dangerous=True))
+    _register(ToolSpec(adapter=NotifyTool(), dangerous=False))
+    _register(ToolSpec(adapter=CodeReviewTool(), dangerous=True))
+    _register(ToolSpec(adapter=ResearchTool(), dangerous=False))
+
+
+def get_tool(name: str) -> Optional[ToolSpec]:
+    _init_defaults()
+    return _TOOLS.get(name)
+
+
+def list_tools() -> Dict[str, ToolSpec]:
+    _init_defaults()
+    return dict(_TOOLS)
+
+
+__all__ = ["ToolSpec", "get_tool", "list_tools"]
+

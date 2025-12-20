@@ -1,7 +1,6 @@
 """
 Trey's Agent - One Terminal, Codex Powered
 All LLM calls use Codex CLI (codex exec).
-No Ollama dependency.
 """
 
 from __future__ import annotations
@@ -115,7 +114,10 @@ def call_codex(prompt: str, save_to: Optional[Path] = None) -> str:
     Returns the response text.
     """
     # Keep Codex "text-only" here: planning/self-heal/post-chat should not execute shell/MCP tools.
+    # Note: `--search` is a global flag and must appear before the `exec` subcommand.
     cmd = codex_command() + [
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--search",
         "exec",
         "-c",
         f'model_reasoning_effort="{CODEX_REASONING_EFFORT}"',
@@ -123,7 +125,6 @@ def call_codex(prompt: str, save_to: Optional[Path] = None) -> str:
         "shell_tool",
         "--disable",
         "rmcp_client",
-        "--dangerously-bypass-approvals-and-sandbox",
     ]
     if save_to:
         cmd.extend(["--output-last-message", str(save_to)])
@@ -220,11 +221,13 @@ def extract_yaml(text: str) -> Optional[str]:
     return None
 
 
-def execute_plan() -> Dict[str, Any]:
+def execute_plan(*, unsafe_mode: bool = False) -> Dict[str, Any]:
     """Execute the plan using supervisor."""
     start_time = time.time()
 
     cmd = [sys.executable, "-m", "agent.supervisor.supervisor", str(TEMP_PLAN)]
+    if unsafe_mode:
+        cmd.append("--unsafe-mode")
     proc = subprocess.run(cmd, cwd=str(REPO_ROOT))
 
     duration = time.time() - start_time
@@ -442,8 +445,16 @@ def main():
             yaml_content = TEMP_PLAN.read_text(encoding="utf-8")
 
         # Phase 2: Execute
-        print(f"\n{CYAN}[EXECUTING]{RESET} Running task...")
-        result = execute_plan()
+        unsafe = os.getenv("AGENT_UNSAFE_MODE", "").strip().lower() in {"1", "true", "yes", "y", "on"}
+        if not unsafe:
+            try:
+                unsafe_choice = input(f"{YELLOW}Enable unsafe mode for tool execution? (y/N):{RESET} ").strip().lower()
+                unsafe = unsafe_choice == "y"
+            except Exception:
+                unsafe = False
+
+        print(f"\n{CYAN}[EXECUTING]{RESET} Running task (unsafe_mode={unsafe})...")
+        result = execute_plan(unsafe_mode=unsafe)
 
         # Handle failure with self-healing
         if not result["success"]:
@@ -455,7 +466,7 @@ def main():
                 if corrected:
                     TEMP_PLAN.write_text(corrected, encoding="utf-8")
                     print(f"\n{CYAN}[RETRYING]{RESET} Executing corrected plan...")
-                    result = execute_plan()
+                    result = execute_plan(unsafe_mode=unsafe)
 
         # Show result
         status = "SUCCESS" if result["success"] else "FAILED"

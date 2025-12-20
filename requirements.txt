@@ -6,3 +6,4 @@ pydantic
 PyYAML
 requests
 colorama
+pytest

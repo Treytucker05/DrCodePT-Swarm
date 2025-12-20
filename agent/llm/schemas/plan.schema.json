@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["goal", "steps"],
+  "properties": {
+    "goal": { "type": "string" },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 12,
+      "items": { "$ref": "#/$defs/step" }
+    }
+  },
+  "$defs": {
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["goal", "tool_name", "tool_args", "success_criteria"],
+      "properties": {
+        "id": { "type": "string" },
+        "goal": { "type": "string" },
+        "rationale_short": { "type": "string" },
+        "tool_name": { "type": "string" },
+        "tool_args": { "type": "object", "additionalProperties": true },
+        "success_criteria": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}
+

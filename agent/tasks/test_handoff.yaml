@@ -1,21 +1,39 @@
-id: test_handoff_001
-name: Test Human Handoff
-type: browser
-goal: Navigate to a page and trigger handoff
+id: test_handoff
+name: Test Handoff
+type: composite
+goal: "Demonstrate requires_human handoff flow"
 inputs: {}
 output: {}
-definition_of_done: "Human completes handoff and task resumes"
-verify:
-  - id: page_contains
-    args:
-      text: "Will never match - forces failure"
-allowed_paths: []
+definition_of_done: "Handoff acknowledged"
+verify: []
+allowed_paths:
+  - handoff/
 tools_allowed:
-  - browser
+  - composite
 stop_rules:
   max_attempts: 1
-  max_minutes: 5
-  max_tool_calls: 10
-on_fail: escalate
-requires_human: true
-url: https://example.com
+  max_minutes: 10
+  max_tool_calls: 2
+on_fail: abort
+steps:
+  - id: step_wait_for_human
+    name: Wait for human
+    type: notify
+    goal: "Create handoff/CONTINUE.flag to continue"
+    inputs:
+      title: "Test handoff"
+      message: "Create handoff/CONTINUE.flag to resume."
+    output: {}
+    definition_of_done: "Human continued"
+    verify: []
+    allowed_paths:
+      - handoff/
+    tools_allowed:
+      - notify
+    stop_rules:
+      max_attempts: 1
+      max_minutes: 10
+      max_tool_calls: 1
+    on_fail: abort
+    requires_human: true
+

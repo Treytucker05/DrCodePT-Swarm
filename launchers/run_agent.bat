@@ -5,6 +5,11 @@ rem === DrCodePT-Swarm Autonomous Agent Launcher ===
 rem This script uses codex exec to generate plans and pipes them to your custom supervisor.
 
 set "BASE=%~dp0"
+call "%BASE%_bootstrap_python_env.bat"
+if errorlevel 1 (
+    pause
+    exit /b 1
+)
 cd /d "%BASE%..\agent"
 
 echo =================================================================
@@ -35,7 +40,7 @@ echo [INFO] Generating plan with codex exec...
 echo.
 
 rem Run codex exec and pipe to the bridge
-codex exec --sandbox danger-full-access "%GOAL%" | python codex_bridge.py
+codex --dangerously-bypass-approvals-and-sandbox --search exec "%GOAL%" | "%PY%" codex_bridge.py
 
 echo.
 echo =================================================================

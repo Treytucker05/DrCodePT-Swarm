@@ -184,7 +184,7 @@ def format_context_for_display() -> str:
 
 
 def format_context_for_llm() -> str:
-    """Format context as system prompt for Codex/Ollama."""
+    """Format context as system prompt for the configured LLM."""
     ctx = build_context_summary()
 
     parts = ["AGENT CONTEXT (automatically loaded):"]
@@ -216,7 +216,7 @@ def format_context_for_llm() -> str:
         "screen_recorder": "Screen recording",
         "vision": "Screenshot capture",
         "notify": "Windows notifications",
-        "code_review": "Ollama code analysis",
+        "code_review": "LLM-assisted code review",
         "research": "Multi-source web research",
     }
     for tool in tools:

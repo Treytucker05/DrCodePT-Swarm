@@ -1,14 +1,13 @@
 """
-Claude-Powered Agent Planner
+Provider-agnostic Agent Planner
 
-This script uses the Claude API to generate YAML task plans based on natural language goals.
-The generated plans are then executed by the custom supervisor with full verification and self-healing.
+Generates YAML task plans based on a natural language goal using the locally authenticated Codex CLI.
 """
 
-import os
 import sys
 from pathlib import Path
-from anthropic import Anthropic
+
+from agent.llm import CodexCliAuthError, CodexCliClient, CodexCliNotFoundError, schemas as llm_schemas
 
 # Load the planner system prompt
 ROOT = Path(__file__).resolve().parent
@@ -22,41 +21,35 @@ def load_system_prompt() -> str:
     return PROMPT_FILE.read_text(encoding="utf-8")
 
 
-def generate_plan(goal: str, api_key: str, model: str) -> str:
+def generate_plan(goal: str) -> str:
     """
-    Generate a YAML plan using Claude API.
+    Generate a YAML plan using Codex CLI with a structured JSON wrapper.
 
     Args:
         goal: The natural language goal from the user
-        api_key: Claude API key
 
     Returns:
         The YAML plan as a string
     """
-    client = Anthropic(api_key=api_key)
     system_prompt = load_system_prompt()
 
     try:
-        message = client.messages.create(
-            model=model,
-            max_tokens=4096,
-            system=system_prompt,
-            messages=[
-                {"role": "user", "content": goal}
-            ]
+        llm = CodexCliClient.from_env()
+        prompt = (
+            "You are a planning model.\n"
+            "Produce the YAML plan requested by the system prompt and wrap it in JSON as {\"yaml\": \"...\"}.\n"
+            "Return JSON only.\n\n"
+            f"SYSTEM_PROMPT:\n{system_prompt}\n\n"
+            f"GOAL:\n{goal}\n"
         )
-
-        # Extract text content blocks from the response
-        text_blocks = [
-            block.text for block in message.content
-            if getattr(block, "type", None) == "text" and getattr(block, "text", None)
-        ]
-        if not text_blocks:
-            raise ValueError("Claude response contained no text content.")
-        return "".join(text_blocks)
+        data = llm.complete_json(prompt, schema_path=llm_schemas.YAML_PLAN)
+        yaml_text = (data.get("yaml") or "").strip()
+        if not yaml_text:
+            raise ValueError("Planner returned empty YAML.")
+        return yaml_text
 
     except Exception as e:
-        print(f"Error calling Claude API: {e}", file=sys.stderr)
+        print(f"Error calling Codex CLI: {e}", file=sys.stderr)
         sys.exit(1)
 
 
@@ -68,18 +61,16 @@ def main():
 
     goal = " ".join(sys.argv[1:])
 
-    # Get API key from environment
-    api_key = os.getenv("CLAUDE_API_KEY")
-    if not api_key:
-        print("Error: CLAUDE_API_KEY environment variable not set.")
-        print("Please add it to your .env file.")
+    try:
+        _ = CodexCliClient.from_env()
+    except (CodexCliNotFoundError, CodexCliAuthError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    model = os.getenv("CLAUDE_MODEL", "claude-haiku-4-5")
     print(f"[INFO] Generating plan for goal: {goal}", file=sys.stderr)
-    print(f"[INFO] Calling Claude API (model: {model})...", file=sys.stderr)
+    print("[INFO] Calling Codex CLI...", file=sys.stderr)
 
-    yaml_plan = generate_plan(goal, api_key, model)
+    yaml_plan = generate_plan(goal)
 
     # Output the YAML plan to stdout (for piping)
     sys.stdout.write(yaml_plan)

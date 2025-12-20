@@ -1,28 +1,24 @@
 from __future__ import annotations
 
-"""
-Pydantic task schema for DrCodePT Agent.
-Supports task types: browser | shell | python | fs | api | composite | desktop | screen_recorder | vision | notify | code_review | research.
-"""
-
+import json
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
-from pydantic import BaseModel, Field, root_validator, validator
+from pydantic import BaseModel, Field
 
 
 class TaskType(str, Enum):
-    browser = "browser"
+    composite = "composite"
     shell = "shell"
+    browser = "browser"
     python = "python"
     fs = "fs"
     api = "api"
-    composite = "composite"
     desktop = "desktop"
-    screen_recorder = "screen_recorder"
     vision = "vision"
+    screen_recorder = "screen_recorder"
     notify = "notify"
     code_review = "code_review"
     research = "research"
@@ -34,130 +30,85 @@ class OnFailAction(str, Enum):
     abort = "abort"
 
 
-class HttpMethod(str, Enum):
-    GET = "GET"
-    POST = "POST"
-    PUT = "PUT"
-    DELETE = "DELETE"
-
-
-class VerifyConfig(BaseModel):
-    id: str = Field(..., description="Verifier name")
-    args: Dict[str, Any] = Field(default_factory=dict, description="Arguments for the verifier")
-
-    class Config:
-        extra = "forbid"
-
-
 class StopRules(BaseModel):
-    max_attempts: int = Field(..., gt=0)
-    max_minutes: int = Field(..., gt=0)
-    max_tool_calls: int = Field(..., gt=0)
+    max_attempts: int = Field(default=1, ge=1)
+    max_minutes: int = Field(default=5, ge=1)
+    max_tool_calls: int = Field(default=10, ge=1)
 
-    class Config:
-        extra = "forbid"
+
+class VerifierSpec(BaseModel):
+    id: str
+    args: Dict[str, Any] = Field(default_factory=dict)
 
 
 class TaskDefinition(BaseModel):
-    # Required
+    # Required fields
     id: str
     name: str
     type: TaskType
     goal: str
-    inputs: Dict[str, Any] = Field(default_factory=dict)
-    output: Dict[str, Any] = Field(default_factory=dict)
     definition_of_done: str
-    verify: List[VerifyConfig] = Field(default_factory=list)
-    allowed_paths: List[str] = Field(default_factory=list)
-    tools_allowed: List[str] = Field(default_factory=list)
     stop_rules: StopRules
     on_fail: OnFailAction
 
-    # Optional / type-specific
-    url: Optional[str] = None
-    login_site: Optional[str] = None
-    command: Optional[str] = None
-    script: Optional[str] = None
-    path: Optional[str] = None
-    endpoint: Optional[str] = None
-    method: Optional[HttpMethod] = None
-    steps: Optional[List["TaskDefinition"]] = None
-    timeout_seconds: Optional[int] = Field(default=None, gt=0)
-    requires_human: Optional[bool] = False
-    session_state_path: Optional[str] = None
+    # Optional common fields
+    inputs: Dict[str, Any] = Field(default_factory=dict)
+    output: Dict[str, Any] = Field(default_factory=dict)
+    verify: List[VerifierSpec] = Field(default_factory=list)
+    allowed_paths: List[str] = Field(default_factory=list)
+    tools_allowed: List[str] = Field(default_factory=list)
+    requires_human: bool = False
 
-    class Config:
-        extra = "forbid"
+    # Type-specific fields
+    steps: List["TaskDefinition"] = Field(default_factory=list)
 
-    @validator("allowed_paths", "tools_allowed", pre=True)
-    def ensure_list(cls, v):
-        if v is None:
-            return []
-        if isinstance(v, str):
-            return [v]
-        return v
+    command: str = ""
+    timeout_seconds: Optional[int] = None
 
-    @root_validator(skip_on_failure=True)
-    def validate_type_specific_fields(cls, values):
-        t_type: TaskType = values.get("type")
-        command = values.get("command")
-        url = values.get("url")
-        endpoint = values.get("endpoint")
-        method = values.get("method")
-        steps = values.get("steps")
-        inputs = values.get("inputs") or {}
-        login_site = values.get("login_site")
+    url: str = ""
+    login_site: str = ""
+    session_state_path: str = ""
+    headless: Optional[bool] = None
 
-        if t_type == TaskType.shell and not command:
-            raise ValueError("Shell tasks require a 'command'.")
-        if t_type == TaskType.browser and not (url or inputs.get("steps") or login_site):
-            raise ValueError("Browser tasks require a 'url', inputs.steps, or login_site.")
-        if t_type == TaskType.api:
-            if not endpoint:
-                raise ValueError("API tasks require an 'endpoint'.")
-            if not method:
-                raise ValueError("API tasks require an HTTP 'method'.")
-        if t_type == TaskType.composite:
-            if not steps or len(steps) == 0:
-                raise ValueError("Composite tasks require a non-empty 'steps' list.")
-        else:
-            if steps:
-                raise ValueError("'steps' is only allowed for composite tasks.")
+    script: str = ""
 
-        tools_allowed = values.get("tools_allowed") or []
-        if t_type and tools_allowed and t_type.value not in tools_allowed:
-            # Encourage explicit permission for the primary tool
-            raise ValueError(f"Primary tool '{t_type.value}' must be included in tools_allowed.")
+    path: str = ""
+    content: str = ""
+    mode: str = ""  # e.g., overwrite|append|read
 
-        return values
+    endpoint: str = ""
+    method: str = "GET"
+    headers: Dict[str, str] = Field(default_factory=dict)
+    params: Dict[str, Any] = Field(default_factory=dict)
+    body: Any = None
+
+    def as_json(self) -> str:
+        if hasattr(self, "model_dump_json"):
+            return self.model_dump_json(indent=2)  # type: ignore[attr-defined]
+        return json.dumps(self.dict(), indent=2)  # type: ignore[call-arg]
+
+
+TaskDefinition.model_rebuild()
 
 
 def load_task_from_yaml(path: str) -> TaskDefinition:
-    """
-    Load a task YAML file and validate it against the TaskDefinition schema.
-    """
-    task_path = Path(path)
-    if not task_path.is_file():
-        raise FileNotFoundError(f"Task file not found: {path}")
-
-    with task_path.open("r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    return TaskDefinition.parse_obj(data)
+    data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("Task YAML must be a mapping/object")
+    return TaskDefinition(**data)
 
 
-# Enable recursive TaskDefinition references
-TaskDefinition.update_forward_refs()
+# Backwards-compatible alias used by some legacy code.
+Task = TaskDefinition
+
 
 __all__ = [
     "TaskType",
     "OnFailAction",
-    "HttpMethod",
-    "VerifyConfig",
     "StopRules",
+    "VerifierSpec",
     "TaskDefinition",
     "Task",
     "load_task_from_yaml",
 ]
 
-# For compatibility with usage examples expecting Task
-Task = TaskDefinition

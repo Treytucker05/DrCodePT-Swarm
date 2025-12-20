@@ -1,24 +1,23 @@
-id: example_shell_001
+id: example_shell_task
 name: Example Shell Task
 type: shell
-goal: "Echo a message to stdout"
-inputs:
-  message: "Hello world"
-output:
-  destination: stdout
-  format: text
-definition_of_done: "Echo command exits successfully with the message"
+goal: "Print hello from PowerShell"
+inputs: {}
+output: {}
+definition_of_done: "Command exits 0"
 verify:
   - id: command_exit_zero
     args: {}
-allowed_paths: []
+allowed_paths:
+  - runs/
 tools_allowed:
   - shell
 stop_rules:
-  max_attempts: 3
-  max_minutes: 1
-  max_tool_calls: 3
+  max_attempts: 1
+  max_minutes: 2
+  max_tool_calls: 2
 on_fail: abort
-command: echo "Hello world"
-timeout_seconds: 10
-requires_human: false
+command: |
+  Write-Output "hello from shell"
+  exit 0
+

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "explanation_short", "next_hint"],
+  "properties": {
+    "status": { "type": "string", "enum": ["success", "minor_repair", "replan"] },
+    "explanation_short": { "type": "string" },
+    "next_hint": { "type": "string" }
+  }
+}
+

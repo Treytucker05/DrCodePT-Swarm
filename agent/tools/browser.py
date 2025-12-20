@@ -124,6 +124,47 @@ class BrowserTool(ToolAdapter):
                     sec = float(step.get("seconds", 1))
                     await asyncio.sleep(sec)
 
+                elif action == "pause_for_user":
+                    message = step.get("message") or "Complete the required step, then press Enter to continue."
+                    try:
+                        print("")
+                        print(f"[USER ACTION REQUIRED] {message}")
+                    except Exception:
+                        pass
+                    # Run blocking input in a thread to avoid freezing the event loop.
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(None, input, "Press Enter to continue... ")
+
+                elif action == "pause_if_visible":
+                    message = step.get("message") or "If a verification prompt is visible, complete it, then press Enter."
+                    try:
+                        if selector:
+                            await page.wait_for_selector(selector, timeout=timeout)
+                        elif text:
+                            await page.get_by_text(text).wait_for(timeout=timeout)
+                        else:
+                            return ToolResult(False, error="pause_if_visible requires selector or text")
+                        try:
+                            print("")
+                            print(f"[USER ACTION REQUIRED] {message}")
+                        except Exception:
+                            pass
+                        loop = asyncio.get_event_loop()
+                        await loop.run_in_executor(None, input, "Press Enter to continue... ")
+                    except Exception:
+                        # If not visible within timeout, continue without prompting.
+                        pass
+
+                elif action == "keep_open":
+                    # Keep the browser open until the user closes the window/page.
+                    # Useful for login flows where the user wants to continue using the site.
+                    timeout_ms = step.get("timeout_ms")
+                    try:
+                        await page.wait_for_event("close", timeout=timeout_ms)
+                    except Exception:
+                        # If a timeout was provided and hit, or if the page closed while waiting, continue.
+                        pass
+
                 elif action == "screenshot":
                     path = step.get("path")
                     if path:
@@ -162,7 +203,21 @@ class BrowserTool(ToolAdapter):
                 await context.storage_state(path=str(dest))
 
             final_url = page.url
-            return ToolResult(True, output={"final_url": final_url, "extracts": extracts})
+            dom_snapshot = await self._get_dom_snapshot(page)
+            html_path = None
+            if dom_snapshot:
+                try:
+                    html_path = evidence_dir / f"final_{int(time.time())}.html"
+                    html_path.write_text(dom_snapshot, encoding="utf-8")
+                except Exception:
+                    html_path = None
+
+            return ToolResult(
+                True,
+                output={"final_url": final_url, "extracts": extracts},
+                evidence={"html": str(html_path) if html_path else None},
+                metadata={"dom_snapshot": dom_snapshot},
+            )
 
         except Exception as exc:
             # collect evidence

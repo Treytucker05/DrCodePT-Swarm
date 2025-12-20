@@ -1,30 +1,52 @@
 from __future__ import annotations
 
-"""Verifier registry."""
+from typing import Any, Dict, Optional, Type
 
-from typing import Dict
-
-from .api_status_ok import ApiStatusOkVerifier
-from .base import Verifier
-from .command_exit_zero import CommandExitZeroVerifier
-from .file_exists import FileExistsVerifier
-from .json_has_entries import JsonHasEntriesVerifier
-from .page_contains import PageContainsVerifier
-from .text_in_file import TextInFileVerifier
+from .base import VerifierAdapter
 
 
-_REGISTRY: Dict[str, type[Verifier]] = {
-    "file_exists": FileExistsVerifier,
-    "json_has_entries": JsonHasEntriesVerifier,
-    "text_in_file": TextInFileVerifier,
-    "page_contains": PageContainsVerifier,
-    "command_exit_zero": CommandExitZeroVerifier,
-    "api_status_ok": ApiStatusOkVerifier,
-}
+_REGISTRY: Dict[str, Type[VerifierAdapter]] = {}
 
 
-def get_verifier(vid: str, args: dict) -> Verifier:
-    if vid not in _REGISTRY:
-        raise KeyError(f"Verifier '{vid}' not found")
-    return _REGISTRY[vid](args)
+def _register(cls: Type[VerifierAdapter]) -> None:
+    if not getattr(cls, "verifier_id", None):
+        raise ValueError("VerifierAdapter.verifier_id is required")
+    _REGISTRY[cls.verifier_id] = cls
 
+
+def _init_defaults() -> None:
+    if _REGISTRY:
+        return
+
+    from .api_status_ok import ApiStatusOkVerifier
+    from .command_exit_zero import CommandExitZeroVerifier
+    from .file_exists import FileExistsVerifier
+    from .json_has_entries import JsonHasEntriesVerifier
+    from .page_contains import PageContainsVerifier
+    from .text_in_file import TextInFileVerifier
+
+    for cls in (
+        FileExistsVerifier,
+        TextInFileVerifier,
+        PageContainsVerifier,
+        CommandExitZeroVerifier,
+        ApiStatusOkVerifier,
+        JsonHasEntriesVerifier,
+    ):
+        _register(cls)
+
+
+def get_verifier(verifier_id: str, args: Optional[Dict[str, Any]] = None) -> VerifierAdapter:
+    _init_defaults()
+    cls = _REGISTRY.get(verifier_id)
+    if cls is None:
+        raise KeyError(f"Unknown verifier: {verifier_id}")
+    return cls(args=args)
+
+
+def list_verifiers() -> Dict[str, Type[VerifierAdapter]]:
+    _init_defaults()
+    return dict(_REGISTRY)
+
+
+__all__ = ["get_verifier", "list_verifiers"]

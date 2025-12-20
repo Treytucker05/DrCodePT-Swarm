@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-"""Base tool interface and shared result structure."""
-
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -13,16 +11,15 @@ class ToolResult:
     error: Optional[str] = None
     evidence: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    retryable: bool = False
 
 
 class ToolAdapter:
-    """Abstract adapter all tools must implement."""
+    tool_name: str = ""
 
-    tool_name: str = "base"
-
-    def execute(self, task, inputs: Dict[str, Any]) -> ToolResult:  # pragma: no cover - interface
+    def execute(self, task, inputs: Dict[str, Any]) -> ToolResult:  # pragma: no cover
         raise NotImplementedError
 
 
-class ExecutionError(Exception):
-    """Raised when a tool fails irrecoverably."""
+__all__ = ["ToolAdapter", "ToolResult"]
+

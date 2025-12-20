@@ -1,65 +1,45 @@
 from __future__ import annotations
 
-"""Run logging utilities for DrCodePT Agent."""
-
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
-
-from agent.logging.redaction import redact
-
-RUNS_ROOT = Path(__file__).resolve().parents[1] / "runs"
+from typing import Any, Dict, Optional
 
 
-def _timestamp() -> str:
+RUNS_DIR = Path(__file__).resolve().parents[1] / "runs"
+
+
+def _now_id() -> str:
     return datetime.now().strftime("%Y-%m-%d_%H%M%S")
 
 
-def _ensure_unique_dir(base_path: Path) -> Path:
-    if not base_path.exists():
-        return base_path
-    counter = 1
-    while True:
-        candidate = Path(f"{base_path}_{counter}")
-        if not candidate.exists():
-            return candidate
-        counter += 1
-
-
-def init_run(task_id: str) -> Path:
-    RUNS_ROOT.mkdir(parents=True, exist_ok=True)
-    run_dir_name = f"{_timestamp()}_{task_id}"
-    run_path = _ensure_unique_dir(RUNS_ROOT / run_dir_name)
+def init_run(task_id: str) -> str:
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+    run_name = f"{_now_id()}_{task_id}"
+    run_path = RUNS_DIR / run_name
     run_path.mkdir(parents=True, exist_ok=True)
-
-    # required subfolders
-    for sub in ("before", "evidence", "output"):
-        (run_path / sub).mkdir(parents=True, exist_ok=True)
-
-    # touch events file
-    events_file = run_path / "events.jsonl"
-    events_file.touch(exist_ok=True)
-
-    return run_path
+    (run_path / "events.jsonl").write_text("", encoding="utf-8")
+    return str(run_path)
 
 
-def log_event(run_path: Path, event_type: str, data: Dict[str, Any]):
-    payload = {
-        "timestamp": datetime.now().isoformat(),
-        "event": event_type,
-        "data": redact(data),
+def log_event(run_path: str | Path, event_type: str, payload: Dict[str, Any]) -> None:
+    p = Path(run_path)
+    p.mkdir(parents=True, exist_ok=True)
+    evt = {
+        "ts": datetime.now().isoformat(),
+        "type": event_type,
+        "payload": payload,
     }
-    events_file = Path(run_path) / "events.jsonl"
-    with events_file.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(payload))
-        f.write("\n")
+    (p / "events.jsonl").open("a", encoding="utf-8", errors="replace", newline="\n").write(
+        json.dumps(evt, ensure_ascii=False) + "\n"
+    )
 
 
-def finalize_run(run_path: Path, outcome: str, summary: str):
-    summary_file = Path(run_path) / "summary.md"
-    content = f"# Run outcome: {outcome}\n\n{summary}\n"
-    summary_file.write_text(content, encoding="utf-8")
+def finalize_run(run_path: str | Path, status: str, summary: str = "") -> None:
+    p = Path(run_path)
+    data = {"status": status, "summary": summary, "finished_at": datetime.now().isoformat()}
+    (p / "result.json").write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-__all__ = ["init_run", "log_event", "finalize_run"]
+__all__ = ["init_run", "log_event", "finalize_run", "RUNS_DIR"]
+

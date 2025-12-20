@@ -65,7 +65,7 @@ echo Generate the YAML plan and save it to: %CD%\temp_plan.yaml >> "%TEMP_PROMPT
 
 rem Call codex exec with the prompt file; write last message to temp_plan.yaml
 echo Calling Codex CLI (exec mode)...
-codex exec --dangerously-bypass-approvals-and-sandbox --sandbox danger-full-access --output-last-message temp_plan.yaml < "%TEMP_PROMPT%"
+codex --dangerously-bypass-approvals-and-sandbox --search exec --sandbox danger-full-access --output-last-message temp_plan.yaml < "%TEMP_PROMPT%"
 
 rem Store the error level
 set CODEX_EXIT=%ERRORLEVEL%

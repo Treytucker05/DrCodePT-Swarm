@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary_md", "key_findings", "citations"],
+  "properties": {
+    "summary_md": { "type": "string" },
+    "key_findings": { "type": "array", "items": { "type": "string" } },
+    "citations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["url", "title"],
+        "properties": {
+          "url": { "type": "string" },
+          "title": { "type": "string" }
+        }
+      }
+    }
+  }
+}
+

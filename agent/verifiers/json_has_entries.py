@@ -2,27 +2,32 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict
 
-from .base import Verifier, VerifyResult
+from .base import VerifierAdapter, VerifierResult
 
 
-class JsonHasEntriesVerifier(Verifier):
-    def verify(self, context: Dict) -> VerifyResult:
+class JsonHasEntriesVerifier(VerifierAdapter):
+    verifier_id = "json_has_entries"
+
+    def verify(self, context: Dict[str, Any]) -> VerifierResult:
         path = self.args.get("path")
-        min_entries = int(self.args.get("min_entries", 1))
         if not path:
-            return VerifyResult(False, "No path provided")
-
-        target = Path(path)
-        if not target.is_file():
-            return VerifyResult(False, f"File not found: {path}")
-
+            return VerifierResult(id=self.verifier_id, passed=False, details="json_has_entries requires args.path")
+        p = Path(str(path))
+        if not p.exists():
+            return VerifierResult(id=self.verifier_id, passed=False, details=f"missing: {p}")
         try:
-            data = json.loads(target.read_text(encoding="utf-8"))
-            count = len(data) if hasattr(data, "__len__") else 0
-            ok = count >= min_entries
-            return VerifyResult(ok, f"entries={count}, required>={min_entries}", {"count": count})
-        except Exception as exc:  # pragma: no cover
-            return VerifyResult(False, f"JSON load failed: {exc}")
+            data = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+        except Exception as exc:
+            return VerifierResult(id=self.verifier_id, passed=False, details=f"invalid_json: {exc}")
+        has_entries = False
+        if isinstance(data, list):
+            has_entries = len(data) > 0
+        elif isinstance(data, dict):
+            has_entries = len(data) > 0
+        return VerifierResult(id=self.verifier_id, passed=has_entries, details="non_empty" if has_entries else "empty")
+
+
+__all__ = ["JsonHasEntriesVerifier"]
 

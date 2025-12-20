@@ -1,28 +1,29 @@
-id: example_browser_001
+id: example_browser_task
 name: Example Browser Task
 type: browser
-goal: "Open example.com and capture headline text"
+goal: "Open https://example.com and capture evidence"
 inputs:
-  query: "example automation"
-output:
-  destination: runs/output
-  format: screenshot+html
-definition_of_done: "Page loads and contains Example Domain text"
+  steps:
+    - action: goto
+      url: https://example.com
+    - action: wait_for
+      text: Example Domain
+      timeout_ms: 10000
+    - action: screenshot
+      path: runs/example_browser_task.png
+output: {}
+definition_of_done: "example.com loaded and evidence captured"
 verify:
   - id: page_contains
     args:
-      text: "Example Domain"
+      text: Example Domain
 allowed_paths:
   - runs/
-  - outputs/
 tools_allowed:
   - browser
 stop_rules:
-  max_attempts: 2
-  max_minutes: 5
+  max_attempts: 1
+  max_minutes: 2
   max_tool_calls: 5
-on_fail: escalate
-url: https://example.com
-timeout_seconds: 30
-requires_human: false
-session_state_path: sessions/google_state.json
+on_fail: abort
+

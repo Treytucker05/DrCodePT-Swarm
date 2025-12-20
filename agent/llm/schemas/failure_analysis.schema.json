@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "root_cause",
+    "explanation_short",
+    "suggested_tool_or_step_changes",
+    "stop_condition_if_applicable"
+  ],
+  "properties": {
+    "root_cause": { "type": "string" },
+    "explanation_short": { "type": "string" },
+    "suggested_tool_or_step_changes": { "type": "array", "items": { "type": "string" } },
+    "stop_condition_if_applicable": { "type": ["string", "null"] }
+  }
+}
+

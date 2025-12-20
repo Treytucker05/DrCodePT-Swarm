@@ -1,22 +1,26 @@
 from __future__ import annotations
 
-"""Base verifier interface and result container."""
-
-from dataclasses import dataclass, field
-from typing import Any, Dict
+from dataclasses import dataclass
+from typing import Any, Dict, Optional
 
 
 @dataclass
-class VerifyResult:
+class VerifierResult:
+    id: str
     passed: bool
-    message: str = ""
-    evidence: Dict[str, Any] = field(default_factory=dict)
+    details: str = ""
+    metadata: Dict[str, Any] | None = None
 
 
-class Verifier:
-    def __init__(self, args: Dict[str, Any]):
+class VerifierAdapter:
+    verifier_id: str = ""
+
+    def __init__(self, args: Optional[Dict[str, Any]] = None):
         self.args = args or {}
 
-    def verify(self, context: Dict[str, Any]) -> VerifyResult:  # pragma: no cover - interface
+    def verify(self, context: Dict[str, Any]) -> VerifierResult:  # pragma: no cover
         raise NotImplementedError
+
+
+__all__ = ["VerifierAdapter", "VerifierResult"]
 

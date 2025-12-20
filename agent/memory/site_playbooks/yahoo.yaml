@@ -5,9 +5,24 @@ login_flow:
     action: fill
     field_type: text
     note: "Yahoo ID or email field"
+  - action: sleep
+    seconds: 0.4
+    note: "Allow username validation to enable Next button"
+  - selector: "button#login-signin"
+    action: click_optional
+    timeout_ms: 8000
+    note: "Continue after username (optional fallback)"
+  - selector: "button[type='submit'], input[type='submit']"
+    action: click_optional
+    timeout_ms: 8000
+    note: "Continue after username (generic submit fallback)"
   - selector: "#login-signin"
     action: click
     note: "Continue after username"
+  - selector: "button:has-text('Use password instead'), button:has-text('Use your password')"
+    action: click_optional
+    timeout_ms: 6000
+    note: "Bypass passkey flow if offered"
   - selector: "button#skip-button"
     action: click_optional
     timeout_ms: 5000
@@ -23,6 +38,18 @@ login_flow:
   - selector: "#login-signin"
     action: click
     note: "Submit password"
+  - selector: "input[name='verificationCode'], input#verification-code"
+    action: pause_if_visible
+    timeout_ms: 20000
+    note: "If 2FA code is required, complete it and press Enter"
+  - text: "Enter verification code"
+    action: pause_if_visible
+    timeout_ms: 20000
+    note: "If verification code screen appears, complete it and press Enter"
+  - text: "Verify your identity"
+    action: pause_if_visible
+    timeout_ms: 20000
+    note: "If verification prompt appears, complete it and press Enter"
 known_urls:
   - https://login.yahoo.com/
   - https://mail.yahoo.com/

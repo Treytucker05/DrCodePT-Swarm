@@ -7,10 +7,13 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from contextlib import nullcontext
 
 try:
     from colorama import Fore, Style
@@ -94,30 +97,117 @@ def find_matching_playbook(command: str, playbooks: dict) -> Tuple[Optional[str]
     if not command_lower:
         return None, None
 
-    # Direct match on triggers
-    for pb_id, pb_data in playbooks.items():
-        triggers = pb_data.get("triggers") or []
-        for trigger in triggers:
-            t = str(trigger).lower().strip()
-            if not t:
-                continue
-            if t == command_lower:
-                return pb_id, pb_data
-            if t in command_lower or command_lower in t:
-                return pb_id, pb_data
+    def _tokens(text: str) -> List[str]:
+        text = re.sub(r"[^a-z0-9\s]+", " ", (text or "").lower())
+        parts = [p for p in re.split(r"\s+", text) if p]
+        # Keep only meaningful tokens (avoid "can you", "please", etc).
+        return [p for p in parts if len(p) > 3]
 
-    # Fuzzy match on name/description (best-effort)
-    words = [w for w in re.split(r"\\s+", command_lower) if len(w) > 3]
-    if not words:
+    cmd_tokens = set(_tokens(command_lower))
+
+    best: Tuple[int, Optional[str], Optional[dict]] = (0, None, None)
+
+    for pb_id, pb_data in playbooks.items():
+        pb = pb_data or {}
+        score = 0
+
+        name = str(pb.get("name") or "").lower()
+        desc = str(pb.get("description") or "").lower()
+        meta_tokens = set(_tokens(f"{name} {desc}"))
+
+        # Score triggers
+        triggers = pb.get("triggers") or []
+        if isinstance(triggers, list):
+            for trigger in triggers:
+                t = str(trigger).lower().strip()
+                if not t:
+                    continue
+                if t == command_lower:
+                    score = max(score, 1000)
+                    continue
+                if t in command_lower:
+                    score = max(score, 800 + min(len(t), 80))
+                elif command_lower in t:
+                    score = max(score, 650 + min(len(command_lower), 80))
+
+                # Token overlap with trigger text
+                overlap = cmd_tokens.intersection(_tokens(t))
+                score += 15 * len(overlap)
+
+        # Fuzzy score on name/description tokens
+        overlap_meta = cmd_tokens.intersection(meta_tokens)
+        score += 10 * len(overlap_meta)
+
+        # Prefer playbooks that look more specific (more steps) when tied.
+        steps = pb.get("steps") if isinstance(pb.get("steps"), list) else []
+        score += min(len(steps), 10)
+
+        if score > best[0]:
+            best = (score, pb_id, pb_data)
+
+    # Require at least some meaningful signal.
+    if best[0] < 20:
         return None, None
+    return best[1], best[2]
 
-    for pb_id, pb_data in playbooks.items():
-        name = str(pb_data.get("name") or "").lower()
-        desc = str(pb_data.get("description") or "").lower()
-        if any(word in name or word in desc for word in words):
-            return pb_id, pb_data
 
-    return None, None
+def _is_unsafe_mode() -> bool:
+    return os.getenv("AGENT_UNSAFE_MODE", "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _looks_destructive(playbook_data: dict) -> bool:
+    if not isinstance(playbook_data, dict):
+        return False
+
+    if bool(playbook_data.get("dangerous")):
+        return True
+
+    haystack_parts: List[str] = []
+    for k in ("name", "description"):
+        v = playbook_data.get(k)
+        if isinstance(v, str) and v.strip():
+            haystack_parts.append(v.lower())
+
+    steps = playbook_data.get("steps")
+    if isinstance(steps, list):
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            for k in ("description", "command", "selector", "text", "url"):
+                v = step.get(k)
+                if isinstance(v, str) and v.strip():
+                    haystack_parts.append(v.lower())
+
+    haystack = " ".join(haystack_parts)
+    destructive_keywords = [
+        "delete",
+        "remove",
+        "empty",
+        "purge",
+        "wipe",
+        "erase",
+        "clear",
+        "trash",
+        "spam",
+    ]
+    return any(k in haystack for k in destructive_keywords)
+
+
+def _intent_mentions_destructive(command: str) -> bool:
+    text = (command or "").lower()
+    needles = [
+        "delete",
+        "remove",
+        "empty",
+        "purge",
+        "wipe",
+        "erase",
+        "clear",
+        "trash",
+        "spam",
+        "clean",
+    ]
+    return any(n in text for n in needles)
 
 
 def _codex_command() -> list[str]:
@@ -128,31 +218,43 @@ def _codex_command() -> list[str]:
 
 
 def _call_codex(prompt: str, *, allow_tools: bool) -> str:
-    cmd: list[str] = _codex_command() + ["exec"]
+    # Note: `--search` is a global flag (must appear before the `exec` subcommand).
+    cmd: list[str] = _codex_command() + ["--dangerously-bypass-approvals-and-sandbox", "--search", "exec"]
     if not allow_tools:
-        cmd += ["-c", "--disable", "shell_tool", "--disable", "rmcp_client"]
-    cmd += ["--dangerously-bypass-approvals-and-sandbox"]
+        cmd += ["--disable", "shell_tool", "--disable", "rmcp_client"]
 
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
 
     try:
-        proc = subprocess.run(
-            cmd,
-            input=prompt,
-            text=True,
-            encoding="utf-8",
-            errors="ignore",
-            capture_output=True,
-            env=env,
-            cwd=str(REPO_ROOT),
-            timeout=int(os.getenv("CODEX_TIMEOUT_SECONDS", "180")),
-        )
+        try:
+            from agent.ui.spinner import Spinner
+
+            spinner_ctx = Spinner("CODEX") if sys.stdout.isatty() else nullcontext()
+        except Exception:
+            spinner_ctx = nullcontext()
+
+        with spinner_ctx:
+            proc = subprocess.run(
+                cmd,
+                input=prompt,
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                capture_output=True,
+                env=env,
+                cwd=str(REPO_ROOT),
+                timeout=int(os.getenv("CODEX_TIMEOUT_SECONDS", "300")),
+            )
     except FileNotFoundError:
         return "[CODEX ERROR] Codex CLI not found on PATH."
     except subprocess.TimeoutExpired:
-        return "[CODEX ERROR] Codex CLI timed out."
+        timeout_s = int(os.getenv("CODEX_TIMEOUT_SECONDS", "300"))
+        return (
+            f"[CODEX ERROR] Codex CLI timed out after {timeout_s}s. "
+            "Try setting CODEX_TIMEOUT_SECONDS=600 and retry."
+        )
 
     if proc.returncode != 0:
         error = proc.stderr.strip() if proc.stderr else "Unknown error"
@@ -165,20 +267,29 @@ def _extract_json_object(text: str) -> Optional[dict]:
     if not text:
         return None
 
+    # If Codex returned clean JSON, parse directly first.
+    try:
+        obj = json.loads(text.strip())
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        pass
+
     # Prefer fenced JSON
-    fence = re.search(r"```json\\s*(\\{.*?\\})\\s*```", text, flags=re.DOTALL | re.IGNORECASE)
+    fence = re.search(r"```json\s*(\{.*?\})\s*```", text, flags=re.DOTALL | re.IGNORECASE)
     if fence:
         try:
-            return json.loads(fence.group(1))
+            obj = json.loads(fence.group(1))
+            return obj if isinstance(obj, dict) else None
         except Exception:
             pass
 
     # Fallback: try first {...} block
-    brace = re.search(r"(\\{.*\\})", text, flags=re.DOTALL)
+    brace = re.search(r"(\{.*\})", text, flags=re.DOTALL)
     if brace:
         candidate = brace.group(1).strip()
         try:
-            return json.loads(candidate)
+            obj = json.loads(candidate)
+            return obj if isinstance(obj, dict) else None
         except Exception:
             return None
     return None
@@ -245,6 +356,18 @@ def execute_playbook(playbook_id: str, playbook_data: dict, *, run_path: Optiona
 
     pending_browser: List[Dict[str, Any]] = []
 
+    def _emit_output(output: Optional[dict], *, indent: str = "    ") -> None:
+        if not isinstance(output, dict):
+            return
+        stdout = (output.get("stdout") or "").strip()
+        stderr = (output.get("stderr") or "").strip()
+        if stdout:
+            for line in stdout.splitlines():
+                print(f"{indent}{line}")
+        if stderr:
+            for line in stderr.splitlines():
+                print(f"{indent}{line}")
+
     def flush_browser() -> bool:
         nonlocal pending_browser
         if not pending_browser:
@@ -265,7 +388,21 @@ def execute_playbook(playbook_id: str, playbook_data: dict, *, run_path: Optiona
         }
         browser_task.login_site = inputs["login_site"]
         browser_task.headless = headless_setting
-        result = browser_tool.execute(browser_task, inputs)
+        pause_actions = {"pause_for_user", "pause_if_visible"}
+        has_pause = any(isinstance(step, dict) and step.get("action") in pause_actions for step in pending_browser)
+
+        def _browser_spinner(use_spinner: bool):
+            if not use_spinner:
+                return nullcontext()
+            try:
+                from agent.ui.spinner import Spinner
+
+                return Spinner("BROWSER") if sys.stdout.isatty() else nullcontext()
+            except Exception:
+                return nullcontext()
+
+        with _browser_spinner(not has_pause):
+            result = browser_tool.execute(browser_task, inputs)
         if result.success:
             pending_browser = []
             return True
@@ -275,7 +412,8 @@ def execute_playbook(playbook_id: str, playbook_data: dict, *, run_path: Optiona
         if playbook_data.get("login_site") and "No credentials stored" in err:
             inputs["login_site"] = None
             browser_task.login_site = None
-            retry = browser_tool.execute(browser_task, inputs)
+            with _browser_spinner(not has_pause):
+                retry = browser_tool.execute(browser_task, inputs)
             if retry.success:
                 pending_browser = []
                 return True
@@ -353,16 +491,18 @@ def execute_playbook(playbook_id: str, playbook_data: dict, *, run_path: Optiona
                     if stderr:
                         print(stderr.strip())
                     return False
+                _emit_output(result.output)
 
             elif step_type in {"python", "python_inline"}:
                 script = step.get("code") or step.get("script") or ""
-                result = python_tool.execute(None, {"script": script})
+                result = python_tool.execute(None, {"script": script, "cwd": str(REPO_ROOT)})
                 if not result.success:
                     print(f"{RED}    Failed:{RESET} {result.error or 'Unknown error'}")
                     stderr = (result.output or {}).get("stderr")
                     if stderr:
                         print(stderr.strip())
                     return False
+                _emit_output(result.output)
 
             elif step_type in {"python_file", "python_script"}:
                 path = step.get("path") or step.get("file") or ""
@@ -468,6 +608,12 @@ def mode_execute(command: str) -> None:
 
     if pb_data:
         print(f"{GREEN}[FOUND]{RESET} {pb_data.get('name', pb_id)}")
+        if _looks_destructive(pb_data) and not _is_unsafe_mode() and not _intent_mentions_destructive(command):
+            print(f"{YELLOW}[CONFIRM]{RESET} This playbook looks destructive (delete/empty).")
+            resp = input(f"{YELLOW}Run it anyway? (y/n):{RESET} ").strip().lower()
+            if resp != "y":
+                print(f"{YELLOW}[CANCELLED]{RESET} Ok, not running.")
+                return
         ok = execute_playbook(pb_id or "playbook", pb_data)
         if ok:
             print(f"{GREEN}[DONE]{RESET} Task completed successfully!")

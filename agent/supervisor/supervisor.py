@@ -1,398 +1,337 @@
 from __future__ import annotations
 
-"""Enhanced orchestration loop with Self-Healing, Active Learning, and Session Memory."""
-
-import time
+import argparse
 import json
-from datetime import datetime
+import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
-from dotenv import load_dotenv
 
-from agent.schemas.task_schema import TaskDefinition, TaskType, load_task_from_yaml
+from agent.learning.self_healing_llm import apply_self_healing, log_healing_attempt
+from agent.logging.run_logger import finalize_run, init_run, log_event
+from agent.schemas.task_schema import OnFailAction, TaskDefinition, TaskType, load_task_from_yaml
+from agent.supervisor.hardening import _last_events, abort, escalate, trigger_handoff, wait_for_continue
+from agent.tools.base import ToolResult
 from agent.tools.registry import get_tool
 from agent.verifiers.registry import get_verifier
-from agent.logging.run_logger import init_run, log_event, finalize_run
-from agent.evidence.capture import bundle_evidence
-from agent.supervisor.hardening import _last_events, self_heal_browser_failure
 
-# Import the new 10/10 features
-try:
-    from agent.learning.self_healing_llm import apply_self_healing, log_healing_attempt, get_last_analysis
-    SELF_HEALING_AVAILABLE = True
-except ImportError:
-    SELF_HEALING_AVAILABLE = False
-    print("[WARNING] Self-healing module not available")
 
-try:
-    from agent.learning import ollama_client
-    OLLAMA_AVAILABLE = True
-except ImportError:
-    OLLAMA_AVAILABLE = False
-    print("[WARNING] Ollama client not available")
+@dataclass
+class _Counters:
+    tool_calls: int = 0
 
-try:
-    from agent.learning.active_learning import learn_from_success, suggest_playbook
-    ACTIVE_LEARNING_AVAILABLE = True
-except ImportError:
-    ACTIVE_LEARNING_AVAILABLE = False
-    print("[WARNING] Active learning module not available")
 
-try:
-    from agent.learning.session_memory import get_current_session
-    SESSION_MEMORY_AVAILABLE = True
-except ImportError:
-    SESSION_MEMORY_AVAILABLE = False
-    print("[WARNING] Session memory module not available")
+def _env_flag(name: str) -> bool:
+    import os
 
-# Lazy imports for components
-try:
-    from agent.learning.learning_store import (
-        generate_failure_signature,
-        retrieve_similar_cases,
-        record_success,
-        record_failure,
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _is_unsafe_mode(cli_flag: bool) -> bool:
+    return bool(cli_flag or _env_flag("AGENT_UNSAFE_MODE"))
+
+
+def _trace_write(run_path: Path, record: Dict[str, Any]) -> None:
+    (run_path / "trace.jsonl").open("a", encoding="utf-8", errors="replace", newline="\n").write(
+        json.dumps(record, ensure_ascii=False) + "\n"
     )
-except Exception:
-    def generate_failure_signature(*args, **kwargs):
-        return "signature_placeholder"
-    
-    def retrieve_similar_cases(*args, **kwargs):
-        return []
-    
-    def record_success(*args, **kwargs):
-        return None
-    
-    def record_failure(*args, **kwargs):
-        return None
-
-try:
-    from agent.supervisor.hardening import escalate, abort, trigger_handoff, wait_for_continue
-except Exception:
-    def escalate(run_path, reason, task_id=None):
-        finalize_run(run_path, "escalated", f"Escalated: {reason}")
-    
-    def abort(run_path, reason):
-        finalize_run(run_path, "aborted", f"Aborted: {reason}")
-    
-    def trigger_handoff(run_path, task, evidence):
-        log_event(run_path, "handoff_wait", {"reason": "requires_human", "task": task.id})
-    
-    def wait_for_continue():
-        time.sleep(1)
 
 
-load_dotenv()
+def _tool_inputs(task: TaskDefinition, run_path: Path) -> Dict[str, Any]:
+    inputs: Dict[str, Any] = dict(task.inputs or {})
+    # Add common context for tools that write artifacts
+    inputs.setdefault("run_path", str(run_path))
 
-HANDOFF_DIR = Path(__file__).resolve().parents[1] / "handoff"
+    if task.type == TaskType.shell:
+        inputs.setdefault("command", task.command)
+        if task.timeout_seconds:
+            inputs.setdefault("timeout_seconds", task.timeout_seconds)
+
+    if task.type == TaskType.python:
+        inputs.setdefault("script", task.script)
+        if task.timeout_seconds:
+            inputs.setdefault("timeout_seconds", task.timeout_seconds)
+
+    if task.type == TaskType.fs:
+        inputs.setdefault("path", task.path)
+        if task.content:
+            inputs.setdefault("content", task.content)
+        if task.mode:
+            inputs.setdefault("mode", task.mode)
+
+    if task.type == TaskType.api:
+        if task.endpoint:
+            inputs.setdefault("endpoint", task.endpoint)
+        if task.method:
+            inputs.setdefault("method", task.method)
+        if task.headers:
+            inputs.setdefault("headers", task.headers)
+        if task.params:
+            inputs.setdefault("params", task.params)
+        if task.body is not None:
+            inputs.setdefault("body", task.body)
+        if task.timeout_seconds:
+            inputs.setdefault("timeout_seconds", task.timeout_seconds)
+
+    if task.type == TaskType.browser:
+        if task.login_site:
+            inputs.setdefault("login_site", task.login_site)
+        if task.url:
+            inputs.setdefault("url", task.url)
+        if task.session_state_path:
+            inputs.setdefault("session_state_path", task.session_state_path)
+        if task.headless is not None:
+            inputs.setdefault("headless", task.headless)
+
+    if task.type == TaskType.notify:
+        inputs.setdefault("title", task.name)
+        inputs.setdefault("message", task.goal)
+
+    return inputs
 
 
-def validate_task(task: TaskDefinition):
-    return task
-
-
-def plan_steps(task: TaskDefinition, learnings: List[Any]) -> List[TaskDefinition]:
-    if task.type == TaskType.composite:
-        return task.steps or []
-    return [task]
-
-
-def run_verifiers(verify_specs, tool_result, evidence: Dict[str, Any]):
-    results = []
-    context = {"last_result": tool_result.output if hasattr(tool_result, "output") else tool_result, "evidence": evidence}
-    if isinstance(tool_result.output, dict):
-        if "html" in tool_result.output:
-            context["html"] = tool_result.output["html"]
-    for spec in verify_specs or []:
-        verifier = get_verifier(spec.id if hasattr(spec, "id") else spec.get("id"), spec.args if hasattr(spec, "args") else spec.get("args"))
-        results.append(verifier.verify(context))
-    return results
-
-
-def all_passed(results) -> bool:
-    return all(r.passed for r in results)
-
-
-def retrieve_relevant_learnings(task):
-    return retrieve_similar_cases("task_" + task.id, top_k=3)
-
-
-def retrieve_fix_for_signature(signature):
-    return None
-
-
-def record_success_signature(signature, fix_applied):
-    try:
-        record_success(signature, fix_applied)
-    except Exception:
-        pass
-
-
-def record_failure_signature(signature: str, reason: str, task_id: str, step_id: str, attempt: int, verify_results):
-    metadata = {
-        "task_id": task_id,
-        "step_id": step_id,
-        "attempt": attempt,
+def _run_verifiers(task: TaskDefinition, result: ToolResult) -> List[Dict[str, Any]]:
+    verify_results: List[Dict[str, Any]] = []
+    specs = task.verify or []
+    ctx = {
+        "tool_success": bool(result.success),
+        "last_result": result.output if result.output is not None else {},
+        "evidence": result.evidence or {},
     }
-    if verify_results:
-        metadata["verifiers"] = [
-            {
-                "id": getattr(r, "id", None),
-                "passed": getattr(r, "passed", None),
-            }
-            for r in verify_results
-        ]
-    try:
-        record_failure(signature, reason, task_id=task_id, step_id=step_id, metadata=metadata)
-    except Exception:
-        pass
+    # Convenience passthrough for html/DOM verifiers
+    if isinstance(result.metadata, dict) and result.metadata.get("dom_snapshot"):
+        ctx["html"] = result.metadata.get("dom_snapshot")
+
+    for spec in specs:
+        v = get_verifier(spec.id, spec.args)
+        r = v.verify(ctx)
+        verify_results.append(
+            {"id": r.id, "passed": bool(r.passed), "details": r.details, "metadata": r.metadata or {}}
+        )
+    return verify_results
 
 
-def run_task(yaml_path: str, healing_depth: int = 0):
-    """
-    Enhanced run_task with Self-Healing, Active Learning, and Session Memory.
-    """
-    task = load_task_from_yaml(yaml_path)
-    validate_task(task)
-    run_path = init_run(task.id)
-    
-    # Save original task YAML for self-healing
-    original_yaml_path = Path(run_path) / "original_task.yaml"
-    original_yaml_path.write_text(Path(yaml_path).read_text())
-    
-    # Get session context
-    session_context = {}
-    if SESSION_MEMORY_AVAILABLE:
-        session = get_current_session()
-        session_context = session.get_context_for_task(task.goal)
-        log_event(run_path, "session_context", session_context)
-    
-    # Check for existing playbook
-    if ACTIVE_LEARNING_AVAILABLE:
-        playbook = suggest_playbook(task.goal)
-        if playbook:
-            log_event(run_path, "playbook_suggested", {"playbook_id": playbook["id"], "name": playbook["name"]})
-            print(f"[LEARNING] Found playbook: {playbook['name']} (used {playbook['success_count']} times)")
-    
-    learnings = retrieve_relevant_learnings(task)
-    steps = plan_steps(task, learnings)
-    
-    attempts = 0
-    tool_calls = 0
-    start_time = time.time()
-    last_signatures: List[str] = []
-    execution_log = {"events": [], "tool_calls": 0, "start_time": start_time}
-    healing_attempts = 0
-    max_healing_attempts = 2
+def _all_passed(results: List[Dict[str, Any]]) -> bool:
+    return all(bool(r.get("passed")) for r in results)
 
-    def _record_failure_analysis(reason: str):
-        if not OLLAMA_AVAILABLE:
+
+def _execute_single_task(
+    task: TaskDefinition,
+    *,
+    run_path: Path,
+    unsafe_mode: bool,
+    counters: _Counters,
+) -> Tuple[bool, ToolResult, List[Dict[str, Any]]]:
+    tool_name = task.type.value
+    spec = get_tool(tool_name)
+    if spec is None:
+        return False, ToolResult(False, error=f"Unknown tool: {tool_name}"), []
+
+    if task.tools_allowed and tool_name not in task.tools_allowed:
+        return False, ToolResult(False, error=f"Tool not allowed for task: {tool_name}"), []
+
+    if spec.dangerous and not unsafe_mode:
+        return (
+            False,
+            ToolResult(
+                False,
+                error=f"Blocked unsafe tool: {tool_name}. Re-run with --unsafe-mode or set AGENT_UNSAFE_MODE=true.",
+                metadata={"unsafe_blocked": True},
+            ),
+            [],
+        )
+
+    inputs = _tool_inputs(task, run_path)
+    counters.tool_calls += 1
+
+    _trace_write(
+        run_path,
+        {
+            "ts": time.time(),
+            "observation": {"task_id": task.id, "type": task.type.value, "goal": task.goal},
+            "action": {"tool": tool_name, "inputs": inputs},
+        },
+    )
+
+    result = spec.adapter.execute(task, inputs)
+    verify_results = _run_verifiers(task, result)
+
+    _trace_write(
+        run_path,
+        {
+            "ts": time.time(),
+            "result": {
+                "success": bool(result.success),
+                "error": result.error,
+                "output": result.output,
+                "metadata": result.metadata,
+                "evidence": result.evidence,
+                "verifiers": verify_results,
+            },
+            "reflection": {
+                "status": "success" if (result.success and _all_passed(verify_results)) else "replan",
+                "explanation_short": "ok" if result.success else (result.error or "failed"),
+            },
+        },
+    )
+
+    ok = bool(result.success) and _all_passed(verify_results)
+    return ok, result, verify_results
+
+
+def _execute_task_tree(
+    task: TaskDefinition,
+    *,
+    run_path: Path,
+    unsafe_mode: bool,
+    counters: _Counters,
+) -> Tuple[bool, str, Optional[ToolResult]]:
+    if task.type == TaskType.composite:
+        for step in task.steps or []:
+            ok, err, last = _execute_task_tree(step, run_path=run_path, unsafe_mode=unsafe_mode, counters=counters)
+            if not ok:
+                return False, err, last
+        return True, "", None
+
+    if task.requires_human:
+        trigger_handoff(run_path, task, {"goal": task.goal})
+        continued = wait_for_continue(timeout_minutes=task.stop_rules.max_minutes)
+        if not continued:
+            return False, "handoff_timeout", None
+        return True, "", None
+
+    ok, result, verify_results = _execute_single_task(task, run_path=run_path, unsafe_mode=unsafe_mode, counters=counters)
+    if ok:
+        log_event(run_path, "step_success", {"task_id": task.id, "type": task.type.value})
+        return True, "", result
+    reason = result.error or ("verification_failed" if not _all_passed(verify_results) else "failed")
+    log_event(
+        run_path,
+        "step_failed",
+        {
+            "task_id": task.id,
+            "type": task.type.value,
+            "error": result.error,
+            "verifiers": verify_results,
+            "metadata": result.metadata,
+        },
+    )
+    return False, reason, result
+
+
+def run_task(
+    task_or_path: str | Path | TaskDefinition,
+    *,
+    unsafe_mode: bool = False,
+    enable_self_heal: bool = True,
+) -> None:
+    if isinstance(task_or_path, TaskDefinition):
+        task = task_or_path
+        task_yaml = yaml.safe_dump(task.model_dump(mode="json"), sort_keys=False)  # type: ignore[attr-defined]
+    else:
+        task_path = Path(task_or_path)
+        task_yaml = task_path.read_text(encoding="utf-8", errors="replace")
+        task = load_task_from_yaml(str(task_path))
+
+    unsafe = _is_unsafe_mode(unsafe_mode)
+
+    run_path = Path(init_run(task.id))
+    (run_path / "original_task.yaml").write_text(task_yaml, encoding="utf-8", errors="replace")
+
+    start = time.time()
+    counters = _Counters()
+
+    max_attempts = int(task.stop_rules.max_attempts)
+    max_seconds = int(task.stop_rules.max_minutes) * 60
+    max_tool_calls = int(task.stop_rules.max_tool_calls)
+
+    last_plan_yaml = task_yaml
+    action_sigs: List[str] = []
+
+    for attempt in range(1, max_attempts + 1):
+        if time.time() - start > max_seconds:
+            escalate(run_path, "timeout", task_id=task.id)
+        if counters.tool_calls >= max_tool_calls:
+            escalate(run_path, "max_tool_calls_exceeded", task_id=task.id)
+
+        log_event(run_path, "attempt_start", {"attempt": attempt, "task_id": task.id})
+
+        ok, reason, last_result = _execute_task_tree(task, run_path=run_path, unsafe_mode=unsafe, counters=counters)
+        if ok:
+            finalize_run(run_path, "success", task.definition_of_done)
             return
+
+        # Loop detection: repeated identical failure reasons with no task delta.
+        sig = json.dumps({"reason": reason, "task_id": task.id}, sort_keys=True)
+        action_sigs.append(sig)
+        action_sigs = action_sigs[-8:]
+        if action_sigs.count(sig) >= 3:
+            escalate(run_path, "loop_detected", task_id=task.id)
+
+        if not enable_self_heal:
+            break
+
+        if reason and "unsafe tool" in reason.lower():
+            abort(run_path, reason)
+
+        # Re-plan / self-heal
         try:
-            analysis = ollama_client.analyze_failure(task.goal, reason, execution_log)
-            Path(run_path, "failure_analysis.json").write_text(json.dumps(analysis, indent=2), encoding="utf-8")
-        except Exception as exc:
-            print(f"[WARNING] Ollama failure analysis skipped: {exc}")
-    
-    for step in steps:
-        handoff_used = False
-        while True:
-            # Stop rules
-            if attempts >= step.stop_rules.max_attempts:
-                if SELF_HEALING_AVAILABLE and healing_attempts < max_healing_attempts and healing_depth < max_healing_attempts:
-                    print(f"[SELF-HEALING] Attempting to heal task (attempt {healing_attempts + 1}/{max_healing_attempts})...")
-                    corrected_yaml = apply_self_healing(
-                        Path(run_path),
-                        task,
-                        "max_attempts_exceeded",
-                        execution_log
-                    )
-                    meta = get_last_analysis()
-                    confidence = float(meta.get("confidence", 0) or 0)
-                    if corrected_yaml and confidence >= 0.7:
-                        healing_attempts += 1
-                        log_healing_attempt(Path(run_path), healing_attempts, True, {"corrected_yaml": corrected_yaml, "confidence": confidence})
-                        log_event(run_path, "self_heal_plan_generated", {"confidence": confidence, "corrected_yaml": corrected_yaml})
-                        finalize_run(run_path, "retrying_with_heal", "Retrying with corrected plan generated by Ollama")
-                        return run_task(corrected_yaml, healing_depth + 1)
-                    else:
-                        reason = "low_confidence" if confidence < 0.7 else "no_fix_generated"
-                        log_healing_attempt(Path(run_path), healing_attempts + 1, False, {"reason": reason, "confidence": confidence})
-                
-                _record_failure_analysis("max_attempts_exceeded")
-                escalate(run_path, "max_attempts", task_id=task.id)
-                return
-            
-            if time.time() - start_time >= step.stop_rules.max_minutes * 60:
-                _record_failure_analysis("max_time_exceeded")
-                escalate(run_path, "max_time", task_id=task.id)
-                return
-            
-            if tool_calls >= step.stop_rules.max_tool_calls:
-                _record_failure_analysis("max_tool_calls_exceeded")
-                escalate(run_path, "max_tool_calls", task_id=task.id)
-                return
-            
-            signature = generate_failure_signature(
-                tool=step.type.value,
-                site=step.url if hasattr(step, "url") else "",
-                url=step.url if hasattr(step, "url") else "",
-                exception_type="",
-                verifier_failed="",
-                dom_hints={},
+            healing = apply_self_healing(
+                goal=task.goal,
+                failed_task_yaml=last_plan_yaml,
+                error=reason,
+                recent_events=_last_events(run_path, limit=10),
             )
-            if last_signatures.count(signature) >= 3:
-                escalate(run_path, "blocked_state", task_id=task.id)
-                return
-            
-            # Execute
-            if step.type.value not in (step.tools_allowed or []):
-                abort(run_path, f"Tool {step.type.value} not allowed")
-                return
-            
-            tool = get_tool(step.type)
-            combined_inputs = {}
-            combined_inputs.update(task.inputs or {})
-            if hasattr(step, "inputs") and step.inputs:
-                combined_inputs.update(step.inputs)
-            combined_inputs["run_path"] = run_path
-            
-            result = tool.execute(step, combined_inputs)
-            tool_calls += 1
-            execution_log["tool_calls"] = tool_calls
-            execution_log["events"].append({
-                "type": "tool_execute",
-                "step": step.id,
-                "tool": step.type.value,
-                "success": result.success,
-                "timestamp": time.time()
-            })
-            
-            log_event(run_path, "tool_execute", {"step": step.id, "result": getattr(result, 'output', None), "success": result.success})
-            action_value = combined_inputs.get("action") or combined_inputs.get("op")
-            
-            if result.success:
-                log_event(run_path, "tool_success", {"tool": step.type.value, "action": action_value, "output": result.output})
-                execution_log["events"].append({
-                    "type": "tool_success",
-                    "tool": step.type.value,
-                    "action": action_value
-                })
-            else:
-                log_event(run_path, "tool_failure", {"tool": step.type.value, "action": action_value, "error": result.error, "metadata": result.metadata})
-                if step.type == TaskType.browser and result.metadata.get("dom_snapshot"):
-                    heal_metadata = dict(result.metadata)
-                    if result.error:
-                        heal_metadata["error"] = result.error
-                    if getattr(result, "evidence", None):
-                        heal_metadata["evidence"] = result.evidence
-                    self_heal_browser_failure(run_path, step, heal_metadata)
-            
-            # Verify
-            evidence = {}
-            verify_results = run_verifiers(step.verify if step.type == TaskType.composite else task.verify, result, evidence)
-            failure_reason = ""
-            
-            if (not result.success) or (not all_passed(verify_results)):
-                evidence = bundle_evidence(run_path, {"output": getattr(result, "output", None)})
-                failure_reason = result.error or "verification_failed"
-            
-            log_event(run_path, "verify_results", {"step": step.id, "results": [r.__dict__ for r in verify_results]})
-            
-            # Human input trigger
-            if (not result.success) and result.error and "requires human input" in result.error.lower():
-                waiting = HANDOFF_DIR / "WAITING.yaml"
-                HANDOFF_DIR.mkdir(parents=True, exist_ok=True)
-                payload = {
-                    "task_id": task.id,
-                    "run_path": str(Path(run_path).resolve()),
-                    "blocked_at": datetime.now().isoformat(),
-                    "reason": result.error,
-                    "evidence": result.evidence,
-                    "last_10_events": _last_events(Path(run_path)),
-                }
-                waiting.write_text(yaml.safe_dump(payload), encoding="utf-8")
-                wait_for_continue()
-                continue
-            
-            if result.success and all_passed(verify_results):
-                log_event(run_path, "step_success", {"step": step.id})
-                record_success_signature(signature, None)
-                break  # proceed to next step
-            
-            # Failed
-            attempts += 1
-            last_signatures.append(signature)
-            log_event(run_path, "step_failed", {"step": step.id, "attempt": attempts})
-            record_failure_signature(
-                signature,
-                failure_reason or "step_failed",
-                task.id,
-                step.id,
-                attempts,
-                verify_results,
-            )
-            
-            fix = retrieve_fix_for_signature(signature)
-            if fix:
-                log_event(run_path, "apply_fix", {"signature": signature, "fix": fix})
-                continue
-            
-            if getattr(task, "requires_human", False):
-                if attempts > 0 and not handoff_used:
-                    attempts -= 1
-                    handoff_used = True
-                handoff_payload = evidence if isinstance(evidence, dict) else {"evidence": str(evidence)}
-                trigger_handoff(run_path, task, handoff_payload)
-                wait_for_continue()
-                continue
-            
-            if attempts < step.stop_rules.max_attempts:
-                continue
-            else:
-                _record_failure_analysis(f"verification_failed:{failure_reason or 'unknown'}")
-                escalate(run_path, "verification_failed", task_id=task.id)
-                return
-    
-    # Task succeeded!
-    execution_log["total_time"] = time.time() - start_time
-    finalize_run(run_path, "success", task.definition_of_done)
-    
-    if OLLAMA_AVAILABLE:
-        try:
-            patterns = ollama_client.extract_patterns(task.goal, execution_log)
-            Path(run_path, "success_patterns.json").write_text(json.dumps(patterns, indent=2), encoding="utf-8")
+            log_healing_attempt(run_path, {"attempt": attempt, **healing})
         except Exception as exc:
-            print(f"[WARNING] Ollama pattern extraction skipped: {exc}")
-    
-    # Active Learning: Generate playbook from success
-    if ACTIVE_LEARNING_AVAILABLE:
-        try:
-            playbook = learn_from_success(task, execution_log, Path(run_path))
-            if playbook:
-                log_event(run_path, "playbook_generated", {"playbook_id": playbook["id"]})
-        except Exception as e:
-            print(f"[WARNING] Failed to generate playbook: {e}")
-    
-    # Session Memory: Record task completion
-    if SESSION_MEMORY_AVAILABLE:
-        try:
-            session = get_current_session()
-            session.add_task(task, {
-                "outcome": "success",
-                "artifacts": [],  # Would extract from execution_log
-                "duration": execution_log["total_time"]
-            })
-        except Exception as e:
-            print(f"[WARNING] Failed to update session memory: {e}")
+            log_event(run_path, "self_heal_error", {"error": str(exc)})
+            healing = {}
+
+        stop = healing.get("stop_condition_if_applicable")
+        if stop:
+            if "abort" in str(stop).lower():
+                abort(run_path, str(stop))
+            escalate(run_path, str(stop), task_id=task.id)
+
+        corrected = (healing.get("corrected_plan") or "").strip()
+        if corrected:
+            try:
+                corrected_data = yaml.safe_load(corrected)
+                if isinstance(corrected_data, dict):
+                    task = TaskDefinition(**corrected_data)
+                    last_plan_yaml = corrected
+                    log_event(run_path, "self_heal_applied", {"attempt": attempt, "new_task_id": task.id})
+                    continue
+            except Exception as exc:
+                log_event(run_path, "self_heal_invalid_yaml", {"error": str(exc)})
+
+        # No fix produced.
+        break
+
+    # If we get here, attempts exhausted or self-heal couldn't recover.
+    if task.on_fail == OnFailAction.abort:
+        abort(run_path, "task_failed")
+    escalate(run_path, "task_failed", task_id=task.id)
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="python -m agent.supervisor.supervisor")
+    p.add_argument("task_yaml", help="Path to YAML task definition")
+    p.add_argument("--unsafe-mode", action="store_true", help="Allow unsafe tools/actions (shell/browser/desktop/etc).")
+    p.add_argument("--no-self-heal", action="store_true", help="Disable self-healing replanning.")
+    return p
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    args = _build_arg_parser().parse_args(argv)
+    try:
+        run_task(args.task_yaml, unsafe_mode=bool(args.unsafe_mode), enable_self_heal=not bool(args.no_self_heal))
+        return 0
+    except SystemExit as exc:
+        return int(exc.code) if isinstance(exc.code, int) else 1
 
 
 if __name__ == "__main__":
-    import sys
-    
-    if len(sys.argv) < 2:
-        print("Usage: python -m agent.supervisor.supervisor_enhanced <task_yaml>")
-        sys.exit(1)
-    run_task(sys.argv[1])
+    raise SystemExit(main())

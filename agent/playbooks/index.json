@@ -2,7 +2,13 @@
   "yahoo-clean-spam": {
     "name": "Clean Yahoo Spam",
     "description": "Log into Yahoo Mail and empty the spam folder",
-    "triggers": ["clean yahoo spam", "yahoo spam", "clean my spam", "empty spam"],
+    "dangerous": true,
+    "triggers": [
+      "clean yahoo spam",
+      "yahoo spam",
+      "clean my spam",
+      "empty spam"
+    ],
     "session_state_path": "sessions/yahoo_state.json",
     "steps": [
       {
@@ -65,5 +71,186 @@
     "login_site": "yahoo",
     "created": "2025-12-19",
     "type": "browser"
+  },
+  "yahoo-login": {
+    "name": "Yahoo Mail: Login",
+    "description": "Open Yahoo Mail and ensure you're logged in (reuses saved session if available).",
+    "triggers": [
+      "log into my yahoo mail",
+      "login to yahoo mail",
+      "login yahoo mail",
+      "open yahoo mail",
+      "yahoo mail login"
+    ],
+    "session_state_path": "sessions/yahoo_state.json",
+    "headless": false,
+    "steps": [
+      {
+        "type": "browser",
+        "description": "Open Yahoo Mail",
+        "action": "goto",
+        "url": "https://mail.yahoo.com/d",
+        "timeout_ms": 60000,
+        "wait_until": "domcontentloaded"
+      },
+      {
+        "type": "browser",
+        "description": "Wait for mailbox UI to load",
+        "action": "wait_for",
+        "selector": "a[data-test-folder-name='Spam'], a[aria-label='Spam']",
+        "timeout_ms": 300000
+      },
+      {
+        "type": "browser",
+        "description": "Capture evidence screenshot",
+        "action": "screenshot"
+      },
+      {
+        "type": "browser",
+        "description": "Keep the browser open (close the window when you're done)",
+        "action": "keep_open"
+      }
+    ],
+    "login_site": "yahoo",
+    "created": "2025-12-19",
+    "type": "browser"
+  },
+  "yahoo-app-password-setup": {
+    "name": "Yahoo Mail: App Password Setup",
+    "description": "Open Yahoo Account Security and guide you to App Passwords for IMAP/SMTP (manual login).",
+    "triggers": [
+      "setup yahoo app password",
+      "yahoo app password",
+      "enable yahoo imap",
+      "enable yahoo smtp",
+      "yahoo mail api setup"
+    ],
+    "login_site": "yahoo",
+    "session_state_path": "sessions/yahoo_state.json",
+    "headless": false,
+    "steps": [
+      {
+        "type": "browser",
+        "description": "Open Yahoo Account Security",
+        "action": "goto",
+        "url": "https://login.yahoo.com/account/security",
+        "timeout_ms": 60000,
+        "wait_until": "domcontentloaded"
+      },
+      {
+        "type": "browser",
+        "description": "Brief pause for page load",
+        "action": "sleep",
+        "seconds": 1
+      },
+      {
+        "type": "browser",
+        "description": "Wait for App passwords tab (after you sign in)",
+        "action": "wait_for",
+        "selector": "[role='tab']:has-text('App passwords')",
+        "timeout_ms": 300000
+      },
+      {
+        "type": "browser",
+        "description": "Open App Passwords (best effort)",
+        "action": "click_optional",
+        "selector": "[role='tab']:has-text('App passwords')"
+      },
+      {
+        "type": "browser",
+        "description": "Click Create/Generate app password (best effort)",
+        "action": "click_optional",
+        "text": "Create app password"
+      },
+      {
+        "type": "browser",
+        "description": "Open App Passwords (alternate label)",
+        "action": "click_optional",
+        "text": "Generate app password"
+      },
+      {
+        "type": "browser",
+        "description": "Open App Passwords (alternate label)",
+        "action": "click_optional",
+        "text": "Generate and manage app passwords"
+      },
+      {
+        "type": "browser",
+        "description": "Open App Passwords (alternate label)",
+        "action": "click_optional",
+        "text": "App passwords"
+      },
+      {
+        "type": "browser",
+        "description": "If app name prompt appears, fill and generate (manual ok)",
+        "action": "pause_if_visible",
+        "selector": "input[name='appName'], input#appName, input[aria-label='App name']",
+        "timeout_ms": 120000,
+        "message": "If the App Name field is visible, enter 'DrCodePT' and click Generate/Continue, then copy the password."
+      },
+      {
+        "type": "browser",
+        "description": "Pause so you can generate/copy the app password",
+        "action": "pause_for_user",
+        "message": "Generate the app password (label it 'DrCodePT'), copy it, then press Enter."
+      },
+      {
+        "type": "browser",
+        "description": "Capture screenshot (optional)",
+        "action": "screenshot"
+      },
+      {
+        "type": "python",
+        "description": "Save app password from clipboard into yahoo_imap credentials",
+        "code": "import subprocess, sys\nfrom agent.memory.credentials import get_credential, save_credential\n\ncreds = get_credential('yahoo') or {}\nusername = (creds.get('username') or '').strip()\nif not username:\n    print('Missing yahoo username (run: Cred: yahoo)')\n    sys.exit(1)\n\ntry:\n    pw = subprocess.check_output(['powershell','-NoLogo','-NoProfile','-Command','Get-Clipboard'], text=True).strip()\nexcept Exception as exc:\n    print(f'Failed to read clipboard: {exc}')\n    sys.exit(1)\n\nif not pw:\n    print('Clipboard is empty. Copy the app password and rerun setup.')\n    sys.exit(1)\n\npw = pw.replace(' ', '').replace('-', '')\nif not pw:\n    print('Clipboard app password is empty after cleanup. Copy it again and rerun setup.')\n    sys.exit(1)\n\nsave_credential('yahoo_imap', username, pw)\nprint('Saved yahoo_imap app password from clipboard.')\n"
+      }
+    ],
+    "created": "2025-12-19",
+    "type": "browser"
+  },
+  "yahoo-imap-test": {
+    "name": "Yahoo Mail: IMAP Read Test",
+    "description": "List the latest Yahoo inbox headers via IMAP (read-only).",
+    "triggers": [
+      "test yahoo imap",
+      "check yahoo inbox",
+      "list yahoo inbox headers",
+      "read yahoo inbox headers",
+      "yahoo inbox headers"
+    ],
+    "steps": [
+      {
+        "type": "python",
+        "description": "List latest Yahoo inbox headers",
+        "code": "import sys\nfrom pathlib import Path\n\nrepo = Path.cwd() / 'agent'\nif not repo.is_dir():\n    raise SystemExit('Could not find repo root with agent/ directory. Run from repo root.')\n\nsys.path.insert(0, str(Path.cwd()))\nfrom agent.integrations import yahoo_mail\n\nitems = yahoo_mail.list_messages(limit=5, folder='INBOX')\nif not items:\n    print('No messages found or unable to read inbox.')\nelse:\n    for i, msg in enumerate(items, 1):\n        print(f\"{i}. {msg.get('date','')} | {msg.get('from','')} | {msg.get('subject','')}\")\n"
+      }
+    ],
+    "created": "2025-12-20",
+    "type": "python"
+  },
+  "learn-agent-help": {
+    "name": "Learn (Agent Help)",
+    "description": "Lists installed playbooks and opens the local AGENTS.md/README for reference.",
+    "triggers": [
+      "learn",
+      "agent help",
+      "help",
+      "show playbooks",
+      "list playbooks",
+      "what can you do"
+    ],
+    "steps": [
+      {
+        "type": "shell",
+        "description": "List playbook files under any 'playbooks' directory.",
+        "command": "$dirs=@(); if(Test-Path .\\playbooks){$dirs+=(Resolve-Path .\\playbooks).Path}; $dirs+=Get-ChildItem -Recurse -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq 'playbooks' } | Sort-Object FullName | ForEach-Object { $_.FullName }; $dirs=$dirs | Sort-Object -Unique; if(-not $dirs -or $dirs.Count -eq 0){Write-Warning 'No playbooks directory found.'} else {foreach($d in $dirs){Write-Host \"`nPlaybooks in $d\"; Get-ChildItem -Path $d -File -Filter *.json -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object Name, FullName | Format-Table -AutoSize}}"
+      },
+      {
+        "type": "shell",
+        "description": "Open AGENTS.md or README.md (prefers repo root).",
+        "command": "$target=$null; if(Test-Path .\\AGENTS.md){$target=(Resolve-Path .\\AGENTS.md).Path} elseif(Test-Path .\\README.md){$target=(Resolve-Path .\\README.md).Path} else {$target=(Get-ChildItem -Recurse -File -ErrorAction SilentlyContinue -Filter AGENTS.md | Sort-Object FullName | Select-Object -First 1).FullName; if(-not $target){$target=(Get-ChildItem -Recurse -File -ErrorAction SilentlyContinue -Filter README.md | Sort-Object FullName | Select-Object -First 1).FullName}}; if(-not $target){Write-Warning 'No AGENTS.md or README.md found.'} else {Write-Host \"Opening $target\"; Start-Process notepad.exe $target}"
+      }
+    ],
+    "created": "2025-12-19T05:28:15.123876"
   }
 }

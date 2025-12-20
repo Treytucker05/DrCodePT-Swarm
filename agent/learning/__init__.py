@@ -1,7 +1,8 @@
 """Learning and self-improvement modules for DrCodePT-Swarm."""
 
 __all__ = [
-    "self_healing_llm",
     "active_learning",
-    "session_memory"
+    "session_memory",
+    "learning_store",
+    "self_healing_llm",
 ]

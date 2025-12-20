@@ -1,22 +1,23 @@
 from __future__ import annotations
 
-from typing import Dict
+from typing import Any, Dict
 
-from .base import Verifier, VerifyResult
+from .base import VerifierAdapter, VerifierResult
 
 
-class ApiStatusOkVerifier(Verifier):
-    def verify(self, context: Dict) -> VerifyResult:
-        expected = int(self.args.get("expected_status", 200))
-        result = context.get("last_result") or {}
-        status = None
-        if isinstance(result, dict):
-            if "status_code" in result:
-                status = result.get("status_code")
-            else:
-                status = result.get("output", {}).get("status_code")
-        else:
-            status = getattr(result, "output", {}).get("status_code", None)
+class ApiStatusOkVerifier(VerifierAdapter):
+    verifier_id = "api_status_ok"
 
-        passed = status == expected
-        return VerifyResult(passed, f"status={status}, expected={expected}")
+    def verify(self, context: Dict[str, Any]) -> VerifierResult:
+        last = context.get("last_result") or {}
+        if isinstance(last, dict):
+            status = last.get("status_code")
+            if status is None:
+                return VerifierResult(id=self.verifier_id, passed=False, details="missing status_code")
+            ok = 200 <= int(status) < 300
+            return VerifierResult(id=self.verifier_id, passed=ok, details=f"status_code={status}")
+        return VerifierResult(id=self.verifier_id, passed=False, details="non-dict last_result")
+
+
+__all__ = ["ApiStatusOkVerifier"]
+

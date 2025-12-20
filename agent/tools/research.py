@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Lightweight research tool using simple HTTP fetch + Ollama summarization."""
+"""Lightweight research tool using simple HTTP fetch + Codex CLI summarization (optional)."""
 
 import json
 from pathlib import Path
@@ -8,7 +8,7 @@ from typing import Dict, Any, List
 
 import requests
 
-from agent.learning import ollama_client
+from agent.llm import CodexCliClient, schemas as llm_schemas
 from .base import ToolAdapter, ToolResult
 
 
@@ -87,7 +87,28 @@ class ResearchTool(ToolAdapter):
             return ToolResult(False, error="No sources fetched")
 
         try:
-            summary = ollama_client.summarize_research(sources)
+            try:
+                llm = CodexCliClient.from_env()
+                prompt = (
+                    "Summarize the following sources into a concise Markdown report.\n"
+                    "Return JSON only.\n\n"
+                    f"SOURCES_JSON:\n{json.dumps(sources)[:12000]}\n"
+                )
+                summary = llm.complete_json(prompt, schema_path=llm_schemas.RESEARCH_SUMMARY)
+                summary.setdefault("model_used", llm.model or "default")
+            except Exception:
+                summary = {
+                    "summary_md": "\n".join(
+                        [
+                            f"- {s.get('title')}: {s.get('url')}\n  - {str(s.get('content') or '')[:400]}..."
+                            for s in sources
+                        ]
+                    ),
+                    "key_findings": [],
+                    "citations": [{"url": s.get("url"), "title": s.get("title")} for s in sources if s.get("url")],
+                    "model_used": None,
+                }
+
             report_md = summary.get("summary_md") or ""
             report_dir = Path(run_path) / "research"
             report_dir.mkdir(parents=True, exist_ok=True)

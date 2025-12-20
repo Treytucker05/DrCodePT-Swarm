@@ -21,6 +21,7 @@ IMPORTANT BEHAVIORS:
      * Automation → desktop
      * Code tasks → python or code_review
      * Research → research tool
+     * Email tasks (Yahoo IMAP/SMTP) → mail tool (avoid browser login once app password is set)
    - Combine tools in composite tasks when needed
 
 4. CONTEXT CONTINUITY

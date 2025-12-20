@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict
 
-from .base import Verifier, VerifyResult
+from .base import VerifierAdapter, VerifierResult
 
 
-class FileExistsVerifier(Verifier):
-    def verify(self, context: Dict) -> VerifyResult:
+class FileExistsVerifier(VerifierAdapter):
+    verifier_id = "file_exists"
+
+    def verify(self, context: Dict[str, Any]) -> VerifierResult:
         path = self.args.get("path")
         if not path:
-            return VerifyResult(False, "No path provided")
+            return VerifierResult(id=self.verifier_id, passed=False, details="file_exists requires args.path")
+        exists = Path(str(path)).exists()
+        return VerifierResult(id=self.verifier_id, passed=exists, details=("exists" if exists else "missing"))
 
-        target = Path(path)
-        exists = target.exists()
-        return VerifyResult(exists, f"File exists: {exists}", {"path": str(target)})
+
+__all__ = ["FileExistsVerifier"]
 
