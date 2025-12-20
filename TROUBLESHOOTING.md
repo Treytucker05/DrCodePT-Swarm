@@ -137,8 +137,8 @@ AUTO_MAX_STEPS=15  # Fewer steps = faster completion
 
 #### 4. Check Codex Authentication
 ```powershell
-codex auth status
-codex auth login  # If needed
+codex login status
+codex login  # If needed
 ```
 
 #### 5. Retry with Explicit Mode
@@ -208,7 +208,7 @@ items = yahoo_mail.list_messages(limit=10, folder='INBOX')
 
 2. Authenticate:
    ```powershell
-   codex auth login
+   codex login
    ```
 
 3. Verify ChatGPT Pro subscription is active
@@ -368,7 +368,7 @@ launchers\TREYS_AGENT.bat
 ### Check Codex
 ```powershell
 codex --version
-codex auth status
+codex login status
 codex exec "print('Hello from Codex')"
 ```
 
@@ -510,8 +510,8 @@ playwright install chromium
 
 ### 3. Reset Codex
 ```powershell
-codex auth logout
-codex auth login
+codex logout
+codex login
 ```
 
 ### 4. Reset Agent Memory (⚠️ Deletes credentials!)

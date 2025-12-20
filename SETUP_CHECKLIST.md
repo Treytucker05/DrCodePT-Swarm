@@ -13,7 +13,7 @@
 
 #### 1. Authenticate Codex CLI
 ```powershell
-codex auth login
+codex login
 ```
 **Status**: ⚠️ Required for LLM features
 
@@ -43,7 +43,7 @@ launchers\TREYS_AGENT.bat
 
 ### Step 1: Authenticate Codex
 ```powershell
-codex auth login
+codex login
 ```
 Follow the prompts to authenticate with your ChatGPT Pro account.
 
@@ -149,7 +149,7 @@ launchers\TREYS_AGENT.bat
 - [ ] Reinstall Codex CLI if needed
 
 ### Issue: "Codex authentication failed"
-- [ ] Run `codex auth login`
+- [ ] Run `codex login`
 - [ ] Verify ChatGPT Pro subscription is active
 - [ ] Check internet connection
 
@@ -263,6 +263,9 @@ launchers\TREYS_AGENT.bat
 # Test Codex
 codex exec "print('Hello')"
 
+# Test Codex schemas
+python scripts/check_codex_schemas.py
+
 # Test Playwright
 .venv\Scripts\activate
 python -c "from playwright.sync_api import sync_playwright; print('OK')"
@@ -275,7 +278,7 @@ launchers\TREYS_AGENT.bat
 
 ## Next Steps
 
-1. ✅ Complete authentication: `codex auth login`
+1. ✅ Complete authentication: `codex login`
 2. ✅ Install browsers: `playwright install chromium`
 3. ✅ Test basic functionality
 4. ✅ Learn your first task

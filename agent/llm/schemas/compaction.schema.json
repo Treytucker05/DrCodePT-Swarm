@@ -2,10 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "additionalProperties": false,
-  "required": ["rolling_summary"],
+  "required": ["rolling_summary", "salient_facts"],
   "properties": {
     "rolling_summary": { "type": "string" },
     "salient_facts": { "type": "array", "items": { "type": "string" } }
   }
 }
-

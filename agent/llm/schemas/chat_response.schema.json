@@ -16,13 +16,14 @@
           "description": "The type of action to perform"
         },
         "folder": {
-          "type": "string",
+          "type": ["string", "null"],
           "description": "The folder name for the action (if applicable)"
         }
       },
-      "required": ["type"]
+      "required": ["type", "folder"],
+      "additionalProperties": false
     }
   },
-  "required": ["response"],
+  "required": ["response", "action"],
   "additionalProperties": false
 }

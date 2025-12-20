@@ -205,19 +205,16 @@ class CodexCliClient(LLMClient):
         timeout_seconds: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
-        Use plain codex (reasoning mode) for structured JSON output.
-        This is for pure reasoning without execution.
-
-        Uses the 'reason' profile which blocks command execution.
+        Use Codex exec non-interactively for structured JSON reasoning output.
+        This avoids interactive TTY requirements while keeping tools disabled.
         """
-        codex = self._resolve_bin()
         schema_path = schema_path.resolve()
         if not schema_path.is_file():
             raise CodexCliExecutionError(f"JSON schema not found: {schema_path}")
 
         # Load schema to include in prompt
         try:
-            with open(schema_path, 'r', encoding='utf-8') as f:
+            with open(schema_path, "r", encoding="utf-8") as f:
                 schema = json.load(f)
         except Exception as exc:
             raise CodexCliExecutionError(f"Failed to load schema: {schema_path}") from exc
@@ -233,93 +230,11 @@ Task:
 {prompt}
 
 Output ONLY the JSON object. No explanations, no code, no commands."""
-
-        # Use plain codex with 'reason' profile (no execution)
-        cmd = [
-            codex,
-            "--profile", "reason",
-            reasoning_prompt
-        ]
-        if self.model:
-            cmd.extend(["--model", self.model])
-
-        env = os.environ.copy()
-        env["PYTHONIOENCODING"] = "utf-8"
-        env["PYTHONUTF8"] = "1"
-
-        try:
-            try:
-                from agent.ui.spinner import Spinner
-
-                spinner_ctx = Spinner("CODEX REASON") if sys.stdout.isatty() else nullcontext()
-            except Exception:
-                spinner_ctx = nullcontext()
-
-            with spinner_ctx:
-                proc = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="ignore",
-                    env=env,
-                    timeout=timeout_seconds or self.timeout_seconds,
-                )
-        except FileNotFoundError as exc:
-            raise CodexCliNotFoundError(
-                f"Codex CLI not found: {self.codex_bin}. Install Codex CLI and ensure it is on PATH."
-            ) from exc
-        except subprocess.TimeoutExpired as exc:
-            raise CodexCliExecutionError(f"codex reason timed out after {timeout_seconds or self.timeout_seconds}s") from exc
-
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
-
-        if proc.returncode != 0:
-            if _looks_like_auth_error(stdout, stderr):
-                raise CodexCliAuthError(
-                    "Codex CLI is not authenticated. Run `codex login` and try again.\n"
-                    f"stdout: {_snippet(stdout)}\n"
-                    f"stderr: {_snippet(stderr)}"
-                )
-            raise CodexCliExecutionError(
-                f"codex reason failed (exit={proc.returncode}).\n"
-                f"stdout: {_snippet(stdout)}\n"
-                f"stderr: {_snippet(stderr)}"
-            )
-
-        # Extract JSON from stdout
-        # Codex might wrap it in markdown code blocks or add explanations
-        json_text = stdout.strip()
-
-        # Try to extract JSON from markdown code blocks
-        if "```json" in json_text:
-            json_text = json_text.split("```json")[1].split("```")[0].strip()
-        elif "```" in json_text:
-            json_text = json_text.split("```")[1].split("```")[0].strip()
-
-        # Try to find JSON object in the output
-        json_start = json_text.find("{")
-        json_end = json_text.rfind("}") + 1
-        if json_start >= 0 and json_end > json_start:
-            json_text = json_text[json_start:json_end]
-
-        try:
-            return json.loads(json_text)
-        except json.JSONDecodeError as exc:
-            raise CodexCliOutputError(
-                "codex reason did not return valid JSON.\n"
-                f"stdout: {_snippet(stdout)}\n"
-                f"stderr: {_snippet(stderr)}\n"
-                f"extracted_json: {_snippet(json_text)}"
-            ) from exc
-        except json.JSONDecodeError as exc:
-            raise CodexCliOutputError(
-                "codex exec returned invalid JSON in --output-last-message.\n"
-                f"stdout: {_snippet(stdout)}\n"
-                f"stderr: {_snippet(stderr)}\n"
-                f"output_file_preview: {_snippet(raw)}"
-            ) from exc
+        return self.complete_json(
+            reasoning_prompt,
+            schema_path=schema_path,
+            timeout_seconds=timeout_seconds,
+        )
 
     def complete_reasoning(
         self,
@@ -329,19 +244,18 @@ Output ONLY the JSON object. No explanations, no code, no commands."""
         timeout_seconds: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
-        Use plain codex (non-exec) for pure reasoning and return structured JSON.
+        Use Codex exec non-interactively for pure reasoning and return structured JSON.
 
-        This method uses interactive codex mode with a system prompt that enforces
-        JSON output matching the schema. NO CODE IS EXECUTED.
+        This method builds a strict JSON-only prompt and runs Codex with tools disabled,
+        avoiding interactive TTY requirements. No code is executed by tools.
 
         Use this for:
         - Planning and decision-making
         - Analyzing state and choosing actions
         - Generating structured responses
 
-        Use complete_json() only when you need to execute shell commands.
+        Use complete_json() when you need the raw prompt sent without the reasoning wrapper.
         """
-        codex = self._resolve_bin()
         schema_path = schema_path.resolve()
         if not schema_path.is_file():
             raise CodexCliExecutionError(f"JSON schema not found: {schema_path}")
@@ -370,88 +284,11 @@ USER REQUEST:
 {prompt}
 
 Now respond with ONLY the JSON object:"""
-
-        # Use plain codex (not exec) with output redirection
-        cmd = [
-            codex,
-            "--disable", "rmcp_client",
-            "--disable", "shell_tool",
-            reasoning_prompt
-        ]
-        if self.model:
-            cmd.extend(["--model", self.model])
-
-        env = os.environ.copy()
-        env["PYTHONIOENCODING"] = "utf-8"
-        env["PYTHONUTF8"] = "1"
-
-        try:
-            try:
-                from agent.ui.spinner import Spinner
-                spinner_ctx = Spinner("REASONING") if sys.stdout.isatty() else nullcontext()
-            except Exception:
-                spinner_ctx = nullcontext()
-
-            with spinner_ctx:
-                proc = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="ignore",
-                    env=env,
-                    timeout=timeout_seconds or self.timeout_seconds,
-                )
-        except FileNotFoundError as exc:
-            raise CodexCliNotFoundError(
-                f"Codex CLI not found: {self.codex_bin}. Install Codex CLI and ensure it is on PATH."
-            ) from exc
-        except subprocess.TimeoutExpired as exc:
-            raise CodexCliExecutionError(f"codex reasoning timed out after {timeout_seconds or self.timeout_seconds}s") from exc
-
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
-
-        if proc.returncode != 0:
-            if _looks_like_auth_error(stdout, stderr):
-                raise CodexCliAuthError(
-                    "Codex CLI is not authenticated. Run `codex login` and try again.\n"
-                    f"stdout: {_snippet(stdout)}\n"
-                    f"stderr: {_snippet(stderr)}"
-                )
-            raise CodexCliExecutionError(
-                f"codex reasoning failed (exit={proc.returncode}).\n"
-                f"stdout: {_snippet(stdout)}\n"
-                f"stderr: {_snippet(stderr)}"
-            )
-
-        # Parse JSON from stdout
-        # Codex might wrap it in markdown code blocks, so we need to extract it
-        output = stdout.strip()
-
-        # Try to extract JSON from markdown code blocks
-        if "```json" in output:
-            start = output.find("```json") + 7
-            end = output.find("```", start)
-            if end > start:
-                output = output[start:end].strip()
-        elif "```" in output:
-            start = output.find("```") + 3
-            end = output.find("```", start)
-            if end > start:
-                output = output[start:end].strip()
-
-        try:
-            data = json.loads(output)
-        except Exception as exc:
-            raise CodexCliOutputError(
-                f"codex reasoning returned invalid JSON.\n"
-                f"stdout: {_snippet(stdout)}\n"
-                f"stderr: {_snippet(stderr)}\n"
-                f"Extracted: {_snippet(output)}"
-            ) from exc
-
-        return data
+        return self.complete_json(
+            reasoning_prompt,
+            schema_path=schema_path,
+            timeout_seconds=timeout_seconds,
+        )
 
     def complete_json_reasoning(
         self,
@@ -460,103 +297,8 @@ Now respond with ONLY the JSON object:"""
         schema_path: Path,
         timeout_seconds: Optional[int] = None,
     ) -> Dict[str, Any]:
-        codex = self._resolve_bin()
-        schema_path = schema_path.resolve()
-        if not schema_path.is_file():
-            raise CodexCliExecutionError(f"JSON schema not found: {schema_path}")
-
-        out_path = Path(tempfile.gettempdir()) / f"codex_last_message_{uuid4().hex}.json"
-
-        cmd = [
-            codex,
-            "--dangerously-bypass-approvals-and-sandbox",
-            "--search",
-            "--disable",
-            "rmcp_client",
-            "--disable",
-            "shell_tool",
-            "--output-schema",
-            str(schema_path),
-            "--output-last-message",
-            str(out_path),
-        ]
-        if self.model:
-            cmd.extend(["--model", self.model])
-
-        env = os.environ.copy()
-        env["PYTHONIOENCODING"] = "utf-8"
-        env["PYTHONUTF8"] = "1"
-
-        try:
-            try:
-                from agent.ui.spinner import Spinner
-
-                spinner_ctx = Spinner("CODEX") if sys.stdout.isatty() else nullcontext()
-            except Exception:
-                spinner_ctx = nullcontext()
-
-            with spinner_ctx:
-                proc = subprocess.run(
-                    cmd,
-                    input=prompt,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="ignore",
-                    env=env,
-                    timeout=timeout_seconds or self.timeout_seconds,
-                )
-        except FileNotFoundError as exc:
-            raise CodexCliNotFoundError(
-                f"Codex CLI not found: {self.codex_bin}. Install Codex CLI and ensure it is on PATH."
-            ) from exc
-        except subprocess.TimeoutExpired as exc:
-            raise CodexCliExecutionError(f"codex timed out after {timeout_seconds or self.timeout_seconds}s") from exc
-
-        stdout = proc.stdout or ""
-        stderr = proc.stderr or ""
-
-        if proc.returncode != 0:
-            if _looks_like_auth_error(stdout, stderr):
-                raise CodexCliAuthError(
-                    "Codex CLI is not authenticated. Run `codex login` and try again.\n"
-                    f"stdout: {_snippet(stdout)}\n"
-                    f"stderr: {_snippet(stderr)}"
-                )
-            raise CodexCliExecutionError(
-                f"codex failed (exit={proc.returncode}).\n"
-                f"stdout: {_snippet(stdout)}\n"
-                f"stderr: {_snippet(stderr)}"
-            )
-
-        if not out_path.is_file():
-            raise CodexCliOutputError(
-                "codex did not produce --output-last-message file.\n"
-                f"stdout: {_snippet(stdout)}\n"
-                f"stderr: {_snippet(stderr)}"
-            )
-
-        try:
-            raw = out_path.read_text(encoding="utf-8", errors="replace")
-        except Exception as exc:
-            raise CodexCliOutputError(
-                "Failed to read codex --output-last-message file.\n"
-                f"path: {out_path}\n"
-                f"stdout: {_snippet(stdout)}\n"
-                f"stderr: {_snippet(stderr)}"
-            ) from exc
-        finally:
-            try:
-                out_path.unlink(missing_ok=True)  # type: ignore[call-arg]
-            except Exception:
-                pass
-
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise CodexCliOutputError(
-                "codex returned invalid JSON in --output-last-message.\n"
-                f"stdout: {_snippet(stdout)}\n"
-                f"stderr: {_snippet(stderr)}\n"
-                f"output_file_preview: {_snippet(raw)}"
-            ) from exc
+        return self.reason_json(
+            prompt,
+            schema_path=schema_path,
+            timeout_seconds=timeout_seconds,
+        )

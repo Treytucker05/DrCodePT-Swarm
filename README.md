@@ -25,6 +25,9 @@ No `OPENAI_API_KEY` is required; the agent uses your local Codex CLI login.
 - `agent/llm/codex_cli_client.py` - Codex CLI-backed inference (no API keys).
 - `agent/llm/schemas/` - JSON Schemas passed to `codex exec --output-schema ...`.
 
+## Dev checks
+- Schema lint: `python scripts/check_codex_schemas.py`
+
 ## Legacy
 The older YAML supervisor and launcher scripts remain under `agent/` and `launchers/`.
 

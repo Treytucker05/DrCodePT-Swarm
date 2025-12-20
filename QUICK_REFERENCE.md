@@ -134,7 +134,7 @@ AUTO_FS_ANYWHERE=0
 ### Codex Not Found
 ```powershell
 Get-Command codex
-codex auth login
+codex login
 ```
 
 ### Playwright Issues

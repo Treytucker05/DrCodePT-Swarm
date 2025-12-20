@@ -72,7 +72,7 @@ codex --version
 
 **Authenticate with ChatGPT Pro:**
 ```powershell
-codex auth login
+codex login
 ```
 
 ### Step 2: Install Playwright Browsers

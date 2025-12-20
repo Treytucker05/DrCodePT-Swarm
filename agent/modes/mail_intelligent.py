@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Dict, Any, List
 from pathlib import Path
 
 from agent.core.autonomous_agent import AutonomousAgent
 from agent.llm.codex_cli_client import CodexCliClient
-from agent.integrations.yahoo_mail import YahooMail
+from agent.integrations import yahoo_mail
 from agent.llm import schemas as llm_schemas
 
 
@@ -19,9 +20,8 @@ class MailAgent(AutonomousAgent):
     2. Action: Python code executed by the agent (not codex exec)
     """
 
-    def __init__(self, llm_client, yahoo_mail, folders: List[str], folder_counts: Dict[str, int]):
+    def __init__(self, llm_client, folders: List[str], folder_counts: Dict[str, int]):
         super().__init__(llm_client, domain="mail")
-        self.yahoo_mail = yahoo_mail
         self.folders = folders
         self.folder_counts = folder_counts
         self.memory["context"] = {
@@ -167,7 +167,7 @@ Return JSON with your analysis."""
         if action_type == "scan_folder":
             folder = action.get("folder", "INBOX")
             try:
-                emails = self.yahoo_mail.scan_folder(folder)
+                emails = yahoo_mail.list_messages(limit=10, folder=folder)
                 if not emails:
                     return f"Folder '{folder}' is empty or not found"
 
@@ -188,7 +188,7 @@ Return JSON with your analysis."""
                 return "Error: No folder name provided"
 
             try:
-                self.yahoo_mail.create_folder(folder)
+                yahoo_mail.create_folder(folder)
                 self.folders.append(folder)
                 return f"Successfully created folder '{folder}'"
             except Exception as e:
@@ -217,71 +217,103 @@ Return JSON with your analysis."""
 
 def run_mail_intelligent(task: str) -> None:
     """
-    Run the intelligent mail agent with rule-based reasoning.
+    Run the intelligent mail agent with LLM-based reasoning.
 
-    This version does NOT use codex exec for reasoning (that's an execution mode).
-    Instead, it uses pattern matching to understand user intent.
+    Uses codex CLI with 'reason' profile for planning (no execution).
     """
-
-    # Initialize Yahoo Mail
-    yahoo_mail = YahooMail()
 
     # Get initial folder state
     print("Loading mail folders...")
     folders = yahoo_mail.list_folders()
-    folder_counts = {f: yahoo_mail.get_folder_count(f) for f in folders[:10]}
+    folder_counts = yahoo_mail.folder_counts(folders[:10])
 
-    # Create agent (llm_client is None since we're not using LLM for reasoning)
-    agent = MailAgent(None, yahoo_mail, folders, folder_counts)
+    # Create LLM client for reasoning
+    llm_client = CodexCliClient.from_env()
+
+    # Create agent
+    agent = MailAgent(llm_client, folders, folder_counts)
 
     # Add user request to conversation
     agent.memory["conversation"].append({"role": "user", "content": task})
 
     print(f"\n{'='*60}")
-    print(f"MAIL AGENT - Autonomous Mode (Rule-Based)")
+    print(f"MAIL AGENT - Autonomous Mode (LLM-Based)")
     print(f"{'='*60}")
     print(f"Task: {task}\n")
 
-    # Main loop: up to 5 iterations
-    for iteration in range(5):
-        print(f"\n--- Iteration {iteration + 1} ---")
+    current_task = task
 
-        # Get previous action result
-        action_result = agent.memory["actions_taken"][-1]["result"] if agent.memory["actions_taken"] else ""
+    # Main conversation loop
+    while True:
+        # Inner loop: up to 5 iterations per user input
+        for iteration in range(5):
+            print(f"\n--- Iteration {iteration + 1} ---")
 
-        # Perceive (rule-based, no LLM)
-        decision = agent.perceive(task, {}, action_result)
+            # Get previous action result
+            action_result = agent.memory["actions_taken"][-1]["result"] if agent.memory["actions_taken"] else ""
 
-        print(f"[PERCEPTION] {decision.get('perception', 'N/A')}")
-        print(f"[REASONING] {decision.get('reasoning', 'N/A')}")
-        print(f"[PLAN] {', '.join(decision.get('plan', []))}")
-        print(f"[ACTION] {decision.get('next_action', {}).get('type', 'none')}")
-        print(f"[RESPONSE] {decision.get('response', 'N/A')}")
+            # Perceive
+            decision = agent.perceive(current_task, {}, action_result)
 
-        # Execute the action
-        next_action = decision.get("next_action", {"type": "none"})
-        result = agent.act(next_action)
+            print(f"[PERCEPTION] {decision.get('perception', 'N/A')}")
+            print(f"[REASONING] {decision.get('reasoning', 'N/A')}")
+            print(f"[PLAN] {', '.join(decision.get('plan', []))}")
+            print(f"[ACTION] {decision.get('next_action', {}).get('type', 'none')}")
+            print(f"[RESPONSE] {decision.get('response', 'N/A')}")
 
-        print(f"[RESULT] {result[:300]}")
+            # Execute the action
+            next_action = decision.get("next_action", {"type": "none"})
+            result = agent.act(next_action)
 
-        # Reflect on the outcome
-        agent.reflect(
-            perception=decision.get("perception", ""),
-            action=next_action,
-            result=result
-        )
+            print(f"[RESULT] {result[:300]}")
 
-        # Add response to conversation
-        agent.memory["conversation"].append({
-            "role": "assistant",
-            "content": decision.get("response", "")
-        })
+            # Reflect on the outcome
+            agent.reflect(
+                perception=decision.get("perception", ""),
+                action=next_action,
+                result=result
+            )
 
-        # Check if we're done
-        if next_action.get("type") in {"none", "ask_question"}:
-            print(f"\n{'='*60}")
-            print(f"Agent completed task")
-            print(f"{'='*60}")
-            break
+            # Add response to conversation
+            agent.memory["conversation"].append({
+                "role": "assistant",
+                "content": decision.get("response", "")
+            })
 
-    print(f"\nFinal response: {decision.get('response', 'Task completed')}")
+            # Check if we need user input
+            if next_action.get("type") == "ask_question":
+                print(f"\n{'='*60}")
+                print(f"Waiting for user response...")
+                print(f"{'='*60}")
+                break
+
+            # Check if task is complete
+            if next_action.get("type") == "none":
+                print(f"\n{'='*60}")
+                print(f"Task completed")
+                print(f"{'='*60}")
+                return
+
+        # Wait for user input
+        try:
+            user_response = input("\n> ").strip()
+            if not user_response:
+                continue
+
+            # Check for exit commands
+            if user_response.lower() in {"exit", "quit", "done", "bye"}:
+                print("Exiting mail agent.")
+                return
+
+            # Add user response to conversation
+            agent.memory["conversation"].append({
+                "role": "user",
+                "content": user_response
+            })
+
+            # Update current task with user response
+            current_task = user_response
+
+        except (EOFError, KeyboardInterrupt):
+            print("\nExiting mail agent.")
+            return

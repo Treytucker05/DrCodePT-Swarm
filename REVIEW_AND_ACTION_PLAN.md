@@ -37,7 +37,7 @@ Your agent has a **sophisticated multi-mode architecture**:
 
 ### 1. Authenticate Codex CLI (5 minutes)
 ```powershell
-codex auth login
+codex login
 ```
 This connects the agent to your ChatGPT Pro account.
 
@@ -354,7 +354,7 @@ Get-Command codex
 ### Issue: "Authentication failed"
 **Solution**:
 ```powershell
-codex auth login
+codex login
 ```
 Make sure your ChatGPT Pro subscription is active.
 
@@ -407,7 +407,7 @@ agent/playbooks/index.json
 ## 🎉 Next Steps
 
 ### Immediate (Today)
-1. ✅ Run `codex auth login`
+1. ✅ Run `codex login`
 2. ✅ Run `playwright install chromium`
 3. ✅ Test the agent: `launchers\TREYS_AGENT.bat`
 4. ✅ Try: `> create a hello world python script`

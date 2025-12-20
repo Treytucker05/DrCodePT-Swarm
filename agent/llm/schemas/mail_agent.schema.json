@@ -27,21 +27,22 @@
           "description": "The type of action"
         },
         "folder": {
-          "type": "string",
+          "type": ["string", "null"],
           "description": "Folder name if applicable"
         },
         "question": {
-          "type": "string",
+          "type": ["string", "null"],
           "description": "Question to ask the user if action type is ask_question"
         }
       },
-      "required": ["type"]
+      "required": ["type", "folder", "question"],
+      "additionalProperties": false
     },
     "response": {
       "type": "string",
       "description": "What to say to the user"
     }
   },
-  "required": ["perception", "reasoning", "next_action", "response"],
+  "required": ["perception", "reasoning", "plan", "next_action", "response"],
   "additionalProperties": false
 }
