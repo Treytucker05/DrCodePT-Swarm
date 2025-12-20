@@ -167,10 +167,12 @@ class AgentRunner:
                 memories = self._retrieve_memories(memory_store, task)
 
                 if self.planner_cfg.mode == "react":
-                    try:
-                        plan = planner.plan(task=task, observations=state.observations, memories=memories)
-                    except Exception as exc:
-                        tracer.log({"type": "llm_error", "where": "plan", "error": str(exc), "exc_type": type(exc).__name__})
+                    plan = self._call_llm_with_retry(
+                        tracer=tracer,
+                        where="plan",
+                        fn=lambda: planner.plan(task=task, observations=state.observations, memories=memories),
+                    )
+                    if plan is None:
                         return self._stop(
                             tracer=tracer,
                             memory_store=memory_store,
@@ -187,10 +189,12 @@ class AgentRunner:
                     state.current_step_idx = 0
                 else:
                     if current_plan is None or state.current_step_idx >= len(current_plan.steps):
-                        try:
-                            current_plan = planner.plan(task=task, observations=state.observations, memories=memories)
-                        except Exception as exc:
-                            tracer.log({"type": "llm_error", "where": "plan", "error": str(exc), "exc_type": type(exc).__name__})
+                        current_plan = self._call_llm_with_retry(
+                            tracer=tracer,
+                            where="plan",
+                            fn=lambda: planner.plan(task=task, observations=state.observations, memories=memories),
+                        )
+                        if current_plan is None:
                             return self._stop(
                                 tracer=tracer,
                                 memory_store=memory_store,
@@ -227,7 +231,12 @@ class AgentRunner:
                 step = plan.steps[0] if self.planner_cfg.mode == "react" else plan.steps[state.current_step_idx]
 
                 if self.agent_cfg.pre_mortem_enabled:
-                    prem = reflector.pre_mortem(task=task, step=step, observation=state.observations[-1])
+                    prem = self._call_llm_with_retry(
+                        tracer=tracer,
+                        where="premortem",
+                        fn=lambda: reflector.pre_mortem(task=task, step=step, observation=state.observations[-1]),
+                        allow_none=True,
+                    )
                     tracer.log({"type": "premortem", "step_id": step.id, "data": prem})
 
                 tool_result = self._call_tool_with_retry(tools, ctx, step.tool_name, step.tool_args, tracer)
@@ -258,7 +267,23 @@ class AgentRunner:
                         state=state,
                     )
 
-                reflection = reflector.reflect(task=task, step=step, tool_result=tool_result, observation=obs)
+                reflection = self._call_llm_with_retry(
+                    tracer=tracer,
+                    where="reflection",
+                    fn=lambda: reflector.reflect(task=task, step=step, tool_result=tool_result, observation=obs),
+                )
+                if reflection is None:
+                    return self._stop(
+                        tracer=tracer,
+                        memory_store=memory_store,
+                        success=False,
+                        reason="llm_error",
+                        steps=steps_executed + 1,
+                        run_id=run_id,
+                        llm_stats=tracked_llm,
+                        task=task,
+                        state=state,
+                    )
 
                 tracer.log(
                     {
@@ -332,18 +357,19 @@ class AgentRunner:
                     )
 
                 if reflection.status == "minor_repair":
-                    try:
-                        repaired = planner.repair(
+                    repaired = self._call_llm_with_retry(
+                        tracer=tracer,
+                        where="repair",
+                        fn=lambda: planner.repair(
                             task=task,
                             observations=state.observations,
                             memories=memories,
                             failed_step=step,
                             tool_result=tool_result,
                             reflection=reflection,
-                        )
-                    except Exception as exc:
-                        tracer.log({"type": "llm_error", "where": "repair", "error": str(exc), "exc_type": type(exc).__name__})
-                        repaired = None
+                        ),
+                        allow_none=True,
+                    )
                     if repaired is not None:
                         current_plan = repaired
                         state.current_plan = repaired
@@ -424,15 +450,17 @@ class AgentRunner:
             "Keep it short but actionable for future planning.\n\n"
             f"INPUT:\n{dumps_compact(payload)}\n"
         )
-        try:
-            data = llm.complete_json(prompt, schema_path=llm_schemas.COMPACTION)
+        def _compact() -> dict:
+            return llm.complete_json(prompt, schema_path=llm_schemas.COMPACTION)
+
+        data = self._call_llm_with_retry(tracer=tracer, where="compaction", fn=_compact, allow_none=True)
+        if isinstance(data, dict):
             new_summary = (data.get("rolling_summary") or "").strip()
             if new_summary:
                 state.rolling_summary = new_summary[-8000:]
             state.observations = keep
             tracer.log({"type": "compaction", "kept": len(keep), "dropped": len(old)})
-        except Exception as exc:
-            tracer.log({"type": "compaction_error", "error": str(exc), "exc_type": type(exc).__name__})
+        else:
             state.compact(keep_last=keep_last, max_total=max_total)
 
     def _call_tool_with_retry(
@@ -459,6 +487,36 @@ class AgentRunner:
             )
             time.sleep(self.cfg.tool_retry_backoff_seconds * (attempt + 1))
         return last or ToolResult(success=False, error="tool_failed")
+
+    def _call_llm_with_retry(
+        self,
+        *,
+        tracer: JsonlTracer,
+        where: str,
+        fn,
+        allow_none: bool = False,
+    ):
+        last_exc: Optional[Exception] = None
+        for attempt in range(self.cfg.llm_max_retries + 1):
+            try:
+                return fn()
+            except Exception as exc:
+                last_exc = exc
+                tracer.log(
+                    {
+                        "type": "llm_retry",
+                        "where": where,
+                        "attempt": attempt + 1,
+                        "error": str(exc),
+                        "exc_type": type(exc).__name__,
+                    }
+                )
+                if attempt >= self.cfg.llm_max_retries:
+                    break
+                time.sleep(self.cfg.llm_retry_backoff_seconds * (attempt + 1))
+        if not allow_none:
+            tracer.log({"type": "llm_error", "where": where, "error": str(last_exc), "exc_type": type(last_exc).__name__})
+        return None
 
     def _memory_updates(
         self,
