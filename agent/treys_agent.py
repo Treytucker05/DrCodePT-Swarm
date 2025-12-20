@@ -61,6 +61,17 @@ def show_help() -> None:
   Example:
     - Auto: research autonomous AI agents
 
+{GREEN}Enhanced Autonomous (Self-Healing):{RESET}
+  Plan: [task]   - Creates execution plan, then runs with error recovery
+  Example:
+    - Plan: setup Google Tasks API and test it
+    - Plan: consolidate my Yahoo folders and create rules
+
+{GREEN}Issue Tracking:{RESET}
+  issues         - List all tracked issues
+  issues open    - List open issues
+  issues resolved - List resolved issues
+
 {GREEN}Credentials (encrypted):{RESET}
   Cred: <site>   - Save/update site username + password (stored encrypted)
   creds          - List credential sites saved
@@ -470,6 +481,47 @@ def main() -> None:
                 print(f"{YELLOW}[INFO]{RESET} Provide a topic after 'Research:'.")
                 continue
             mode_research(topic)
+            continue
+
+        if lower.startswith("plan:"):
+            task = user_input.split(":", 1)[1].strip()
+            if not task:
+                print(f"{YELLOW}[INFO]{RESET} Provide a task after 'Plan:'.")
+                continue
+            from agent.modes.autonomous_enhanced import mode_plan_and_execute
+            mode_plan_and_execute(task)
+            continue
+
+        if lower in {"issues", "issues open", "issues resolved"}:
+            try:
+                from agent.memory.issue_tracker import list_issues, get_issue_summary
+
+                status_filter = None
+                if "open" in lower:
+                    status_filter = "open"
+                elif "resolved" in lower:
+                    status_filter = "resolved"
+
+                issues = list_issues(status=status_filter)
+                summary = get_issue_summary()
+
+                print(f"\n{CYAN}[ISSUE TRACKER]{RESET}")
+                print(f"Total: {summary['total']} | Open: {summary['open']} | Resolved: {summary['resolved']}\n")
+
+                if not issues:
+                    print(f"{YELLOW}[INFO]{RESET} No issues found.")
+                else:
+                    for issue in issues:
+                        status_color = GREEN if issue.status == "resolved" else RED
+                        print(f"{status_color}[{issue.status.upper()}]{RESET} {issue.issue_id}")
+                        print(f"  Task: {issue.task}")
+                        print(f"  Error: {issue.error}")
+                        print(f"  Attempts: {len(issue.attempts)}")
+                        if issue.solution:
+                            print(f"  Solution: {issue.solution}")
+                        print()
+            except Exception as exc:
+                print(f"{RED}[ERROR]{RESET} Failed to list issues: {exc}")
             continue
 
         if lower.startswith("auto:") or lower.startswith("loop:"):

@@ -80,7 +80,10 @@
       "login to yahoo mail",
       "login yahoo mail",
       "open yahoo mail",
-      "yahoo mail login"
+      "yahoo mail login",
+      "open my yahoo mail",
+      "go to yahoo mail",
+      "check yahoo mail"
     ],
     "session_state_path": "sessions/yahoo_state.json",
     "headless": false,
@@ -95,21 +98,21 @@
       },
       {
         "type": "browser",
-        "description": "Wait for mailbox UI to load",
+        "description": "Wait for mailbox UI to load (confirms login success)",
         "action": "wait_for",
         "selector": "a[data-test-folder-name='Inbox'], a[aria-label='Inbox'], [data-test-id='compose-button'], button[aria-label='Compose'], [data-test-id='mail-search']",
         "timeout_ms": 300000
       },
       {
         "type": "browser",
-        "description": "Capture evidence screenshot",
-        "action": "screenshot"
+        "description": "Save logged-in session for future use",
+        "action": "save_storage_state",
+        "path": "sessions/yahoo_state.json"
       },
       {
         "type": "browser",
-        "description": "Pause so you can continue in the browser if needed",
-        "action": "pause_for_user",
-        "message": "Login complete. If you want to keep browsing, do so now. Press Enter to continue back in the console (this will close the browser)."
+        "description": "Capture evidence screenshot",
+        "action": "screenshot"
       }
     ],
     "login_site": "yahoo",
@@ -253,5 +256,75 @@
       }
     ],
     "created": "2025-12-19T05:28:15.123876"
+  },
+  "setup-google-apis": {
+    "name": "Google APIs: Setup OAuth2 (Tasks, Gmail, Calendar)",
+    "description": "Research Google API requirements, guide OAuth2 setup for Tasks/Gmail/Calendar, and save credentials.",
+    "triggers": [
+      "setup google apis",
+      "setup google tasks",
+      "setup gmail api",
+      "setup google calendar",
+      "enable google apis",
+      "google api setup",
+      "connect google tasks",
+      "connect gmail",
+      "connect google calendar"
+    ],
+    "headless": false,
+    "steps": [
+      {
+        "type": "python",
+        "description": "Research: Check what's needed for Google APIs",
+        "code": "print('\\n=== Google APIs Setup Requirements ===')\nprint('\\n1. Google Cloud Project with APIs enabled:')\nprint('   - Google Tasks API')\nprint('   - Gmail API')\nprint('   - Google Calendar API')\nprint('\\n2. OAuth 2.0 Client ID (Desktop app type)')\nprint('\\n3. Download credentials.json from Google Cloud Console')\nprint('\\n4. Required Python packages:')\nprint('   pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client')\nprint('\\n5. OAuth Scopes needed:')\nprint('   - https://www.googleapis.com/auth/tasks')\nprint('   - https://www.googleapis.com/auth/gmail.readonly')\nprint('   - https://www.googleapis.com/auth/gmail.modify')\nprint('   - https://www.googleapis.com/auth/calendar')\nprint('   - https://www.googleapis.com/auth/calendar.events')\nprint('\\n=== Next Steps ===')\nprint('1. Go to: https://console.cloud.google.com/')\nprint('2. Create/select project')\nprint('3. Enable APIs (Tasks, Gmail, Calendar)')\nprint('4. Create OAuth 2.0 credentials (Desktop app)')\nprint('5. Download credentials.json')\nprint('6. Save to: agent/memory/google_credentials.json')\nprint('\\nPress Enter when ready to continue...')\n"
+      },
+      {
+        "type": "browser",
+        "description": "Open Google Cloud Console",
+        "action": "goto",
+        "url": "https://console.cloud.google.com/apis/dashboard",
+        "timeout_ms": 60000,
+        "wait_until": "domcontentloaded"
+      },
+      {
+        "type": "browser",
+        "description": "Wait for you to sign in and navigate",
+        "action": "sleep",
+        "seconds": 3
+      },
+      {
+        "type": "browser",
+        "description": "Pause for API enablement and credential download",
+        "action": "pause_for_user",
+        "message": "1. Enable APIs: Tasks, Gmail, Calendar\\n2. Create OAuth 2.0 Client ID (Desktop app)\\n3. Download credentials.json\\n4. Save to: agent/memory/google_credentials.json\\n\\nPress Enter when done."
+      },
+      {
+        "type": "python",
+        "description": "Verify credentials.json exists",
+        "code": "from pathlib import Path\nimport sys\n\ncreds_file = Path('agent/memory/google_credentials.json')\nif not creds_file.exists():\n    print('ERROR: credentials.json not found at agent/memory/google_credentials.json')\n    print('Please download it from Google Cloud Console and save it there.')\n    sys.exit(1)\n\nprint('✓ Found credentials.json')\n"
+      },
+      {
+        "type": "python",
+        "description": "Run OAuth2 flow and save token",
+        "code": "import json\nimport sys\nfrom pathlib import Path\n\ntry:\n    from google_auth_oauthlib.flow import InstalledAppFlow\n    from agent.memory.credentials import save_credential\nexcept ImportError as e:\n    print(f'Missing dependencies: {e}')\n    print('Run: pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client')\n    sys.exit(1)\n\nSCOPES = [\n    'https://www.googleapis.com/auth/tasks',\n    'https://www.googleapis.com/auth/gmail.readonly',\n    'https://www.googleapis.com/auth/gmail.modify',\n    'https://www.googleapis.com/auth/calendar',\n    'https://www.googleapis.com/auth/calendar.events'\n]\n\ncreds_file = Path('agent/memory/google_credentials.json')\nif not creds_file.exists():\n    print('ERROR: credentials.json not found')\n    sys.exit(1)\n\nprint('Starting OAuth2 flow...')\nprint('A browser window will open for authentication.')\nprint('Sign in and authorize the app.')\n\nflow = InstalledAppFlow.from_client_secrets_file(str(creds_file), SCOPES)\ncreds = flow.run_local_server(port=0)\n\ntoken_data = {\n    'token': creds.token,\n    'refresh_token': creds.refresh_token,\n    'token_uri': creds.token_uri,\n    'client_id': creds.client_id,\n    'client_secret': creds.client_secret,\n    'scopes': creds.scopes\n}\n\nsave_credential('google_apis', 'token', json.dumps(token_data))\nprint('✓ OAuth2 token saved to credential store')\nprint('✓ Google APIs ready to use!')\n"
+      },
+      {
+        "type": "python",
+        "description": "Test Google Tasks API",
+        "code": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path.cwd()))\nfrom agent.integrations import google_apis\n\nprint('\\n=== Testing Google Tasks API ===')\ntry:\n    tasks = google_apis.list_tasks(max_results=5)\n    if tasks:\n        print(f'✓ Found {len(tasks)} tasks:')\n        for i, task in enumerate(tasks, 1):\n            print(f\"  {i}. {task.get('title', 'Untitled')}\")\n    else:\n        print('✓ Connected (no tasks found)')\nexcept Exception as e:\n    print(f'✗ Error: {e}')\n"
+      },
+      {
+        "type": "python",
+        "description": "Test Gmail API",
+        "code": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path.cwd()))\nfrom agent.integrations import google_apis\n\nprint('\\n=== Testing Gmail API ===')\ntry:\n    messages = google_apis.list_gmail_messages(max_results=3)\n    if messages:\n        print(f'✓ Found {len(messages)} messages')\n    else:\n        print('✓ Connected (no messages found)')\nexcept Exception as e:\n    print(f'✗ Error: {e}')\n"
+      },
+      {
+        "type": "python",
+        "description": "Test Google Calendar API",
+        "code": "import sys\nfrom pathlib import Path\n\nsys.path.insert(0, str(Path.cwd()))\nfrom agent.integrations import google_apis\n\nprint('\\n=== Testing Google Calendar API ===')\ntry:\n    events = google_apis.list_calendar_events(max_results=5)\n    if events:\n        print(f'✓ Found {len(events)} upcoming events:')\n        for i, event in enumerate(events, 1):\n            print(f\"  {i}. {event.get('summary', 'Untitled')}\")\n    else:\n        print('✓ Connected (no upcoming events)')\nexcept Exception as e:\n    print(f'✗ Error: {e}')\n\nprint('\\n=== Setup Complete ===')\nprint('You can now use Google Tasks, Gmail, and Calendar APIs!')\n"
+      }
+    ],
+    "created": "2025-12-20",
+    "type": "browser"
   }
 }

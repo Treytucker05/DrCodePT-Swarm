@@ -1,296 +1,273 @@
-# 🤖 TREY'S AGENT - Your Personal AI Assistant
+# 🚀 START HERE - Your Agent is Ready!
 
-> **A powerful autonomous AI agent that learns, remembers, and executes tasks for business automation, coding, research, and more.**
+## ⚡ Quick Start (5 Minutes)
 
----
-
-## 🚀 Quick Start (3 Steps)
-
-### 1. Authenticate Codex CLI
-```powershell
-codex auth login
-```
-
-### 2. Install Browser Automation
+### 1. Install Dependencies
 ```powershell
 .venv\Scripts\activate
-playwright install chromium
+pip install -r requirements.txt
 ```
 
-### 3. Launch the Agent
+### 2. Launch Agent
 ```powershell
 launchers\TREYS_AGENT.bat
 ```
 
-**That's it!** You're ready to go. 🎉
+### 3. Try It Out
+```
+> help
+> setup google apis
+```
+
+---
+
+## 🎯 What Your Agent Can Do
+
+### ✅ **NEW: Self-Healing Autonomous Mode**
+Break down complex tasks, execute with automatic error recovery, and learn from mistakes.
+
+**Try it:**
+```
+> Plan: setup Google Tasks API and test it
+```
+
+### ✅ **NEW: Google APIs Integration**
+Full OAuth2 integration for Tasks, Gmail, and Calendar.
+
+**Try it:**
+```
+> setup google apis
+> Plan: list my Google Tasks
+```
+
+### ✅ **NEW: Issue Tracking**
+Track all errors, attempts, and solutions for continuous learning.
+
+**Try it:**
+```
+> issues
+```
+
+### ✅ **Yahoo Mail Management**
+Login, clean spam, manage folders, test IMAP.
+
+**Try it:**
+```
+> open yahoo mail
+> clean yahoo spam
+```
+
+### ✅ **Autonomous Execution**
+Run any task with dynamic replanning.
+
+**Try it:**
+```
+> Auto: create a Python calculator
+```
+
+### ✅ **Research Mode**
+Deep research with citations and sources.
+
+**Try it:**
+```
+> Research: best Python project structure
+```
+
+### ✅ **Learn Mode**
+Record your actions as reusable playbooks.
+
+**Try it:**
+```
+> Learn: how to download school files
+```
 
 ---
 
 ## 📚 Documentation
 
-| Document | Purpose | When to Use |
-|----------|---------|-------------|
-| **[REVIEW_AND_ACTION_PLAN.md](REVIEW_AND_ACTION_PLAN.md)** | Complete review & recommendations | **Start here** - Overview of everything |
-| **[AGENT_SETUP_GUIDE.md](AGENT_SETUP_GUIDE.md)** | Comprehensive setup guide | Detailed configuration & troubleshooting |
-| **[QUICK_REFERENCE.md](QUICK_REFERENCE.md)** | Command cheat sheet | Daily use - quick command lookup |
-| **[SETUP_CHECKLIST.md](SETUP_CHECKLIST.md)** | Step-by-step checklist | First-time setup verification |
-| **[.env](.env)** | Configuration file | Customize agent behavior |
+**Read these in order:**
+
+1. **`ENHANCEMENT_SUMMARY.md`** ← **Start here!** Complete overview of new features
+2. **`USAGE_EXAMPLES.md`** - Real-world workflows and examples
+3. **`QUICK_REFERENCE.md`** - Command cheat sheet
+4. **`TROUBLESHOOTING.md`** - Common issues and solutions
+5. **`AGENT_SETUP_GUIDE.md`** - Complete setup guide (500+ lines)
+6. **`SETUP_CHECKLIST.md`** - Verification checklist
 
 ---
 
-## 🎯 What Can It Do?
+## 🔥 Try These First
 
-### 1. **Learn & Remember Tasks** 🧠
-Record any task once, run it instantly forever:
+### Example 1: Google Tasks Setup
 ```
-> Learn: login to school portal
-> Learn: organize downloads folder
-> Learn: generate weekly report
+> Plan: setup Google Tasks API and create a task called "Test Task"
 ```
 
-### 2. **Autonomous Execution** 🤖
-Complex tasks with dynamic replanning:
+**What happens:**
+1. Opens Google Cloud Console
+2. You enable APIs and create credentials
+3. Agent runs OAuth2 flow
+4. Creates test task
+5. Shows success
+
+### Example 2: Email Organization
 ```
-> Auto: research AI agents and create a summary document
-> Auto: build a REST API with authentication
-> Auto: analyze my project structure and suggest improvements
+> Plan: login to Yahoo and clean spam
 ```
 
-### 3. **Deep Research** 🔍
-Iterative research with multiple sources:
+**What happens:**
+1. Logs into Yahoo Mail
+2. Deletes spam
+3. Shows summary
+
+### Example 3: Research and Learn
 ```
-> Research: Python async best practices
-> Research: machine learning deployment strategies
+> Research: OAuth2 vs API keys
 ```
 
-### 4. **Code Generation** 💻
-Build and debug code projects:
-```
-> create a python web scraper
-> Auto: add error handling to my script
-> Auto: write unit tests for my API
-```
-
-### 5. **Web Automation** 🌐
-Browser automation with Playwright:
-```
-> Learn: download assignments from Canvas
-> Auto: scrape product prices from Amazon
-```
-
-### 6. **Desktop Control** 🖥️
-Execute system commands and file operations:
-```
-> organize my desktop files
-> backup important documents
-> find and remove duplicate files
-```
+**What happens:**
+1. Searches multiple sources
+2. Compares approaches
+3. Provides recommendations
+4. Cites sources
 
 ---
 
-## 🎓 Operation Modes
+## 🎓 Key Commands
 
-| Mode | Trigger | Use Case | Example |
-|------|---------|----------|---------|
-| **Execute** | Default | Run learned tasks instantly | `> organize downloads` |
-| **Learn** | `Learn:` | Record new tasks | `> Learn: login to Yahoo` |
-| **Autonomous** | `Auto:` | Complex multi-step tasks | `> Auto: build a calculator` |
-| **Research** | `Research:` | Deep research | `> Research: AI agents` |
-| **Collab** | `Collab:` | Interactive planning | `> Collab: reorganize project` |
-| **Mail** | `Mail:` | Email management | `> Mail: review inbox` |
+### Planning (NEW!)
+```
+> Plan: [complex task]
+```
+Breaks down task, executes with error recovery.
+
+### Autonomous
+```
+> Auto: [task]
+```
+Runs task with dynamic replanning.
+
+### Research
+```
+> Research: [topic]
+```
+Deep research with sources.
+
+### Learn
+```
+> Learn: [task name]
+```
+Record actions as playbook.
+
+### Credentials
+```
+> Cred: [site]
+> creds
+```
+Save/list credentials.
+
+### Issues (NEW!)
+```
+> issues
+> issues open
+> issues resolved
+```
+Track errors and solutions.
+
+### Help
+```
+> help
+> playbooks
+```
+Show commands and saved playbooks.
 
 ---
 
-## ⚡ Quick Commands
+## 🚨 Important Notes
 
+### Google API Setup
+1. Need Google Cloud Project (free tier OK)
+2. Enable APIs: Tasks, Gmail, Calendar
+3. Create OAuth2 credentials (Desktop app)
+4. Download `credentials.json`
+5. Save to `agent/memory/google_credentials.json`
+
+### Dependencies
+```powershell
+pip install -r requirements.txt
 ```
-> help                          # Show all commands
-> playbooks                     # List saved tasks
-> Learn: [task name]            # Record a new task
-> Auto: [task]                  # Run autonomous mode
-> Research: [topic]             # Deep research
-> Cred: [site]                  # Save credentials
-> creds                         # List saved credentials
-> unsafe on/off                 # Toggle safety mode
-> exit                          # Quit
-```
+
+Includes:
+- Google API client libraries
+- Playwright for browser automation
+- Cryptography for credential storage
+- And more...
+
+### 2FA Support
+Agent pauses for:
+- 2FA challenges
+- OAuth2 authorization
+- Destructive action confirmations
 
 ---
 
-## 🔧 Configuration
+## 💡 Pro Tips
 
-Edit `.env` to customize behavior:
-
-```env
-# Performance
-CODEX_TIMEOUT_SECONDS=600
-CODEX_REASONING_EFFORT=medium
-
-# Features
-AUTO_ENABLE_WEB_GUI=1
-AUTO_ENABLE_DESKTOP=1
-AUTO_ALLOW_HUMAN_ASK=1
-
-# Safety
-AGENT_UNSAFE_MODE=0
-AUTO_FS_ANYWHERE=0
+### 1. Use Plain Language
+```
+> I need to setup Google Tasks
+> Can you help me organize my Yahoo folders?
 ```
 
-See [AGENT_SETUP_GUIDE.md](AGENT_SETUP_GUIDE.md) for all options.
-
----
-
-## 🎯 Your Use Cases
-
-### Business Automation
+### 2. Let It Plan Complex Tasks
 ```
-> Learn: generate weekly sales report
-> Learn: send status update email
-> Auto: analyze quarterly data and create presentation
+> Plan: setup all Google APIs and test them
 ```
 
-### Coding Projects
+### 3. Check Issues for Learning
 ```
-> Research: REST API best practices
-> Auto: create a REST API with authentication
-> Auto: add unit tests and documentation
+> issues resolved
 ```
 
-### Study Systems
+### 4. Save Credentials Once
 ```
-> Research: effective study techniques
-> Collab: create a study plan for machine learning
-> Auto: organize study materials by topic
-```
-
-### Desktop Management
-```
-> Learn: organize downloads folder
-> Auto: find and remove duplicate files
-> Auto: backup important documents
+> Cred: yahoo
+> Cred: google
 ```
 
----
-
-## 🔐 Security Features
-
-- **Encrypted Credentials**: Secure storage for website passwords
-- **Filesystem Safety**: Restricted access to approved folders
-- **Approval Mode**: Review actions before execution
-- **Audit Logs**: Complete trace of all operations
-
----
-
-## 📊 Architecture
-
+### 5. Use Playbooks for Repeated Tasks
 ```
-┌─────────────────────────────────────────┐
-│         TREY'S AGENT                    │
-├─────────────────────────────────────────┤
-│  Modes:                                 │
-│  • Execute (Playbook Replay)            │
-│  • Learn (Task Recording)               │
-│  • Autonomous (Dynamic Planning)        │
-│  • Research (Deep Research)             │
-│  • Collab (Interactive Planning)        │
-│  • Mail (Email Management)              │
-├─────────────────────────────────────────┤
-│  Core Systems:                          │
-│  • Codex CLI Integration                │
-│  • Playwright Browser Automation        │
-│  • PyAutoGUI Desktop Control            │
-│  • Encrypted Credential Storage         │
-│  • SQLite Memory Management             │
-│  • YAML Playbook System                 │
-└─────────────────────────────────────────┘
+> Learn: download school files
 ```
 
----
-
-## 🎓 Learning Path
-
-### Week 1: Learning Phase
-- Test basic execution
-- Learn 3-5 simple tasks
-- Save credentials for common sites
-- Try research mode
-
-### Week 2: Supervised Autonomy
-- Use Auto mode with approval
-- Review each action
-- Build trust with the agent
-
-### Week 3+: Full Autonomy
-- Enable unsafe mode for trusted tasks
-- Complex multi-step tasks
-- Integrate into daily workflow
-
----
-
-## 🐛 Troubleshooting
-
-| Issue | Solution |
-|-------|----------|
-| "Codex CLI not found" | Run `codex auth login` |
-| "Browser automation failed" | Run `playwright install chromium` |
-| "Permission denied" | Add folder to `AUTO_FS_ALLOWED_ROOTS` in `.env` |
-| Agent too slow | Reduce `CODEX_TIMEOUT_SECONDS` in `.env` |
-
-See [AGENT_SETUP_GUIDE.md](AGENT_SETUP_GUIDE.md) for detailed troubleshooting.
-
----
-
-## 📁 Project Structure
-
+Then:
 ```
-DrCodePT-Swarm/
-├── agent/
-│   ├── treys_agent.py          # Main entry point
-│   ├── modes/                  # Operation modes
-│   ├── autonomous/             # Autonomous agent core
-│   ├── memory/                 # Persistent storage
-│   ├── playbooks/              # Saved tasks
-│   └── llm/                    # LLM integrations
-├── launchers/
-│   └── TREYS_AGENT.bat         # Main launcher
-├── .env                        # Configuration
-└── [Documentation files]
+> download school files
 ```
 
 ---
 
 ## 🎉 You're Ready!
 
-Your agent is **fully functional** and ready to use. Start with simple tasks and gradually increase complexity.
+**Start with:**
+```
+> Plan: setup Google Tasks API and create a task called "Learn to use my agent"
+```
 
-**Recommended First Steps:**
-1. ✅ Authenticate: `codex auth login`
-2. ✅ Install browsers: `playwright install chromium`
-3. ✅ Launch: `launchers\TREYS_AGENT.bat`
-4. ✅ Test: `> create a hello world python script`
-5. ✅ Learn: `> Learn: open notepad`
+**Then explore:**
+- `ENHANCEMENT_SUMMARY.md` - Complete feature overview
+- `USAGE_EXAMPLES.md` - Real-world workflows
+- `TROUBLESHOOTING.md` - Common issues
 
-**Read [REVIEW_AND_ACTION_PLAN.md](REVIEW_AND_ACTION_PLAN.md) for complete details.**
-
----
-
-## 📞 Support
-
-- **In-Agent Help**: `> help`
-- **Documentation**: See files listed above
-- **Test Codex**: `codex exec "print('Hello')"`
-- **Test Agent**: `launchers\TREYS_AGENT.bat`
+**Have fun!** 🚀
 
 ---
 
-## 🚀 Happy Automating!
+## 📞 Need Help?
 
-Your personal AI assistant is ready to:
-- ✅ Automate repetitive tasks
-- ✅ Build and debug code
-- ✅ Research topics deeply
-- ✅ Control your desktop
-- ✅ Browse the internet
-- ✅ Learn and remember everything
+1. **In-agent:** `> help`
+2. **Troubleshooting:** `TROUBLESHOOTING.md`
+3. **Examples:** `USAGE_EXAMPLES.md`
+4. **Issues:** `> issues`
 
-**Let's get started!** 🎯
+**Remember:** The agent learns from every error. The more you use it, the smarter it gets!
