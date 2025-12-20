@@ -9,14 +9,12 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 export NVM_DIR="$HOME/.nvm"
 if [ -s "$NVM_DIR/nvm.sh" ]; then
   . "$NVM_DIR/nvm.sh"
-  if command -v nvm >/dev/null 2>&1; then
-    nvm use --lts >/dev/null || true
-  fi
+  nvm use --lts >/dev/null 2>&1 || true
 fi
 
 NODE_PATH=""
 if command -v nvm >/dev/null 2>&1; then
-  NODE_PATH="$(nvm which --silent || true)"
+  NODE_PATH="$(nvm which --silent 2>/dev/null || true)"
 fi
 if [ -z "$NODE_PATH" ] || [ "$NODE_PATH" = "N/A" ]; then
   NODE_PATH="$(command -v node || true)"
