@@ -10,6 +10,7 @@ Three modes:
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -74,12 +75,168 @@ def show_help() -> None:
   Example:
     - Research: best Python project structure
 
+{GREEN}Smart mode selection:{RESET}
+  If a request could be either research or execution, the agent will ask which you want.
+  You can still force research with "Research:" (and pick light/moderate/deep when prompted).
+
 {GREEN}Other:{RESET}
   playbooks  - List saved playbooks
   help       - Show this help
   exit       - Quit
 """.rstrip()
+    )    
+
+
+_RESEARCH_KEYWORDS = {
+    "research",
+    "compare",
+    "comparison",
+    "overview",
+    "explain",
+    "analysis",
+    "review",
+    "recommend",
+    "recommendations",
+    "best",
+    "top",
+    "pros",
+    "cons",
+    "advantages",
+    "disadvantages",
+    "latest",
+    "current",
+    "sources",
+    "citations",
+    "evidence",
+    "report",
+    "guide",
+    "tutorial",
+    "learn",
+}
+
+_RESEARCH_PHRASES = {
+    "what is",
+    "how does",
+    "how do",
+    "what's",
+    "pros and cons",
+    "pros & cons",
+}
+
+_EXEC_KEYWORDS = {
+    "login",
+    "signin",
+    "open",
+    "download",
+    "upload",
+    "install",
+    "uninstall",
+    "delete",
+    "remove",
+    "clean",
+    "organize",
+    "sort",
+    "move",
+    "rename",
+    "create",
+    "edit",
+    "update",
+    "send",
+    "email",
+    "schedule",
+    "book",
+    "buy",
+    "order",
+    "run",
+    "execute",
+    "build",
+    "deploy",
+    "configure",
+    "fill",
+    "submit",
+    "check",
+    "list",
+    "scan",
+}
+
+_EXEC_PHRASES = {
+    "log in",
+    "sign in",
+    "check my",
+    "check the",
+}
+
+
+def _score_intent(text: str, keywords: set[str], phrases: set[str]) -> int:
+    lowered = text.lower()
+    score = 0
+    for phrase in phrases:
+        if phrase in lowered:
+            score += 2
+    tokens = re.findall(r"[a-z0-9']+", lowered)
+    for token in tokens:
+        if token in keywords:
+            score += 1
+    return score
+
+
+def _infer_intent(text: str) -> str:
+    lowered = text.lower().strip()
+    if lowered.startswith("research:"):
+        return "research"
+    if lowered.startswith("auto:") or lowered.startswith("loop:") or lowered.startswith("learn:") or lowered.startswith("cred:") or lowered.startswith("credentials:"):
+        return "execute"
+
+    research_score = _score_intent(text, _RESEARCH_KEYWORDS, _RESEARCH_PHRASES)
+    exec_score = _score_intent(text, _EXEC_KEYWORDS, _EXEC_PHRASES)
+
+    if "research" in lowered or "citations" in lowered or "sources" in lowered:
+        research_score += 2
+
+    if research_score >= 2 and exec_score == 0:
+        return "research"
+    if exec_score >= 2 and research_score == 0:
+        return "execute"
+    if research_score > 0 and exec_score > 0:
+        return "ambiguous"
+    if research_score > 0 and exec_score == 0:
+        return "research"
+    if exec_score > 0 and research_score == 0:
+        return "execute"
+    return "ambiguous"
+
+
+def _prompt_mode_choice() -> tuple[str, str | None]:
+    prompt = (
+        f"{YELLOW}[PROMPT]{RESET} Does this request need research or execution?\n"
+        "  1) Research (light / moderate / deep)\n"
+        "  2) Execute a task\n"
+        f"{CYAN}Choose 1 or 2 (default 2). You can also type light/balanced/deep:{RESET} "
     )
+    choice = input(prompt).strip().lower()
+    if not choice:
+        return "execute", None
+
+    depth_map = {
+        "light": "light",
+        "l": "light",
+        "balanced": "balanced",
+        "b": "balanced",
+        "moderate": "balanced",
+        "m": "balanced",
+        "deep": "deep",
+        "d": "deep",
+    }
+
+    if choice in {"1", "research", "r"}:
+        return "research", None
+    if choice in {"2", "execute", "exec", "e"}:
+        return "execute", None
+    if choice in depth_map:
+        return "research", depth_map[choice]
+
+    # Fallback: treat unknown input as execute to avoid accidental long research runs.
+    return "execute", None
 
 
 def main() -> None:
@@ -195,11 +352,25 @@ def main() -> None:
             mode_autonomous(task, unsafe_mode=unsafe_mode)
             continue
 
+        intent = _infer_intent(user_input)
+        if intent == "ambiguous":
+            chosen, depth = _prompt_mode_choice()
+            intent = chosen
+            if depth:
+                os.environ["TREYS_AGENT_RESEARCH_MODE"] = depth
+
+        if intent == "research":
+            mode_research(user_input)
+            continue
+
         # Default: run a matching playbook; otherwise run the true autonomous loop.
         pb_id, pb_data = find_matching_playbook(user_input, playbooks)
         if pb_data:
-            mode_execute(user_input)
+            status = mode_execute(user_input)
             playbooks = load_playbooks()
+            if status == "failed":
+                print(f"{YELLOW}[INFO]{RESET} Playbook failed; falling back to Auto mode.")
+                mode_autonomous(user_input, unsafe_mode=unsafe_mode)
             continue
 
         mode_autonomous(user_input, unsafe_mode=unsafe_mode)

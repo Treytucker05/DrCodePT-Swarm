@@ -607,7 +607,7 @@ def _choose_unique_id(playbooks: dict, base: str) -> str:
     return pb_id
 
 
-def mode_execute(command: str) -> None:
+def mode_execute(command: str) -> str:
     """
     EXECUTE MODE:
     - If a playbook matches: run instantly (no questions, no LLM)
@@ -623,13 +623,14 @@ def mode_execute(command: str) -> None:
             resp = input(f"{YELLOW}Run it anyway? (y/n):{RESET} ").strip().lower()
             if resp != "y":
                 print(f"{YELLOW}[CANCELLED]{RESET} Ok, not running.")
-                return
+                return "cancelled"
         ok = execute_playbook(pb_id or "playbook", pb_data)
         if ok:
             print(f"{GREEN}[DONE]{RESET} Task completed successfully!")
+            return "success"
         else:
             print(f"{RED}[FAILED]{RESET} Task failed. Try 'Learn:' to re-record it.")
-        return
+            return "failed"
 
     print(f"{YELLOW}[NEW TASK]{RESET} No playbook found. Asking Codex to generate one...")
 
@@ -662,13 +663,13 @@ Rules:
     response = _call_codex(prompt, allow_tools=False)
     if response.startswith("[CODEX ERROR]"):
         print(f"{RED}{response}{RESET}")
-        return
+        return "failed"
 
     obj = _extract_json_object(response)
     if not isinstance(obj, dict):
         print(f"{RED}[CODEX ERROR]{RESET} Could not parse JSON playbook from Codex output.")
         print(response)
-        return
+        return "failed"
 
     playbook = _normalize_playbook_from_codex(obj, fallback_name=command)
     name = playbook.get("name") or command
@@ -679,14 +680,15 @@ Rules:
         print(f"{GREEN}[DONE]{RESET} Task completed successfully!")
     else:
         print(f"{RED}[FAILED]{RESET} Generated playbook failed. Try 'Learn:' to record it.")
-        return
+        return "failed"
 
     save = input(f"\\n{YELLOW}Save this as a playbook for next time? (y/n):{RESET} ").strip().lower()
     if save != "y":
-        return
+        return "success"
 
     pb_id = _choose_unique_id(playbooks, name)
     playbook["created"] = datetime.now().isoformat()
     playbooks[pb_id] = playbook
     save_playbooks(playbooks)
     print(f"{GREEN}[SAVED]{RESET} Playbook '{name}' saved as '{pb_id}'.")
+    return "success"
