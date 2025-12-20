@@ -50,6 +50,11 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _split_paths(raw: str) -> list[Path]:
+    parts = [p.strip() for p in raw.split(";") if p.strip()]
+    return [Path(p) for p in parts]
+
+
 def mode_autonomous(task: str, *, unsafe_mode: bool = False) -> None:
     """
     Run the true agent loop (dynamic replanning) for the given task.
@@ -69,12 +74,27 @@ def mode_autonomous(task: str, *, unsafe_mode: bool = False) -> None:
     if planner_mode not in {"react", "plan_first"}:
         planner_mode = "react"
 
+    # Default allowed roots: Desktop (including OneDrive Desktop if present) + repo root.
+    userprofile = os.getenv("USERPROFILE") or ""
+    desktop_default = []
+    if userprofile:
+        desktop_default.append(Path(userprofile) / "Desktop")
+        desktop_default.append(Path(userprofile) / "OneDrive" / "Desktop")
+    desktop_default.append(REPO_ROOT)
+
+    fs_anywhere = _bool_env("AUTO_FS_ANYWHERE", False)
+    raw_roots = os.getenv("AUTO_FS_ALLOWED_ROOTS", "").strip()
+    allowed_roots = _split_paths(raw_roots) if raw_roots else desktop_default
+
     agent_cfg = AgentConfig(
         unsafe_mode=bool(unsafe_mode),
         enable_web_gui=_bool_env("AUTO_ENABLE_WEB_GUI", True),
         enable_desktop=_bool_env("AUTO_ENABLE_DESKTOP", True),
         pre_mortem_enabled=_bool_env("AUTO_PRE_MORTEM", False),
         allow_user_info_storage=_bool_env("AUTO_ALLOW_USER_INFO_STORAGE", False),
+        allow_human_ask=_bool_env("AUTO_ALLOW_HUMAN_ASK", False),
+        allow_fs_anywhere=fs_anywhere,
+        fs_allowed_roots=tuple(allowed_roots),
     )
     runner_cfg = RunnerConfig(
         max_steps=_int_env("AUTO_MAX_STEPS", 30),

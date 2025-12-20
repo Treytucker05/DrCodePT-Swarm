@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -13,6 +13,9 @@ class AgentConfig:
     allow_user_info_storage: bool = False
     memory_db_path: Optional[Path] = None
     pre_mortem_enabled: bool = False
+    allow_human_ask: bool = False
+    allow_fs_anywhere: bool = False
+    fs_allowed_roots: Tuple[Path, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)

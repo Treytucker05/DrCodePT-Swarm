@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import ast
 import json
+import os
+import platform
+import shutil
 import subprocess
 import sys
 import time
+import zipfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -23,6 +28,14 @@ def _is_within(child: Path, parent: Path) -> bool:
         return True
     except Exception:
         return False
+
+
+def _fs_allowed(path: Path, cfg: AgentConfig, ctx: RunContext) -> bool:
+    if cfg.unsafe_mode or cfg.allow_fs_anywhere:
+        return True
+    roots = list(cfg.fs_allowed_roots or [])
+    roots.append(ctx.workspace_dir)
+    return any(_is_within(path, root) for root in roots)
 
 
 class WebFetchArgs(BaseModel):
@@ -85,11 +98,15 @@ def file_write_factory(agent_cfg: AgentConfig):
         if not path.is_absolute():
             path = (ctx.workspace_dir / path).resolve()
 
-        if not agent_cfg.unsafe_mode and not _is_within(path, ctx.workspace_dir):
+        if not _fs_allowed(path, agent_cfg, ctx):
             return ToolResult(
                 success=False,
-                error=f"Write blocked outside workspace: {path}",
-                metadata={"unsafe_blocked": True, "workspace_dir": str(ctx.workspace_dir)},
+                error=f"Write blocked outside allowed roots: {path}",
+                metadata={
+                    "unsafe_blocked": True,
+                    "workspace_dir": str(ctx.workspace_dir),
+                    "allowed_roots": [str(r) for r in agent_cfg.fs_allowed_roots],
+                },
             )
 
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -101,6 +118,332 @@ def file_write_factory(agent_cfg: AgentConfig):
         return ToolResult(success=True, output={"path": str(path), "bytes": len(args.content.encode("utf-8"))})
 
     return file_write
+
+
+class ListDirArgs(BaseModel):
+    path: str = "."
+    max_entries: int = 200
+    include_hidden: bool = False
+
+
+def list_dir(ctx: RunContext, args: ListDirArgs) -> ToolResult:
+    path = Path(args.path)
+    if not path.is_absolute():
+        path = (Path.cwd() / path).resolve()
+    if not path.exists():
+        return ToolResult(success=False, error=f"Directory not found: {path}")
+    if not path.is_dir():
+        return ToolResult(success=False, error=f"Not a directory: {path}")
+    items: List[Dict[str, Any]] = []
+    count = 0
+    for entry in path.iterdir():
+        if not args.include_hidden and entry.name.startswith("."):
+            continue
+        try:
+            stat = entry.stat()
+            items.append(
+                {
+                    "name": entry.name,
+                    "path": str(entry),
+                    "is_dir": entry.is_dir(),
+                    "size": stat.st_size,
+                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                }
+            )
+        except Exception:
+            items.append({"name": entry.name, "path": str(entry), "is_dir": entry.is_dir()})
+        count += 1
+        if count >= max(1, args.max_entries):
+            break
+    return ToolResult(success=True, output={"path": str(path), "entries": items})
+
+
+class GlobArgs(BaseModel):
+    root: str = "."
+    pattern: str = "**/*"
+    max_results: int = 200
+
+
+def glob_paths(ctx: RunContext, args: GlobArgs) -> ToolResult:
+    root = Path(args.root)
+    if not root.is_absolute():
+        root = (Path.cwd() / root).resolve()
+    if not root.exists():
+        return ToolResult(success=False, error=f"Root not found: {root}")
+    results: List[str] = []
+    for path in root.glob(args.pattern):
+        results.append(str(path))
+        if len(results) >= max(1, args.max_results):
+            break
+    return ToolResult(success=True, output={"root": str(root), "pattern": args.pattern, "results": results})
+
+
+class FileSearchArgs(BaseModel):
+    root: str = "."
+    query: str
+    case_sensitive: bool = False
+    max_results: int = 50
+    max_bytes: int = 1_000_000
+
+
+def file_search(ctx: RunContext, args: FileSearchArgs) -> ToolResult:
+    root = Path(args.root)
+    if not root.is_absolute():
+        root = (Path.cwd() / root).resolve()
+    if not root.exists():
+        return ToolResult(success=False, error=f"Root not found: {root}")
+    needle = args.query if args.case_sensitive else args.query.lower()
+    hits: List[Dict[str, Any]] = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            if path.stat().st_size > args.max_bytes:
+                continue
+            data = path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        hay = data if args.case_sensitive else data.lower()
+        if needle in hay:
+            hits.append({"path": str(path), "preview": data[:300]})
+            if len(hits) >= max(1, args.max_results):
+                break
+    return ToolResult(success=True, output={"root": str(root), "query": args.query, "matches": hits})
+
+
+class FileCopyArgs(BaseModel):
+    src: str
+    dest: str
+
+
+def file_copy_factory(agent_cfg: AgentConfig):
+    def file_copy(ctx: RunContext, args: FileCopyArgs) -> ToolResult:
+        src = Path(args.src)
+        if not src.is_absolute():
+            src = (Path.cwd() / src).resolve()
+        dest = Path(args.dest)
+        if not dest.is_absolute():
+            dest = (ctx.workspace_dir / dest).resolve()
+
+        if not _fs_allowed(dest, agent_cfg, ctx):
+            return ToolResult(
+                success=False,
+                error=f"Copy blocked outside workspace: {dest}",
+                metadata={"unsafe_blocked": True, "workspace_dir": str(ctx.workspace_dir)},
+            )
+        if not src.exists():
+            return ToolResult(success=False, error=f"Source not found: {src}")
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if src.is_dir():
+                shutil.copytree(src, dest, dirs_exist_ok=True)
+            else:
+                shutil.copy2(src, dest)
+            return ToolResult(success=True, output={"src": str(src), "dest": str(dest)})
+        except Exception as exc:
+            return ToolResult(success=False, error=str(exc))
+
+    return file_copy
+
+
+class FileMoveArgs(BaseModel):
+    src: str
+    dest: str
+
+
+def file_move_factory(agent_cfg: AgentConfig):
+    def file_move(ctx: RunContext, args: FileMoveArgs) -> ToolResult:
+        src = Path(args.src)
+        if not src.is_absolute():
+            src = (Path.cwd() / src).resolve()
+        dest = Path(args.dest)
+        if not dest.is_absolute():
+            dest = (ctx.workspace_dir / dest).resolve()
+
+        if not _fs_allowed(dest, agent_cfg, ctx) or not _fs_allowed(src, agent_cfg, ctx):
+            return ToolResult(
+                success=False,
+                error=f"Move blocked outside allowed roots: {src} -> {dest}",
+                metadata={
+                    "unsafe_blocked": True,
+                    "workspace_dir": str(ctx.workspace_dir),
+                    "allowed_roots": [str(r) for r in agent_cfg.fs_allowed_roots],
+                },
+            )
+        if not src.exists():
+            return ToolResult(success=False, error=f"Source not found: {src}")
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.move(str(src), str(dest))
+            return ToolResult(success=True, output={"src": str(src), "dest": str(dest)})
+        except Exception as exc:
+            return ToolResult(success=False, error=str(exc))
+
+    return file_move
+
+
+class FileDeleteArgs(BaseModel):
+    path: str
+
+
+def file_delete_factory(agent_cfg: AgentConfig):
+    def file_delete(ctx: RunContext, args: FileDeleteArgs) -> ToolResult:
+        path = Path(args.path)
+        if not path.is_absolute():
+            path = (ctx.workspace_dir / path).resolve()
+
+        if not _fs_allowed(path, agent_cfg, ctx):
+            return ToolResult(
+                success=False,
+                error=f"Delete blocked outside allowed roots: {path}",
+                metadata={
+                    "unsafe_blocked": True,
+                    "workspace_dir": str(ctx.workspace_dir),
+                    "allowed_roots": [str(r) for r in agent_cfg.fs_allowed_roots],
+                },
+            )
+        if not path.exists():
+            return ToolResult(success=False, error=f"Path not found: {path}")
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            return ToolResult(success=True, output={"deleted": str(path)})
+        except Exception as exc:
+            return ToolResult(success=False, error=str(exc))
+
+    return file_delete
+
+
+class ZipExtractArgs(BaseModel):
+    zip_path: str
+    dest_dir: str
+
+
+def zip_extract_factory(agent_cfg: AgentConfig):
+    def zip_extract(ctx: RunContext, args: ZipExtractArgs) -> ToolResult:
+        zip_path = Path(args.zip_path)
+        if not zip_path.is_absolute():
+            zip_path = (Path.cwd() / zip_path).resolve()
+        dest = Path(args.dest_dir)
+        if not dest.is_absolute():
+            dest = (ctx.workspace_dir / dest).resolve()
+
+        if not _fs_allowed(dest, agent_cfg, ctx):
+            return ToolResult(
+                success=False,
+                error=f"Extract blocked outside allowed roots: {dest}",
+                metadata={
+                    "unsafe_blocked": True,
+                    "workspace_dir": str(ctx.workspace_dir),
+                    "allowed_roots": [str(r) for r in agent_cfg.fs_allowed_roots],
+                },
+            )
+        if not zip_path.exists():
+            return ToolResult(success=False, error=f"Zip not found: {zip_path}")
+
+        dest.mkdir(parents=True, exist_ok=True)
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                zf.extractall(dest)
+            return ToolResult(success=True, output={"zip": str(zip_path), "dest": str(dest)})
+        except Exception as exc:
+            return ToolResult(success=False, error=str(exc))
+
+    return zip_extract
+
+
+class ZipCreateArgs(BaseModel):
+    src: str
+    zip_path: str
+
+
+def zip_create_factory(agent_cfg: AgentConfig):
+    def zip_create(ctx: RunContext, args: ZipCreateArgs) -> ToolResult:
+        src = Path(args.src)
+        if not src.is_absolute():
+            src = (Path.cwd() / src).resolve()
+        zip_path = Path(args.zip_path)
+        if not zip_path.is_absolute():
+            zip_path = (ctx.workspace_dir / zip_path).resolve()
+
+        if not _fs_allowed(zip_path, agent_cfg, ctx):
+            return ToolResult(
+                success=False,
+                error=f"Zip create blocked outside allowed roots: {zip_path}",
+                metadata={
+                    "unsafe_blocked": True,
+                    "workspace_dir": str(ctx.workspace_dir),
+                    "allowed_roots": [str(r) for r in agent_cfg.fs_allowed_roots],
+                },
+            )
+        if not src.exists():
+            return ToolResult(success=False, error=f"Source not found: {src}")
+
+        zip_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                if src.is_dir():
+                    for file in src.rglob("*"):
+                        if file.is_file():
+                            zf.write(file, file.relative_to(src))
+                else:
+                    zf.write(src, src.name)
+            return ToolResult(success=True, output={"src": str(src), "zip": str(zip_path)})
+        except Exception as exc:
+            return ToolResult(success=False, error=str(exc))
+
+    return zip_create
+
+
+class ClipboardGetArgs(BaseModel):
+    pass
+
+
+def clipboard_get(ctx: RunContext, args: ClipboardGetArgs) -> ToolResult:
+    try:
+        text = subprocess.check_output(
+            ["powershell", "-NoLogo", "-NoProfile", "-Command", "Get-Clipboard -Raw"],
+            text=True,
+        )
+        return ToolResult(success=True, output={"text": text})
+    except Exception as exc:
+        return ToolResult(success=False, error=str(exc))
+
+
+class ClipboardSetArgs(BaseModel):
+    text: str
+
+
+def clipboard_set(ctx: RunContext, args: ClipboardSetArgs) -> ToolResult:
+    try:
+        subprocess.run(
+            ["powershell", "-NoLogo", "-NoProfile", "-Command", "Set-Clipboard"],
+            input=args.text,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        return ToolResult(success=True, output={"bytes": len(args.text.encode("utf-8"))})
+    except Exception as exc:
+        return ToolResult(success=False, error=str(exc))
+
+
+class SystemInfoArgs(BaseModel):
+    pass
+
+
+def system_info(ctx: RunContext, args: SystemInfoArgs) -> ToolResult:
+    info = {
+        "platform": platform.platform(),
+        "python": sys.version,
+        "cwd": str(Path.cwd()),
+        "user": os.getenv("USERNAME") or os.getenv("USER") or "",
+    }
+    return ToolResult(success=True, output=info)
 
 
 class PythonExecArgs(BaseModel):
@@ -243,9 +586,18 @@ class HumanAskArgs(BaseModel):
     question: str
 
 
-def human_ask(ctx: RunContext, args: HumanAskArgs) -> ToolResult:
-    answer = input(f"\n[HUMAN INPUT NEEDED]\n{args.question}\n> ").strip()
-    return ToolResult(success=True, output={"answer": answer})
+def human_ask_factory(cfg: AgentConfig):
+    def human_ask(ctx: RunContext, args: HumanAskArgs) -> ToolResult:
+        if not cfg.allow_human_ask:
+            return ToolResult(
+                success=False,
+                error="human_ask disabled (set AUTO_ALLOW_HUMAN_ASK=1 to enable)",
+                metadata={"needs_human": True},
+            )
+        answer = input(f"\n[HUMAN INPUT NEEDED]\n{args.question}\n> ").strip()
+        return ToolResult(success=True, output={"answer": answer})
+
+    return human_ask
 
 
 class FinishArgs(BaseModel):
@@ -401,8 +753,100 @@ class DesktopStubArgs(BaseModel):
     params: Dict[str, Any] = Field(default_factory=dict)
 
 
-def desktop_stub(ctx: RunContext, args: DesktopStubArgs) -> ToolResult:
-    return ToolResult(success=False, error="Desktop adapter not implemented in v1 (stub).")
+def desktop_action(ctx: RunContext, args: DesktopStubArgs) -> ToolResult:
+    try:
+        import pyautogui
+    except Exception as exc:
+        return ToolResult(success=False, error=f"pyautogui unavailable: {exc}")
+
+    pyautogui.FAILSAFE = True
+    pyautogui.PAUSE = 0.05
+
+    action = (args.action or "").lower().strip()
+    params = args.params or {}
+
+    try:
+        if action == "screenshot":
+            path = params.get("path") or str(ctx.run_dir / f"desktop_{int(time.time())}.png")
+            pyautogui.screenshot(path)
+            return ToolResult(success=True, output={"path": path})
+
+        if action == "click":
+            x = params.get("x")
+            y = params.get("y")
+            if x is not None and y is not None:
+                pyautogui.click(int(x), int(y))
+            else:
+                pyautogui.click()
+            return ToolResult(success=True, output={"action": "click"})
+
+        if action == "double_click":
+            x = params.get("x")
+            y = params.get("y")
+            if x is not None and y is not None:
+                pyautogui.doubleClick(int(x), int(y))
+            else:
+                pyautogui.doubleClick()
+            return ToolResult(success=True, output={"action": "double_click"})
+
+        if action == "move_mouse":
+            x = params.get("x")
+            y = params.get("y")
+            if x is None or y is None:
+                return ToolResult(success=False, error="move_mouse requires x and y")
+            pyautogui.moveTo(int(x), int(y))
+            return ToolResult(success=True, output={"x": int(x), "y": int(y)})
+
+        if action == "drag_mouse":
+            x = params.get("x")
+            y = params.get("y")
+            duration = float(params.get("duration", 0.2))
+            if x is None or y is None:
+                return ToolResult(success=False, error="drag_mouse requires x and y")
+            pyautogui.dragTo(int(x), int(y), duration=duration)
+            return ToolResult(success=True, output={"x": int(x), "y": int(y), "duration": duration})
+
+        if action == "scroll":
+            clicks = int(params.get("clicks", 0))
+            pyautogui.scroll(clicks)
+            return ToolResult(success=True, output={"clicks": clicks})
+
+        if action == "type_text":
+            text = params.get("text", "")
+            interval = float(params.get("interval", 0.02))
+            pyautogui.write(str(text), interval=interval)
+            return ToolResult(success=True, output={"chars": len(str(text))})
+
+        if action == "press_key":
+            key = params.get("key")
+            if not key:
+                return ToolResult(success=False, error="press_key requires key")
+            pyautogui.press(str(key))
+            return ToolResult(success=True, output={"key": str(key)})
+
+        if action == "hotkey":
+            keys = params.get("keys") or []
+            if not isinstance(keys, list) or not keys:
+                return ToolResult(success=False, error="hotkey requires keys list")
+            pyautogui.hotkey(*[str(k) for k in keys])
+            return ToolResult(success=True, output={"keys": [str(k) for k in keys]})
+
+        if action == "get_mouse_position":
+            x, y = pyautogui.position()
+            return ToolResult(success=True, output={"x": int(x), "y": int(y)})
+
+        if action == "get_screen_size":
+            w, h = pyautogui.size()
+            return ToolResult(success=True, output={"width": int(w), "height": int(h)})
+
+        if action == "wait":
+            seconds = float(params.get("seconds", 1))
+            time.sleep(seconds)
+            return ToolResult(success=True, output={"seconds": seconds})
+
+        return ToolResult(success=False, error=f"Unsupported desktop action: {action}")
+    except Exception as exc:
+        return ToolResult(success=False, error=str(exc))
 
 
 def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store: Optional[SqliteMemoryStore] = None) -> ToolRegistry:
@@ -420,6 +864,52 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
             description="Write a file (restricted to run workspace unless unsafe_mode)",
         )
     )
+    reg.register(ToolSpec(name="list_dir", args_model=ListDirArgs, fn=list_dir, description="List directory entries"))
+    reg.register(ToolSpec(name="glob_paths", args_model=GlobArgs, fn=glob_paths, description="Find paths by glob pattern"))
+    reg.register(ToolSpec(name="file_search", args_model=FileSearchArgs, fn=file_search, description="Search text in files"))
+    reg.register(
+        ToolSpec(
+            name="file_copy",
+            args_model=FileCopyArgs,
+            fn=file_copy_factory(cfg),
+            description="Copy files/directories (restricted to run workspace unless unsafe_mode)",
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="file_move",
+            args_model=FileMoveArgs,
+            fn=file_move_factory(cfg),
+            description="Move files/directories (restricted to run workspace unless unsafe_mode)",
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="file_delete",
+            args_model=FileDeleteArgs,
+            fn=file_delete_factory(cfg),
+            description="Delete files/directories (restricted to run workspace unless unsafe_mode)",
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="zip_extract",
+            args_model=ZipExtractArgs,
+            fn=zip_extract_factory(cfg),
+            description="Extract zip to a directory (restricted to run workspace unless unsafe_mode)",
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="zip_create",
+            args_model=ZipCreateArgs,
+            fn=zip_create_factory(cfg),
+            description="Create zip from file/dir (restricted to run workspace unless unsafe_mode)",
+        )
+    )
+    reg.register(ToolSpec(name="clipboard_get", args_model=ClipboardGetArgs, fn=clipboard_get, description="Read clipboard"))
+    reg.register(ToolSpec(name="clipboard_set", args_model=ClipboardSetArgs, fn=clipboard_set, description="Write clipboard"))
+    reg.register(ToolSpec(name="system_info", args_model=SystemInfoArgs, fn=system_info, description="Basic system info"))
     reg.register(
         ToolSpec(
             name="python_exec",
@@ -428,7 +918,14 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
             description="Run sandboxed Python (best-effort, network disabled unless unsafe_mode)",
         )
     )
-    reg.register(ToolSpec(name="human_ask", args_model=HumanAskArgs, fn=human_ask, description="Ask a human for help"))
+    reg.register(
+        ToolSpec(
+            name="human_ask",
+            args_model=HumanAskArgs,
+            fn=human_ask_factory(cfg),
+            description="Ask a human for help (disabled by default; set AUTO_ALLOW_HUMAN_ASK=1)",
+        )
+    )
     reg.register(
         ToolSpec(
             name="memory_store",
@@ -482,10 +979,11 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
     if cfg.enable_desktop:
         reg.register(
             ToolSpec(
-                name="desktop_stub",
+                name="desktop",
                 args_model=DesktopStubArgs,
-                fn=desktop_stub,
-                description="Desktop automation adapter stub (v1 placeholder)",
+                fn=desktop_action,
+                description="Desktop automation via PyAutoGUI",
+                dangerous=True,
             )
         )
 
