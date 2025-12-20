@@ -81,13 +81,19 @@ def show_help() -> None:
     - Mail: review my Yahoo inbox and suggest rules
 
 {GREEN}Collab (interactive planning):{RESET}
-  Collab: [goal]
+  Natural language that includes "plan", "organize", "strategy", etc. will route here automatically.
+  You can still force it with:
+    Collab: [goal]
   Example:
-    - Collab: reorganize my Yahoo folders and clean rules
+    - I want a plan to reorganize my Yahoo folders and clean rules
 
 {GREEN}Smart mode selection:{RESET}
   If a request could be either research or execution, the agent will ask which you want.
   You can still force research with "Research:" (and pick light/moderate/deep when prompted).
+
+{GREEN}Routing defaults:{RESET}
+  - If ambiguous, defaults to Execute (change with TREYS_AGENT_DEFAULT_MODE=collab|research|execute).
+  - Set TREYS_AGENT_PROMPT_ON_AMBIGUOUS=1 to show a mode picker.
 
 {GREEN}Other:{RESET}
   playbooks  - List saved playbooks
@@ -131,6 +137,38 @@ _RESEARCH_PHRASES = {
     "what's",
     "pros and cons",
     "pros & cons",
+}
+
+_COLLAB_KEYWORDS = {
+    "plan",
+    "planning",
+    "strategy",
+    "roadmap",
+    "outline",
+    "organize",
+    "organizing",
+    "structure",
+    "brainstorm",
+    "prioritize",
+    "priorities",
+    "decide",
+    "decision",
+    "workflow",
+    "next",
+    "steps",
+    "approach",
+}
+
+_COLLAB_PHRASES = {
+    "come up with a plan",
+    "help me plan",
+    "organize my thoughts",
+    "break this down",
+    "step by step plan",
+    "step-by-step plan",
+    "master plan",
+    "what should we do",
+    "how should we",
 }
 
 _EXEC_KEYWORDS = {
@@ -194,24 +232,31 @@ def _infer_intent(text: str) -> str:
     lowered = text.lower().strip()
     if lowered.startswith("research:"):
         return "research"
+    if lowered.startswith("collab:"):
+        return "collab"
     if lowered.startswith("auto:") or lowered.startswith("loop:") or lowered.startswith("learn:") or lowered.startswith("cred:") or lowered.startswith("credentials:"):
         return "execute"
 
     research_score = _score_intent(text, _RESEARCH_KEYWORDS, _RESEARCH_PHRASES)
+    collab_score = _score_intent(text, _COLLAB_KEYWORDS, _COLLAB_PHRASES)
     exec_score = _score_intent(text, _EXEC_KEYWORDS, _EXEC_PHRASES)
 
     if "research" in lowered or "citations" in lowered or "sources" in lowered:
         research_score += 2
 
-    if research_score >= 2 and exec_score == 0:
+    if collab_score >= 2 and collab_score > max(research_score, exec_score):
+        return "collab"
+    if research_score >= 2 and research_score > max(collab_score, exec_score):
         return "research"
-    if exec_score >= 2 and research_score == 0:
+    if exec_score >= 2 and exec_score > max(collab_score, research_score):
         return "execute"
-    if research_score > 0 and exec_score > 0:
+    if collab_score > 0 and (research_score > 0 or exec_score > 0):
         return "ambiguous"
-    if research_score > 0 and exec_score == 0:
+    if research_score > 0 and collab_score == 0 and exec_score == 0:
         return "research"
-    if exec_score > 0 and research_score == 0:
+    if collab_score > 0 and research_score == 0 and exec_score == 0:
+        return "collab"
+    if exec_score > 0 and research_score == 0 and collab_score == 0:
         return "execute"
     return "ambiguous"
 
@@ -221,7 +266,8 @@ def _prompt_mode_choice() -> tuple[str, str | None]:
         f"{YELLOW}[PROMPT]{RESET} Does this request need research or execution?\n"
         "  1) Research (light / moderate / deep)\n"
         "  2) Execute a task\n"
-        f"{CYAN}Choose 1 or 2 (default 2). You can also type light/balanced/deep:{RESET} "
+        "  3) Collab (organize thoughts + plan)\n"
+        f"{CYAN}Choose 1/2/3 (default 2). You can also type light/balanced/deep:{RESET} "
     )
     choice = input(prompt).strip().lower()
     if not choice:
@@ -242,6 +288,8 @@ def _prompt_mode_choice() -> tuple[str, str | None]:
         return "research", None
     if choice in {"2", "execute", "exec", "e"}:
         return "execute", None
+    if choice in {"3", "collab", "c", "plan"}:
+        return "collab", None
     if choice in depth_map:
         return "research", depth_map[choice]
 
@@ -384,10 +432,16 @@ def main() -> None:
 
         intent = _infer_intent(user_input)
         if intent == "ambiguous":
-            chosen, depth = _prompt_mode_choice()
-            intent = chosen
-            if depth:
-                os.environ["TREYS_AGENT_RESEARCH_MODE"] = depth
+            if os.getenv("TREYS_AGENT_PROMPT_ON_AMBIGUOUS", "").strip().lower() in {"1", "true", "yes", "y", "on"}:
+                chosen, depth = _prompt_mode_choice()
+                intent = chosen
+                if depth:
+                    os.environ["TREYS_AGENT_RESEARCH_MODE"] = depth
+            else:
+                default_mode = (os.getenv("TREYS_AGENT_DEFAULT_MODE") or "execute").strip().lower()
+                if default_mode not in {"execute", "research", "collab"}:
+                    default_mode = "execute"
+                intent = default_mode
 
         if intent == "research":
             mode_research(user_input)
