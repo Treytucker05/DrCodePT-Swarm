@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "perception": {
+      "type": "string",
+      "description": "What the agent understands about the current situation and user's intent"
+    },
+    "reasoning": {
+      "type": "string",
+      "description": "The agent's thought process about what to do next"
+    },
+    "plan": {
+      "type": "array",
+      "description": "Ordered list of steps the agent plans to take",
+      "items": {
+        "type": "string"
+      }
+    },
+    "next_action": {
+      "type": "object",
+      "description": "The immediate next action to take",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["scan_folder", "create_folder", "show_folders", "ask_question", "none"],
+          "description": "The type of action"
+        },
+        "folder": {
+          "type": "string",
+          "description": "Folder name if applicable"
+        },
+        "question": {
+          "type": "string",
+          "description": "Question to ask the user if action type is ask_question"
+        }
+      },
+      "required": ["type"]
+    },
+    "response": {
+      "type": "string",
+      "description": "What to say to the user"
+    }
+  },
+  "required": ["perception", "reasoning", "next_action", "response"],
+  "additionalProperties": false
+}

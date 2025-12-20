@@ -86,9 +86,9 @@ def show_help() -> None:
   Example:
     - Research: best Python project structure
 
-{GREEN}Mail (interactive organization):{RESET}
+{GREEN}Mail (intelligent assistant):{RESET}
   Natural language about organizing mail/email/folders will route here automatically.
-  The mode now starts with planning options before scanning.
+  The agent will understand your request and help you conversationally.
 
   You can still force it with:
     Mail: [request]
@@ -96,9 +96,10 @@ def show_help() -> None:
   Examples:
     - organize my yahoo mail folders
     - clean my yahoo inbox
-    - Mail: review my Yahoo inbox and suggest rules
+    - I need help organizing my email
 
-  {YELLOW}Advanced:{RESET} Set MAIL_USE_COLLAB=1 for conversational AI planning before organizing.
+  The agent will ask questions, understand your goals, and execute actions as needed.
+  {YELLOW}Advanced:{RESET} Set MAIL_USE_WORKFLOW=1 for the structured workflow mode.
 
 {GREEN}Collab (interactive planning):{RESET}
   Natural language that includes "plan", "organize", "strategy", etc. will route here automatically.
@@ -284,6 +285,15 @@ _SIMPLE_QUESTION_PATTERNS = {
 def _is_simple_question(text: str) -> bool:
     lowered = text.lower().strip()
     if not lowered.endswith("?"):
+        return False
+
+    # Check if it's a complex task request (mail, research, etc.)
+    # These should NOT be treated as simple questions
+    mail_score = _score_intent(text, _MAIL_KEYWORDS, _MAIL_PHRASES)
+    research_score = _score_intent(text, _RESEARCH_KEYWORDS, _RESEARCH_PHRASES)
+    collab_score = _score_intent(text, _COLLAB_KEYWORDS, _COLLAB_PHRASES)
+
+    if mail_score >= 3 or research_score >= 2 or collab_score >= 2:
         return False
 
     for pattern in _SIMPLE_QUESTION_PATTERNS:
@@ -735,14 +745,14 @@ def main() -> None:
             continue
 
         if intent == "mail":
-            use_collab = os.getenv("MAIL_USE_COLLAB", "").strip().lower() in {"1", "true", "yes", "y", "on"}
+            use_workflow = os.getenv("MAIL_USE_WORKFLOW", "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
-            if use_collab:
-                from agent.modes.mail_collab import run_mail_collab
-                run_mail_collab(user_input)
-            else:
+            if use_workflow:
                 from agent.modes.mail_supervised import run_mail_supervised
                 run_mail_supervised(user_input)
+            else:
+                from agent.modes.mail_intelligent import run_mail_intelligent
+                run_mail_intelligent(user_input)
             continue
 
         # Default: run a matching playbook; otherwise run the true autonomous loop.

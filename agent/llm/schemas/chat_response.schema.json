@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "response": {
+      "type": "string",
+      "description": "The assistant's conversational response to the user"
+    },
+    "action": {
+      "type": "object",
+      "description": "Optional action to execute",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["scan_folder", "create_folder", "show_folders", "none"],
+          "description": "The type of action to perform"
+        },
+        "folder": {
+          "type": "string",
+          "description": "The folder name for the action (if applicable)"
+        }
+      },
+      "required": ["type"]
+    }
+  },
+  "required": ["response"],
+  "additionalProperties": false
+}
