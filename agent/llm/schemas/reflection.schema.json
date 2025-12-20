@@ -6,7 +6,22 @@
   "properties": {
     "status": { "type": "string", "enum": ["success", "minor_repair", "replan"] },
     "explanation_short": { "type": "string" },
-    "next_hint": { "type": "string" }
+    "next_hint": { "type": "string" },
+    "failure_type": {
+      "type": "string",
+      "enum": ["none", "tool_error", "precondition_failed", "postcondition_failed", "unsafe_blocked", "unknown"]
+    },
+    "lesson": { "type": "string" },
+    "memory_write": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "content"],
+      "properties": {
+        "kind": { "type": "string", "enum": ["experience", "procedure", "knowledge", "user_info"] },
+        "key": { "type": "string" },
+        "content": { "type": "string" },
+        "metadata": { "type": "object" }
+      }
+    }
   }
 }
-

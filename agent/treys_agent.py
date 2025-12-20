@@ -1,4 +1,4 @@
-"""
+"""2
 Trey's Agent - Fast, Learning, Research-Capable Personal Assistant
 
 Three modes:
@@ -744,8 +744,20 @@ def main() -> None:
             mode_research(user_input)
             continue
 
-        # Mail tasks are now handled by the unified autonomous agent with mail tools
-        # No special routing needed - the agent will use the mail tool when appropriate
+        # Check if this is a complex task that should skip playbook matching
+        # and go straight to autonomous mode (e.g., "organize", "consolidate", "help me")
+        complex_task_keywords = [
+            "organize", "consolidate", "help me", "assist me", "manage",
+            "clean up", "sort out", "figure out", "work on", "set up",
+            "configure", "plan", "strategy", "decide", "choose"
+        ]
+        lower_input = user_input.lower()
+        is_complex_task = any(keyword in lower_input for keyword in complex_task_keywords)
+
+        # If it's a complex task, skip playbook matching and use autonomous mode
+        if is_complex_task:
+            mode_autonomous(user_input, unsafe_mode=unsafe_mode)
+            continue
 
         # Default: run a matching playbook; otherwise run the true autonomous loop.
         pb_id, pb_data = find_matching_playbook(user_input, playbooks)

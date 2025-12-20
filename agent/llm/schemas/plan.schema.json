@@ -23,7 +23,9 @@
         "rationale_short": { "type": "string" },
         "tool_name": { "type": "string" },
         "tool_args": { "type": "array", "items": { "$ref": "#/$defs/kv_pair" } },
-        "success_criteria": { "type": "array", "items": { "type": "string" } }
+        "success_criteria": { "type": "array", "items": { "type": "string" } },
+        "preconditions": { "type": "array", "items": { "type": "string" } },
+        "postconditions": { "type": "array", "items": { "type": "string" } }
       }
     },
     "kv_pair": {

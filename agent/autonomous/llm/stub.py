@@ -32,3 +32,16 @@ class StubLLM:
         out = self.responses[self._idx]
         self._idx += 1
         return out
+
+    def reason_json(
+        self,
+        prompt: str,
+        *,
+        schema_path: Path,  # noqa: ARG002
+        timeout_seconds: Optional[int] = None,  # noqa: ARG002
+    ) -> Dict[str, Any]:
+        return self.complete_json(
+            prompt,
+            schema_path=schema_path,
+            timeout_seconds=timeout_seconds,
+        )

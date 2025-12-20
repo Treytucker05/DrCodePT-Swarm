@@ -11,14 +11,26 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["score", "plan", "notes"],
+        "required": ["score", "plan", "notes", "scores"],
         "properties": {
           "score": { "type": "integer", "minimum": 1, "maximum": 10 },
           "notes": { "type": "string" },
+          "scores": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["grounding_confidence", "tool_feasibility", "destructiveness", "length"],
+            "properties": {
+              "grounding_confidence": { "type": "integer", "minimum": 1, "maximum": 10 },
+              "tool_feasibility": { "type": "integer", "minimum": 1, "maximum": 10 },
+              "destructiveness": { "type": "integer", "minimum": 1, "maximum": 10 },
+              "length": { "type": "integer", "minimum": 1, "maximum": 10 }
+            }
+          },
           "plan": { "$ref": "#/$defs/plan" }
         }
       }
-    }
+    },
+    "fallback_plan": { "$ref": "#/$defs/plan" }
   },
   "$defs": {
     "plan": {
@@ -45,7 +57,9 @@
         "rationale_short": { "type": "string" },
         "tool_name": { "type": "string" },
         "tool_args": { "type": "array", "items": { "$ref": "#/$defs/kv_pair" } },
-        "success_criteria": { "type": "array", "items": { "type": "string" } }
+        "success_criteria": { "type": "array", "items": { "type": "string" } },
+        "preconditions": { "type": "array", "items": { "type": "string" } },
+        "postconditions": { "type": "array", "items": { "type": "string" } }
       }
     },
     "kv_pair": {

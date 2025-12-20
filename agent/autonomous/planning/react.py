@@ -43,6 +43,7 @@ class ReActPlanner(Planner):
             - If the goal is already satisfied, output a single step using tool_name="finish" with a short summary.
             - Do not use dangerous tools unless unsafe_mode=true.
             - Prefer minimal, testable actions and specify success_criteria.
+            - Add preconditions and postconditions when useful (short, checkable).
             - tool_args must be a list of {{"key":"...","value":"..."}} pairs (values as strings; encode JSON if needed).
 
             Available tools (name/description/schema):
@@ -64,7 +65,9 @@ class ReActPlanner(Planner):
                     "rationale_short":"<string>",
                     "tool_name":"<string>",
                     "tool_args":[{{"key":"arg_name","value":"arg_value"}}],
-                    "success_criteria":["..."]
+                    "success_criteria":["..."],
+                    "preconditions":["..."],
+                    "postconditions":["..."]
                   }}
                 ]
               }}
@@ -72,7 +75,7 @@ class ReActPlanner(Planner):
             """
         ).strip()
 
-        data = self._llm.complete_json(prompt, schema_path=llm_schemas.PLAN_NEXT_STEP)
+        data = self._llm.reason_json(prompt, schema_path=llm_schemas.PLAN_NEXT_STEP)
         data = coerce_plan_dict(data)
         plan = model_validate(Plan, data)
 
@@ -120,7 +123,7 @@ class ReActPlanner(Planner):
             Return STRICT JSON Plan with exactly one step (or finish).
             """
         ).strip()
-        data = self._llm.complete_json(prompt, schema_path=llm_schemas.PLAN_NEXT_STEP)
+        data = self._llm.reason_json(prompt, schema_path=llm_schemas.PLAN_NEXT_STEP)
         data = coerce_plan_dict(data)
         plan = model_validate(Plan, data)
         if plan.steps:

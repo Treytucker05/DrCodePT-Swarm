@@ -27,6 +27,8 @@ class Step(BaseModel):
     tool_name: str
     tool_args: Dict[str, Any] = Field(default_factory=dict)
     success_criteria: List[str] = Field(default_factory=list)
+    preconditions: List[str] = Field(default_factory=list)
+    postconditions: List[str] = Field(default_factory=list)
 
 
 class Plan(BaseModel):
@@ -41,6 +43,9 @@ class Reflection(BaseModel):
     status: ReflectionStatus
     explanation_short: str = ""
     next_hint: str = ""
+    failure_type: str = "none"
+    lesson: str = ""
+    memory_write: Optional[Dict[str, Any]] = None
 
 
 class ToolResult(BaseModel):

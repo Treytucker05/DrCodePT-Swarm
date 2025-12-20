@@ -42,7 +42,7 @@ def generate_plan(goal: str) -> str:
             f"SYSTEM_PROMPT:\n{system_prompt}\n\n"
             f"GOAL:\n{goal}\n"
         )
-        data = llm.complete_json(prompt, schema_path=llm_schemas.YAML_PLAN)
+        data = llm.reason_json(prompt, schema_path=llm_schemas.YAML_PLAN)
         yaml_text = (data.get("yaml") or "").strip()
         if not yaml_text:
             raise ValueError("Planner returned empty YAML.")

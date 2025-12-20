@@ -37,7 +37,7 @@ class Reflector:
             """
         ).strip()
         try:
-            return self._llm.complete_json(prompt, schema_path=llm_schemas.PREMORTEM)
+            return self._llm.reason_json(prompt, schema_path=llm_schemas.PREMORTEM)
         except Exception:
             # Don't block execution on pre-mortem failures.
             return None
@@ -70,12 +70,19 @@ class Reflector:
             {dumps_compact(payload)}
 
             Return STRICT JSON:
-              {{"status":"success|minor_repair|replan","explanation_short":"...","next_hint":"..."}}
+              {{
+                "status":"success|minor_repair|replan",
+                "explanation_short":"...",
+                "next_hint":"...",
+                "failure_type":"none|tool_error|precondition_failed|postcondition_failed|unsafe_blocked|unknown",
+                "lesson":"one sentence rule",
+                "memory_write":{{"kind":"experience|procedure|knowledge|user_info","key":"optional","content":"...","metadata":{{}}}}
+              }}
             Return JSON only.
             """
         ).strip()
         try:
-            data = self._llm.complete_json(prompt, schema_path=llm_schemas.REFLECTION)
+            data = self._llm.reason_json(prompt, schema_path=llm_schemas.REFLECTION)
             return model_validate(Reflection, data)
         except Exception:
             if tool_result.success:

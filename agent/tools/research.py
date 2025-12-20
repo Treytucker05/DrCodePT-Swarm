@@ -94,7 +94,7 @@ class ResearchTool(ToolAdapter):
                     "Return JSON only.\n\n"
                     f"SOURCES_JSON:\n{json.dumps(sources)[:12000]}\n"
                 )
-                summary = llm.complete_json(prompt, schema_path=llm_schemas.RESEARCH_SUMMARY)
+                summary = llm.reason_json(prompt, schema_path=llm_schemas.RESEARCH_SUMMARY)
                 summary.setdefault("model_used", llm.model or "default")
             except Exception:
                 summary = {

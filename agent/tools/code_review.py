@@ -35,7 +35,7 @@ class CodeReviewTool(ToolAdapter):
                 "Return JSON only.\n\n"
                 f"CODE:\n{code}\n"
             )
-            review = llm.complete_json(prompt, schema_path=llm_schemas.CODE_REVIEW)
+            review = llm.reason_json(prompt, schema_path=llm_schemas.CODE_REVIEW)
 
             improved_code = (review.get("improved_code") or "").strip() or code
             changes = review.get("changes") or []

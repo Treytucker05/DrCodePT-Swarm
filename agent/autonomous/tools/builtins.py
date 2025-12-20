@@ -21,6 +21,21 @@ from ..memory.sqlite_store import MemoryKind, SqliteMemoryStore
 from ..models import ToolResult
 from .registry import ToolRegistry, ToolSpec
 
+# Lightweight in-memory sessions for GUI tools (keyed by run_id).
+_WEB_SESSIONS: Dict[str, Dict[str, Any]] = {}
+_DESKTOP_SOM_STATE: Dict[str, Dict[str, Any]] = {}
+
+
+def _label_id(idx: int) -> str:
+    # A1..Z9, then AA1.. if needed.
+    letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    if idx < 26 * 9:
+        row = idx // 9
+        col = (idx % 9) + 1
+        return f"{letters[row]}{col}"
+    # Fallback: L{idx}
+    return f"L{idx}"
+
 
 def _is_within(child: Path, parent: Path) -> bool:
     try:
@@ -696,7 +711,7 @@ class WebGuiSnapshotArgs(BaseModel):
     include_screenshot: bool = False
 
 
-def web_gui_snapshot(ctx: RunContext, args: WebGuiSnapshotArgs) -> ToolResult:
+def web_gui_snapshot(ctx: RunContext, args: WebGuiSnapshotArgs) -> ToolResult:  
     try:
         from playwright.sync_api import sync_playwright
     except Exception as exc:  # pragma: no cover
@@ -744,6 +759,240 @@ def web_gui_snapshot(ctx: RunContext, args: WebGuiSnapshotArgs) -> ToolResult:
                 "screenshot": screenshot_path,
             },
         )
+    except Exception as exc:
+        return ToolResult(success=False, error=str(exc), retryable=True)
+
+
+def _get_web_session(ctx: RunContext, *, headless: Optional[bool] = None) -> Dict[str, Any]:
+    session = _WEB_SESSIONS.get(ctx.run_id)
+    if session:
+        return session
+    try:
+        from playwright.sync_api import sync_playwright
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError(f"Playwright unavailable: {exc}") from exc
+
+    pw = sync_playwright().start()
+    launch_kwargs = {"headless": bool(headless) if headless is not None else True}
+    browser = pw.chromium.launch(**launch_kwargs)
+    context = browser.new_context()
+    page = context.new_page()
+    session = {"playwright": pw, "browser": browser, "context": context, "page": page, "elements": {}}
+    _WEB_SESSIONS[ctx.run_id] = session
+    return session
+
+
+def _web_css_path_js() -> str:
+    return """
+    (el) => {
+      if (!el || !el.tagName) return '';
+      if (el.id) return '#' + el.id;
+      const parts = [];
+      while (el && el.nodeType === 1 && el.tagName.toLowerCase() !== 'html') {
+        let selector = el.tagName.toLowerCase();
+        if (el.className) {
+          const cls = String(el.className).trim().split(/\\s+/).slice(0,2);
+          if (cls.length) selector += '.' + cls.join('.');
+        }
+        const parent = el.parentNode;
+        if (parent) {
+          const siblings = Array.from(parent.children).filter(s => s.tagName === el.tagName);
+          if (siblings.length > 1) {
+            const index = siblings.indexOf(el) + 1;
+            selector += `:nth-of-type(${index})`;
+          }
+        }
+        parts.unshift(selector);
+        el = parent;
+      }
+      parts.unshift('html');
+      return parts.join(' > ');
+    }
+    """
+
+
+class WebFindElementsArgs(BaseModel):
+    query: str = ""
+    url: Optional[str] = None
+    role: Optional[str] = None
+    name: Optional[str] = None
+    text: Optional[str] = None
+    css: Optional[str] = None
+    limit: int = 10
+    headless: Optional[bool] = None
+
+
+def web_find_elements(ctx: RunContext, args: WebFindElementsArgs) -> ToolResult:
+    try:
+        session = _get_web_session(ctx, headless=args.headless)
+        page = session["page"]
+        if args.url:
+            page.goto(args.url, wait_until="domcontentloaded")
+
+        locators: List[Any] = []
+        if args.css:
+            locators.append(page.locator(args.css))
+        if args.role:
+            locators.append(page.get_by_role(args.role, name=args.name))
+        if args.text:
+            locators.append(page.get_by_text(args.text))
+        if args.query and not (args.css or args.role or args.text):
+            locators.append(page.get_by_text(args.query))
+
+        elements: List[Dict[str, Any]] = []
+        element_map: Dict[str, Dict[str, Any]] = session["elements"]
+        idx = 0
+        for locator in locators:
+            count = locator.count()
+            for i in range(min(count, max(1, args.limit))):
+                handle = locator.nth(i)
+                try:
+                    selector = handle.evaluate(_web_css_path_js())
+                except Exception:
+                    selector = ""
+                try:
+                    role = handle.get_attribute("role") or handle.evaluate("el => el.tagName.toLowerCase()")
+                except Exception:
+                    role = ""
+                try:
+                    name = handle.get_attribute("aria-label") or ""
+                except Exception:
+                    name = ""
+                try:
+                    text = handle.inner_text() or ""
+                except Exception:
+                    text = ""
+                try:
+                    box = handle.bounding_box() or {}
+                except Exception:
+                    box = {}
+                element_id = f"el_{idx}"
+                idx += 1
+                if selector:
+                    element_map[element_id] = {"selector": selector}
+                elements.append(
+                    {
+                        "element_id": element_id,
+                        "role": role,
+                        "name": name,
+                        "text": text[:200],
+                        "selector": selector,
+                        "a11y_path": selector,
+                        "bbox": box,
+                    }
+                )
+                if len(elements) >= max(1, args.limit):
+                    break
+            if len(elements) >= max(1, args.limit):
+                break
+
+        return ToolResult(
+            success=True,
+            output={"url": page.url, "title": page.title(), "elements": elements},
+        )
+    except Exception as exc:
+        return ToolResult(success=False, error=str(exc), retryable=True)
+
+
+class WebClickArgs(BaseModel):
+    element_id: Optional[str] = None
+    selector: Optional[str] = None
+    url: Optional[str] = None
+    headless: Optional[bool] = None
+
+
+def web_click(ctx: RunContext, args: WebClickArgs) -> ToolResult:
+    try:
+        session = _get_web_session(ctx, headless=args.headless)
+        page = session["page"]
+        if args.url:
+            page.goto(args.url, wait_until="domcontentloaded")
+        selector = args.selector
+        if not selector and args.element_id:
+            selector = (session["elements"].get(args.element_id) or {}).get("selector")
+        if not selector:
+            return ToolResult(success=False, error="web_click requires element_id or selector")
+        page.locator(selector).first.click()
+        shot_path = str(ctx.run_dir / f"web_click_{int(time.time())}.png")
+        try:
+            page.screenshot(path=shot_path, full_page=True)
+        except Exception:
+            shot_path = ""
+        return ToolResult(success=True, output={"clicked": selector, "screenshot": shot_path})
+    except Exception as exc:
+        return ToolResult(success=False, error=str(exc), retryable=True)
+
+
+class WebTypeArgs(BaseModel):
+    element_id: Optional[str] = None
+    selector: Optional[str] = None
+    text: str
+    url: Optional[str] = None
+    headless: Optional[bool] = None
+
+
+def web_type(ctx: RunContext, args: WebTypeArgs) -> ToolResult:
+    try:
+        session = _get_web_session(ctx, headless=args.headless)
+        page = session["page"]
+        if args.url:
+            page.goto(args.url, wait_until="domcontentloaded")
+        selector = args.selector
+        if not selector and args.element_id:
+            selector = (session["elements"].get(args.element_id) or {}).get("selector")
+        if not selector:
+            return ToolResult(success=False, error="web_type requires element_id or selector")
+        page.locator(selector).first.fill(str(args.text))
+        shot_path = str(ctx.run_dir / f"web_type_{int(time.time())}.png")
+        try:
+            page.screenshot(path=shot_path, full_page=True)
+        except Exception:
+            shot_path = ""
+        return ToolResult(success=True, output={"typed": selector, "screenshot": shot_path})
+    except Exception as exc:
+        return ToolResult(success=False, error=str(exc), retryable=True)
+
+
+class WebCloseModalArgs(BaseModel):
+    headless: Optional[bool] = None
+
+
+def web_close_modal(ctx: RunContext, args: WebCloseModalArgs) -> ToolResult:
+    try:
+        session = _get_web_session(ctx, headless=args.headless)
+        page = session["page"]
+        closed = False
+        selectors = [
+            "button[aria-label='Close']",
+            "[role='dialog'] button:has-text('Close')",
+            "[role='dialog'] button:has-text('No thanks')",
+            "[role='dialog'] button:has-text('Dismiss')",
+            "button:has-text('Close')",
+            "button:has-text('No thanks')",
+            "button:has-text('Dismiss')",
+            "[aria-label='close']",
+        ]
+        for sel in selectors:
+            try:
+                loc = page.locator(sel).first
+                if loc.is_visible():
+                    loc.click()
+                    closed = True
+                    break
+            except Exception:
+                continue
+        if not closed:
+            try:
+                page.keyboard.press("Escape")
+                closed = True
+            except Exception:
+                pass
+        shot_path = str(ctx.run_dir / f"web_modal_{int(time.time())}.png")
+        try:
+            page.screenshot(path=shot_path, full_page=True)
+        except Exception:
+            shot_path = ""
+        return ToolResult(success=True, output={"closed": closed, "screenshot": shot_path})
     except Exception as exc:
         return ToolResult(success=False, error=str(exc), retryable=True)
 
@@ -849,6 +1098,132 @@ def desktop_action(ctx: RunContext, args: DesktopStubArgs) -> ToolResult:
         return ToolResult(success=False, error=str(exc))
     except Exception as exc:
         return ToolResult(success=False, error=f"Failed to send message: {exc}")
+
+
+class DesktopSomSnapshotArgs(BaseModel):
+    path: Optional[str] = None
+    max_labels: int = 60
+    include_labeled_image: bool = True
+
+
+def desktop_som_snapshot(ctx: RunContext, args: DesktopSomSnapshotArgs) -> ToolResult:
+    try:
+        import pyautogui
+    except Exception as exc:
+        return ToolResult(success=False, error=f"pyautogui unavailable: {exc}")
+
+    pyautogui.FAILSAFE = True
+    pyautogui.PAUSE = 0.05
+
+    path = args.path or str(ctx.run_dir / f"desktop_som_{int(time.time())}.png")
+    pyautogui.screenshot(path)
+
+    labels: List[Dict[str, Any]] = []
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+
+        img = Image.open(path)
+        draw = ImageDraw.Draw(img)
+        width, height = img.size
+
+        # OCR if available
+        try:
+            import pytesseract
+
+            data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+            for i in range(len(data.get("text", []))):
+                text = (data["text"][i] or "").strip()
+                if not text:
+                    continue
+                x, y, w, h = (
+                    int(data["left"][i]),
+                    int(data["top"][i]),
+                    int(data["width"][i]),
+                    int(data["height"][i]),
+                )
+                labels.append(
+                    {
+                        "text": text[:60],
+                        "bbox": {"x": x, "y": y, "width": w, "height": h},
+                        "source": "ocr",
+                    }
+                )
+        except Exception:
+            pass
+
+        # Heuristic regions (top bar, left pane, right pane, main area)
+        heuristics = [
+            (0, 0, width, int(height * 0.1), "Top bar"),
+            (0, 0, int(width * 0.18), height, "Left pane"),
+            (int(width * 0.82), 0, int(width * 0.18), height, "Right pane"),
+            (0, int(height * 0.1), width, int(height * 0.8), "Main area"),
+            (0, int(height * 0.9), width, int(height * 0.1), "Bottom bar"),
+        ]
+        for x, y, w, h, label in heuristics:
+            labels.append({"text": label, "bbox": {"x": x, "y": y, "width": w, "height": h}, "source": "heuristic"})
+
+        # Limit and assign label_ids
+        labels = labels[: max(1, args.max_labels)]
+        labeled = []
+        for idx, item in enumerate(labels):
+            label_id = _label_id(idx)
+            bbox = item["bbox"]
+            labeled.append(
+                {
+                    "label_id": label_id,
+                    "text": item.get("text", ""),
+                    "bbox": bbox,
+                    "source": item.get("source", ""),
+                }
+            )
+            if args.include_labeled_image:
+                x = int(bbox.get("x", 0))
+                y = int(bbox.get("y", 0))
+                w = int(bbox.get("width", 0))
+                h = int(bbox.get("height", 0))
+                draw.rectangle([x, y, x + w, y + h], outline="red", width=2)
+                draw.text((x + 2, y + 2), label_id, fill="red")
+
+        labeled_path = ""
+        if args.include_labeled_image:
+            labeled_path = str(ctx.run_dir / f"desktop_som_labeled_{int(time.time())}.png")
+            img.save(labeled_path)
+
+        _DESKTOP_SOM_STATE[ctx.run_id] = {"labels": labeled, "screenshot": path, "labeled": labeled_path}
+        return ToolResult(
+            success=True,
+            output={"screenshot": path, "labeled_screenshot": labeled_path, "labels": labeled},
+        )
+    except Exception as exc:
+        return ToolResult(success=False, error=str(exc), retryable=True)
+
+
+class DesktopClickArgs(BaseModel):
+    label_id: str
+
+
+def desktop_click(ctx: RunContext, args: DesktopClickArgs) -> ToolResult:
+    try:
+        import pyautogui
+    except Exception as exc:
+        return ToolResult(success=False, error=f"pyautogui unavailable: {exc}")
+
+    state = _DESKTOP_SOM_STATE.get(ctx.run_id) or {}
+    labels = state.get("labels") or []
+    target = next((l for l in labels if l.get("label_id") == args.label_id), None)
+    if not target:
+        return ToolResult(success=False, error=f"Unknown label_id: {args.label_id}")
+    bbox = target.get("bbox") or {}
+    x = int(bbox.get("x", 0) + bbox.get("width", 0) / 2)
+    y = int(bbox.get("y", 0) + bbox.get("height", 0) / 2)
+    pyautogui.click(x, y)
+    # Post-action verification screenshot
+    shot = str(ctx.run_dir / f"desktop_click_{int(time.time())}.png")
+    try:
+        pyautogui.screenshot(shot)
+    except Exception:
+        shot = ""
+    return ToolResult(success=True, output={"clicked": args.label_id, "x": x, "y": y, "screenshot": shot})
 
 
 def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store: Optional[SqliteMemoryStore] = None) -> ToolRegistry:
@@ -977,6 +1352,38 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
                 description="Capture url + visible text + a11y tree (Playwright)",
             )
         )
+        reg.register(
+            ToolSpec(
+                name="web_find_elements",
+                args_model=WebFindElementsArgs,
+                fn=web_find_elements,
+                description="Find DOM elements by query/role/text and return selectors",
+            )
+        )
+        reg.register(
+            ToolSpec(
+                name="web_click",
+                args_model=WebClickArgs,
+                fn=web_click,
+                description="Click a previously found element_id or selector",
+            )
+        )
+        reg.register(
+            ToolSpec(
+                name="web_type",
+                args_model=WebTypeArgs,
+                fn=web_type,
+                description="Type into a previously found element_id or selector",
+            )
+        )
+        reg.register(
+            ToolSpec(
+                name="web_close_modal",
+                args_model=WebCloseModalArgs,
+                fn=web_close_modal,
+                description="Detect and close modal/overlay dialogs",
+            )
+        )
 
     if cfg.enable_desktop:
         reg.register(
@@ -985,6 +1392,24 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
                 args_model=DesktopStubArgs,
                 fn=desktop_action,
                 description="Desktop automation via PyAutoGUI",
+                dangerous=True,
+            )
+        )
+        reg.register(
+            ToolSpec(
+                name="desktop_som_snapshot",
+                args_model=DesktopSomSnapshotArgs,
+                fn=desktop_som_snapshot,
+                description="Capture desktop snapshot with labeled OCR/heuristic boxes",
+                dangerous=True,
+            )
+        )
+        reg.register(
+            ToolSpec(
+                name="desktop_click",
+                args_model=DesktopClickArgs,
+                fn=desktop_click,
+                description="Click a labeled box from desktop_som_snapshot",
                 dangerous=True,
             )
         )

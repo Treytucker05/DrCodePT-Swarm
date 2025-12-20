@@ -19,3 +19,14 @@ class LLMClient(Protocol):
         Return a JSON object conforming to the provided JSON Schema.
         """
 
+    def reason_json(
+        self,
+        prompt: str,
+        *,
+        schema_path: Path,
+        timeout_seconds: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Return a JSON object conforming to the provided JSON Schema using
+        reasoning-only mode (no tool execution).
+        """

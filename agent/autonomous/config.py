@@ -34,8 +34,10 @@ class RunnerConfig:
 @dataclass(frozen=True)
 class PlannerConfig:
     mode: Literal["react", "plan_first"] = "react"
-    num_candidates: int = 1
+    num_candidates: int = 3
     max_plan_steps: int = 6
+    use_dppm: bool = True
+    use_tot: bool = True
 
 
 @dataclass(frozen=True)

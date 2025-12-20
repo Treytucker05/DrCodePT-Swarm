@@ -47,6 +47,16 @@ def coerce_plan_dict(data: Any) -> Any:
             step["tool_args"] = _kv_list_to_dict(tool_args)
         elif not isinstance(tool_args, dict):
             step["tool_args"] = {}
+        for field in ("preconditions", "postconditions", "success_criteria"):
+            if field not in step:
+                continue
+            val = step.get(field)
+            if val is None:
+                step[field] = []
+            elif isinstance(val, str):
+                step[field] = [v.strip() for v in val.split(";") if v.strip()]
+            elif not isinstance(val, list):
+                step[field] = []
     return data
 
 
@@ -63,4 +73,3 @@ def coerce_plan_candidates_dict(data: Any) -> Any:
         if isinstance(plan, dict):
             coerce_plan_dict(plan)
     return data
-

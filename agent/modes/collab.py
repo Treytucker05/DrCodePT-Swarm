@@ -43,7 +43,7 @@ def _generate_plan(llm: CodexCliClient, task: str, notes: List[str], memories: L
         f"Notes:\n{json.dumps(notes, ensure_ascii=False)}\n\n"
         f"Memory (recent):\n{json.dumps(memories, ensure_ascii=False)}\n"
     )
-    return llm.complete_json(prompt, schema_path=llm_schemas.COLLAB_PLAN)
+    return llm.reason_json(prompt, schema_path=llm_schemas.COLLAB_PLAN)
 
 
 def run_collab_session(task: str) -> None:
@@ -132,4 +132,3 @@ def run_collab_session(task: str) -> None:
     action = actions[idx - 1]
     _print_section("Executing")
     mode_autonomous(action, unsafe_mode=False)
-

@@ -61,6 +61,8 @@ class CodexCliClient(LLMClient):
     codex_bin: str = "codex"
     model: str = ""
     timeout_seconds: int = 120
+    profile_reason: str = "reason"
+    profile_exec: str = "exec"
 
     provider: str = "codex_cli"
 
@@ -70,6 +72,8 @@ class CodexCliClient(LLMClient):
             codex_bin=(os.getenv("CODEX_BIN") or "codex").strip(),
             model=(os.getenv("CODEX_MODEL") or "").strip(),
             timeout_seconds=int((os.getenv("CODEX_TIMEOUT_SECONDS") or "120").strip()),
+            profile_reason=(os.getenv("CODEX_PROFILE_REASON") or "reason").strip(),
+            profile_exec=(os.getenv("CODEX_PROFILE_EXEC") or "exec").strip(),
         )
 
     def _resolve_bin(self) -> str:
@@ -80,21 +84,14 @@ class CodexCliClient(LLMClient):
             )
         return resolved
 
-    def complete_json(
+    def _run_exec(
         self,
-        prompt: str,
         *,
+        prompt: str,
         schema_path: Path,
-        timeout_seconds: Optional[int] = None,
+        timeout_seconds: Optional[int],
+        profile: str,
     ) -> Dict[str, Any]:
-        """
-        Execute code using codex exec and return structured JSON.
-
-        WARNING: This uses `codex exec` which EXECUTES CODE.
-        Only use this when you want Codex to run shell commands or scripts.
-
-        For pure reasoning/planning, use `complete_reasoning()` instead.
-        """
         codex = self._resolve_bin()
         schema_path = schema_path.resolve()
         if not schema_path.is_file():
@@ -104,6 +101,8 @@ class CodexCliClient(LLMClient):
 
         cmd = [
             codex,
+            "--profile",
+            profile,
             "--dangerously-bypass-approvals-and-sandbox",
             "--search",
             "--disable",
@@ -197,6 +196,26 @@ class CodexCliClient(LLMClient):
                 f"output_file_preview: {_snippet(raw)}"
             ) from exc
 
+    def complete_json(
+        self,
+        prompt: str,
+        *,
+        schema_path: Path,
+        timeout_seconds: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        Execute code using codex exec (execution profile) and return structured JSON.
+
+        WARNING: This uses the execution profile and may run commands.
+        Use reason_json() for planning/reflection.
+        """
+        return self._run_exec(
+            prompt=prompt,
+            schema_path=schema_path,
+            timeout_seconds=timeout_seconds,
+            profile=self.profile_exec or "exec",
+        )
+
     def reason_json(
         self,
         prompt: str,
@@ -205,8 +224,9 @@ class CodexCliClient(LLMClient):
         timeout_seconds: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
-        Use Codex exec non-interactively for structured JSON reasoning output.
-        This avoids interactive TTY requirements while keeping tools disabled.
+        Use Codex exec non-interactively with the reasoning profile to produce
+        structured JSON output. Tools are disabled and the prompt enforces
+        JSON-only output.
         """
         schema_path = schema_path.resolve()
         if not schema_path.is_file():
@@ -230,10 +250,11 @@ Task:
 {prompt}
 
 Output ONLY the JSON object. No explanations, no code, no commands."""
-        return self.complete_json(
-            reasoning_prompt,
+        return self._run_exec(
+            prompt=reasoning_prompt,
             schema_path=schema_path,
             timeout_seconds=timeout_seconds,
+            profile=self.profile_reason or "reason",
         )
 
     def complete_reasoning(
@@ -284,7 +305,7 @@ USER REQUEST:
 {prompt}
 
 Now respond with ONLY the JSON object:"""
-        return self.complete_json(
+        return self.reason_json(
             reasoning_prompt,
             schema_path=schema_path,
             timeout_seconds=timeout_seconds,

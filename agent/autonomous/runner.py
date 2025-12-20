@@ -63,6 +63,23 @@ class TrackedLLM:
             self.estimated_cost_usd += (tokens / 1000.0) * self._cost_per_1k
         return out
 
+    def reason_json(self, prompt: str, *, schema_path: Path, timeout_seconds: Optional[int] = None) -> Dict[str, Any]:
+        # Prefer a dedicated reasoning method if available.
+        if hasattr(self._llm, "reason_json"):
+            out = self._llm.reason_json(prompt, schema_path=schema_path, timeout_seconds=timeout_seconds)  # type: ignore[attr-defined]
+        elif hasattr(self._llm, "complete_reasoning"):
+            out = self._llm.complete_reasoning(prompt, schema_path=schema_path, timeout_seconds=timeout_seconds)  # type: ignore[attr-defined]
+        else:
+            out = self._llm.complete_json(prompt, schema_path=schema_path, timeout_seconds=timeout_seconds)
+        self.calls += 1
+        out_str = json.dumps(out, ensure_ascii=False, sort_keys=True, default=str)
+        chars = len(prompt) + len(out_str)
+        tokens = chars * self._tokens_per_char
+        self.estimated_tokens += tokens
+        if self._cost_per_1k is not None:
+            self.estimated_cost_usd += (tokens / 1000.0) * self._cost_per_1k
+        return out
+
 
 @dataclass
 class AgentRunner:
@@ -239,7 +256,62 @@ class AgentRunner:
                     )
                     tracer.log({"type": "premortem", "step_id": step.id, "data": prem})
 
-                tool_result = self._call_tool_with_retry(tools, ctx, step.tool_name, step.tool_args, tracer)
+                # Preconditions check (if provided)
+                pre_ok, missing, notes = self._check_conditions(
+                    llm=tracked_llm,
+                    kind="preconditions",
+                    conditions=step.preconditions,
+                    step=step,
+                    observation=state.observations[-1],
+                )
+                if not pre_ok:
+                    recovered_obs = self._attempt_recovery(tools=tools, ctx=ctx, step=step, tracer=tracer)
+                    if recovered_obs is not None:
+                        state.add_observation(recovered_obs)
+                        pre_ok, missing, notes = self._check_conditions(
+                            llm=tracked_llm,
+                            kind="preconditions",
+                            conditions=step.preconditions,
+                            step=step,
+                            observation=recovered_obs,
+                        )
+
+                if not pre_ok:
+                    tool_result = ToolResult(
+                        success=False,
+                        error="preconditions_failed",
+                        metadata={"preconditions_failed": True, "missing": missing, "notes": notes},
+                    )
+                else:
+                    tool_result = self._call_tool_with_retry(tools, ctx, step.tool_name, step.tool_args, tracer)
+
+                    # Postconditions check (if provided)
+                    post_ok, post_missing, post_notes = self._check_conditions(
+                        llm=tracked_llm,
+                        kind="postconditions",
+                        conditions=step.postconditions,
+                        step=step,
+                        observation=perceptor.tool_result_to_observation(step.tool_name, tool_result),
+                    )
+                    if not post_ok:
+                        recovered_obs = self._attempt_recovery(tools=tools, ctx=ctx, step=step, tracer=tracer)
+                        if recovered_obs is not None:
+                            state.add_observation(recovered_obs)
+                            post_ok, post_missing, post_notes = self._check_conditions(
+                                llm=tracked_llm,
+                                kind="postconditions",
+                                conditions=step.postconditions,
+                                step=step,
+                                observation=recovered_obs,
+                            )
+                    if not post_ok:
+                        tool_result = ToolResult(
+                            success=False,
+                            output=tool_result.output,
+                            error="postconditions_failed",
+                            metadata={"postconditions_failed": True, "missing": post_missing, "notes": post_notes},
+                        )
+
                 obs = perceptor.tool_result_to_observation(step.tool_name, tool_result)
                 state.add_observation(obs)
 
@@ -306,7 +378,7 @@ class AgentRunner:
 
                 steps_executed += 1
 
-                self._memory_updates(memory_store, task, step, tool_result, obs, run_id, tracer)
+                self._memory_updates(memory_store, task, step, tool_result, obs, reflection, run_id, tracer)
 
                 action_signature = f"{step.tool_name}:{_json_dumps(step.tool_args)}"
                 if loop_detector.update(action_signature, state.state_fingerprint()):
@@ -341,6 +413,18 @@ class AgentRunner:
                     if self.planner_cfg.mode == "plan_first":
                         state.current_step_idx += 1
                     continue
+
+                # Use fallback plan if available (ToT-lite)
+                if hasattr(planner, "consume_fallback"):
+                    try:
+                        fallback = planner.consume_fallback()  # type: ignore[attr-defined]
+                    except Exception:
+                        fallback = None
+                    if fallback is not None:
+                        current_plan = fallback
+                        state.current_plan = fallback
+                        state.current_step_idx = 0
+                        continue
 
                 consecutive_no_progress += 1
                 if consecutive_no_progress >= 6:
@@ -398,6 +482,8 @@ class AgentRunner:
                 unsafe_mode=self.agent_cfg.unsafe_mode,
                 num_candidates=self.planner_cfg.num_candidates,
                 max_steps=self.planner_cfg.max_plan_steps,
+                use_dppm=self.planner_cfg.use_dppm,
+                use_tot=self.planner_cfg.use_tot,
             )
         return ReActPlanner(llm=llm, tools=tools, unsafe_mode=self.agent_cfg.unsafe_mode)
 
@@ -451,7 +537,7 @@ class AgentRunner:
             f"INPUT:\n{dumps_compact(payload)}\n"
         )
         def _compact() -> dict:
-            return llm.complete_json(prompt, schema_path=llm_schemas.COMPACTION)
+            return llm.reason_json(prompt, schema_path=llm_schemas.COMPACTION)
 
         data = self._call_llm_with_retry(tracer=tracer, where="compaction", fn=_compact, allow_none=True)
         if isinstance(data, dict):
@@ -487,6 +573,74 @@ class AgentRunner:
             )
             time.sleep(self.cfg.tool_retry_backoff_seconds * (attempt + 1))
         return last or ToolResult(success=False, error="tool_failed")
+
+    def _check_conditions(
+        self,
+        *,
+        llm: TrackedLLM,
+        kind: str,
+        conditions: List[str],
+        step: Step,
+        observation: Observation,
+    ) -> tuple[bool, List[str], str]:
+        if not conditions:
+            return True, [], ""
+        payload = {
+            "kind": kind,
+            "conditions": conditions,
+            "step": self._dump(step),
+            "observation": self._dump(observation),
+        }
+        prompt = (
+            "Evaluate whether the listed conditions are satisfied given the observation.\n"
+            "Return JSON only.\n\n"
+            f"INPUT:\n{dumps_compact(payload)}\n"
+        )
+        try:
+            data = llm.reason_json(prompt, schema_path=llm_schemas.CONDITION_CHECK)
+            satisfied = bool(data.get("satisfied"))
+            missing = data.get("missing") or []
+            notes = data.get("notes") or ""
+            if not isinstance(missing, list):
+                missing = []
+            return satisfied, [str(m) for m in missing], str(notes)
+        except Exception:
+            return True, [], ""
+
+    def _attempt_recovery(
+        self,
+        *,
+        tools: ToolRegistry,
+        ctx: RunContext,
+        step: Step,
+        tracer: JsonlTracer,
+    ) -> Optional[Observation]:
+        # Try pop-up handler, then lightweight exploration.
+        obs = None
+        if tools.has_tool("web_close_modal"):
+            result = tools.call("web_close_modal", {}, ctx)
+            obs = Perceptor().tool_result_to_observation("web_close_modal", result)
+            tracer.log({"type": "recovery", "tool": "web_close_modal", "result": self._dump(result)})
+        if tools.has_tool("web_gui_snapshot"):
+            # Attempt to refresh the grounding view if a URL is available.
+            url = None
+            if isinstance(step.tool_args, dict):
+                url = step.tool_args.get("url")
+            if isinstance(url, str) and url:
+                result = tools.call("web_gui_snapshot", {"url": url}, ctx)
+                obs = Perceptor().tool_result_to_observation("web_gui_snapshot", result)
+                tracer.log({"type": "recovery", "tool": "web_gui_snapshot", "result": self._dump(result)})
+        if tools.has_tool("desktop_som_snapshot"):
+            result = tools.call("desktop_som_snapshot", {}, ctx)
+            obs = Perceptor().tool_result_to_observation("desktop_som_snapshot", result)
+            tracer.log({"type": "recovery", "tool": "desktop_som_snapshot", "result": self._dump(result)})
+        if tools.has_tool("desktop"):
+            # Gentle exploration: scroll a bit and rescan.
+            tools.call("desktop", {"action": "scroll", "params": {"clicks": -400}}, ctx)
+            result = tools.call("desktop", {"action": "hotkey", "params": {"keys": ["alt", "tab"]}}, ctx)
+            obs = Perceptor().tool_result_to_observation("desktop", result)
+            tracer.log({"type": "recovery", "tool": "desktop", "result": self._dump(result)})
+        return obs
 
     def _call_llm_with_retry(
         self,
@@ -525,6 +679,7 @@ class AgentRunner:
         step: Step,
         tool_result: ToolResult,
         obs: Observation,
+        reflection: Reflection,
         run_id: str,
         tracer: JsonlTracer,
     ) -> None:
@@ -541,6 +696,24 @@ class AgentRunner:
                         content=str(text)[:4000],
                         metadata={"source": "web_fetch", "task": task, "run_id": run_id},
                     )
+            if reflection.memory_write and isinstance(reflection.memory_write, dict):
+                payload = reflection.memory_write
+                kind = payload.get("kind") or "knowledge"
+                content = payload.get("content") or ""
+                if content:
+                    store.upsert(
+                        kind=kind,
+                        key=payload.get("key"),
+                        content=str(content)[:8000],
+                        metadata=payload.get("metadata") or {"task": task, "run_id": run_id},
+                    )
+            elif reflection.lesson:
+                store.upsert(
+                    kind="procedure",
+                    key=f"lesson:{task[:120]}",
+                    content=str(reflection.lesson)[:4000],
+                    metadata={"task": task, "run_id": run_id},
+                )
         except Exception as exc:
             tracer.log({"type": "memory_error", "error": str(exc)})
 

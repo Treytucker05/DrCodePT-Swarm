@@ -77,7 +77,9 @@
     "description": "Open Yahoo Mail and ensure you're logged in (reuses saved session if available).",
     "triggers": [
       "log into my yahoo mail",
+      "log in to my yahoo mail",
       "login to yahoo mail",
+      "login to my yahoo mail",
       "login yahoo mail",
       "open yahoo mail",
       "yahoo mail login",
@@ -236,9 +238,7 @@
     "name": "Learn (Agent Help)",
     "description": "Lists installed playbooks and opens the local AGENTS.md/README for reference.",
     "triggers": [
-      "learn",
       "agent help",
-      "help",
       "show playbooks",
       "list playbooks",
       "what can you do"
@@ -247,11 +247,13 @@
       {
         "type": "shell",
         "description": "List playbook files under any 'playbooks' directory.",
+        "allow_shell": true,
         "command": "$dirs=@(); if(Test-Path .\\playbooks){$dirs+=(Resolve-Path .\\playbooks).Path}; $dirs+=Get-ChildItem -Recurse -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq 'playbooks' } | Sort-Object FullName | ForEach-Object { $_.FullName }; $dirs=$dirs | Sort-Object -Unique; if(-not $dirs -or $dirs.Count -eq 0){Write-Warning 'No playbooks directory found.'} else {foreach($d in $dirs){Write-Host \"`nPlaybooks in $d\"; Get-ChildItem -Path $d -File -Filter *.json -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object Name, FullName | Format-Table -AutoSize}}"
       },
       {
         "type": "shell",
         "description": "Open AGENTS.md or README.md (prefers repo root).",
+        "allow_shell": true,
         "command": "$target=$null; if(Test-Path .\\AGENTS.md){$target=(Resolve-Path .\\AGENTS.md).Path} elseif(Test-Path .\\README.md){$target=(Resolve-Path .\\README.md).Path} else {$target=(Get-ChildItem -Recurse -File -ErrorAction SilentlyContinue -Filter AGENTS.md | Sort-Object FullName | Select-Object -First 1).FullName; if(-not $target){$target=(Get-ChildItem -Recurse -File -ErrorAction SilentlyContinue -Filter README.md | Sort-Object FullName | Select-Object -First 1).FullName}}; if(-not $target){Write-Warning 'No AGENTS.md or README.md found.'} else {Write-Host \"Opening $target\"; Start-Process notepad.exe $target}"
       }
     ],

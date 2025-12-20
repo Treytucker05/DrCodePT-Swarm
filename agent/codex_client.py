@@ -49,7 +49,7 @@ class CodexTaskClient:
         last_exc: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:
-                data = self.llm.complete_json(prompt, schema_path=schema_path, timeout_seconds=timeout_seconds)
+                data = self.llm.reason_json(prompt, schema_path=schema_path, timeout_seconds=timeout_seconds)
                 if not isinstance(data, dict):
                     raise CodexCliOutputError(f"Expected JSON object, got: {type(data).__name__}")
                 return data
@@ -141,4 +141,3 @@ class CodexTaskClient:
 
 
 __all__ = ["CodexTaskClient"]
-
