@@ -86,14 +86,19 @@ def show_help() -> None:
   Example:
     - Research: best Python project structure
 
-{GREEN}Mail (supervised):{RESET}
+{GREEN}Mail (interactive organization):{RESET}
   Natural language about organizing mail/email/folders will route here automatically.
+  The mode now starts with planning options before scanning.
+
   You can still force it with:
     Mail: [request]
+
   Examples:
     - organize my yahoo mail folders
     - clean my yahoo inbox
     - Mail: review my Yahoo inbox and suggest rules
+
+  {YELLOW}Advanced:{RESET} Set MAIL_USE_COLLAB=1 for conversational AI planning before organizing.
 
 {GREEN}Collab (interactive planning):{RESET}
   Natural language that includes "plan", "organize", "strategy", etc. will route here automatically.
@@ -730,8 +735,14 @@ def main() -> None:
             continue
 
         if intent == "mail":
-            from agent.modes.mail_supervised import run_mail_supervised
-            run_mail_supervised(user_input)
+            use_collab = os.getenv("MAIL_USE_COLLAB", "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+            if use_collab:
+                from agent.modes.mail_collab import run_mail_collab
+                run_mail_collab(user_input)
+            else:
+                from agent.modes.mail_supervised import run_mail_supervised
+                run_mail_supervised(user_input)
             continue
 
         # Default: run a matching playbook; otherwise run the true autonomous loop.

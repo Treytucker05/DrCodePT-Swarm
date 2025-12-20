@@ -221,8 +221,9 @@ def _auto_classify(sender: str, domain: str, self_emails: List[str]) -> Tuple[st
 
 
 def run_mail_supervised(task: str) -> None:
-    _print_header("MAIL: Supervised mailbox review")
-    print("This mode will ask questions and only propose actions. No changes are made automatically.")
+    _print_header("MAIL: Interactive Organization Assistant")
+    print("I'll help you organize your mailbox. Let's start by understanding what you want to do.")
+    print()
 
     provider = "yahoo"
     if "gmail" in task.lower():
@@ -236,28 +237,110 @@ def run_mail_supervised(task: str) -> None:
         print("[MAIL] Tip: run `Cred: yahoo_imap` with your app password.")
         return
 
-    _print_header("Folders")
+    _print_header("Your Current Folders")
     for i, name in enumerate(folders, 1):
         print(f"  {i:>2}. {name}")
 
-    scan_all = _prompt("Scan all folders? (y/n)", "y").lower().startswith("y")
-    if scan_all:
-        selected = folders
-    else:
-        raw = _prompt("Folder numbers to scan (e.g., 1,3,5)", "")
-        picks = _parse_indices(raw, len(folders))
-        selected = [folders[i - 1] for i in picks] if picks else ["INBOX"]
+    print()
+    print("What would you like to do?")
+    print("  1) Get a quick overview (scan recent messages)")
+    print("  2) Deep dive into specific folders")
+    print("  3) Plan a folder reorganization strategy")
+    print("  4) Find and clean up spam/unwanted senders")
+    print("  5) Custom - tell me what you need")
+    print()
 
-    chunked_scan = _prompt("Scan in chunks from most recent? (y/n)", "y").lower().startswith("y")
-    if chunked_scan:
-        chunk_size = _prompt_int("Chunk size (messages per folder)", 200)
-        chunks_per_folder = _prompt_int("How many chunks per folder this run", 1)
-        per_folder_limit = None
-    else:
-        full_scan = _prompt("Scan entire folders? (y/n)", "y").lower().startswith("y")
-        per_folder_limit = None if full_scan else _prompt_int("How many most recent messages per folder", 200)
+    choice = _prompt("Choose an option (1-5)", "1").strip()
+
+    if choice == "3":
+        print()
+        print("[MAIL] Let's plan your folder organization strategy.")
+        print()
+        print("Current folder structure:")
+        for name in folders:
+            if name not in SYSTEM_FOLDERS:
+                print(f"  - {name}")
+        print()
+
+        goal = _prompt("What's your main goal? (e.g., 'separate work from personal', 'organize by topic')", "")
+        if goal:
+            print(f"\n[MAIL] Goal: {goal}")
+            print("\nLet me suggest some strategies:")
+            print("  • Create top-level categories (Work, Personal, Finance, etc.)")
+            print("  • Use subfolders for specific topics")
+            print("  • Set up rules to auto-file incoming mail")
+            print()
+
+        strategy = _prompt("Do you want to: (a) scan first to see what you have, (b) create folders now, (c) both", "a").lower()
+
+        if strategy.startswith("b") or strategy.startswith("c"):
+            print("\n[MAIL] Let's create some folders.")
+            while True:
+                new_folder = _prompt("New folder name (or 'done' to finish)", "").strip()
+                if not new_folder or new_folder.lower() == "done":
+                    break
+                try:
+                    yahoo_mail.create_folder(new_folder)
+                    folders.append(new_folder)
+                    print(f"[MAIL] ✓ Created folder: {new_folder}")
+                except Exception as exc:
+                    print(f"[MAIL] Failed to create {new_folder}: {exc}")
+
+            if strategy.startswith("b"):
+                print("\n[MAIL] Folders created! Run this again when you're ready to organize messages.")
+                return
+
+        print("\n[MAIL] Now let's scan to see what you have...")
+        choice = "1"
+
+    elif choice == "4":
+        print()
+        print("[MAIL] Let's find spam and unwanted senders.")
+        scan_target = _prompt("Which folder to scan? (default: INBOX)", "INBOX").strip()
+        if scan_target not in folders:
+            scan_target = "INBOX"
+        selected = [scan_target]
+        per_folder_limit = _prompt_int("How many recent messages to check", 200)
+        chunked_scan = False
         chunk_size = 0
         chunks_per_folder = 0
+
+    elif choice == "5":
+        print()
+        custom_goal = _prompt("Tell me what you need help with", "")
+        print(f"\n[MAIL] Got it: {custom_goal}")
+        print("\nLet's start by scanning to understand your mailbox...")
+        choice = "1"
+
+    if choice in ["1", "2", "5"] or choice == "3":
+        if choice == "2":
+            print()
+            print("[MAIL] Which folders do you want to focus on?")
+            raw = _prompt("Folder numbers (e.g., 1,3,5) or 'all'", "")
+            if raw.lower() == "all":
+                selected = folders
+            else:
+                picks = _parse_indices(raw, len(folders))
+                selected = [folders[i - 1] for i in picks] if picks else ["INBOX"]
+        else:
+            scan_all = _prompt("\nScan all folders? (y/n)", "n").lower().startswith("y")
+            if scan_all:
+                selected = folders
+            else:
+                raw = _prompt("Folder numbers to scan (e.g., 1,3,5) or just press Enter for INBOX", "")
+                picks = _parse_indices(raw, len(folders))
+                selected = [folders[i - 1] for i in picks] if picks else ["INBOX"]
+
+        chunked_scan = _prompt("Scan in chunks from most recent? (y/n)", "y").lower().startswith("y")
+        if chunked_scan:
+            chunk_size = _prompt_int("Chunk size (messages per folder)", 200)
+            chunks_per_folder = _prompt_int("How many chunks per folder this run", 1)
+            per_folder_limit = None
+        else:
+            full_scan = _prompt("Scan entire folders? (y/n)", "n").lower().startswith("y")
+            per_folder_limit = None if full_scan else _prompt_int("How many most recent messages per folder", 200)
+            chunk_size = 0
+            chunks_per_folder = 0
 
     senders = Counter()
     domains = Counter()

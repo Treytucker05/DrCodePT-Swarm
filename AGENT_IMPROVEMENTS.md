@@ -23,14 +23,74 @@ The agent now detects and directly answers simple questions instead of going int
 [YES] pip is installed (version 25.3)
 ```
 
-### 2. Automatic Mail Mode Routing
-Mail organization tasks are now automatically detected and routed to the **supervised mail mode** instead of autonomous mode.
+### 2. Interactive Mail Organization (NEW!)
+Mail organization now starts with an **interactive planning menu** instead of immediately scanning all folders.
 
-**Why this matters:**
-- The supervised mail mode is **interactive** - it prompts you at each step
-- It won't make changes without your approval
-- It shows you statistics and lets you choose what to organize
-- The autonomous mode was getting stuck because it tried to do everything automatically
+**What's new:**
+- **Planning menu** with 5 options when you start
+- **Strategy discussion** before scanning
+- **Folder creation** before organizing
+- **Targeted scanning** (specific folders, spam hunting, etc.)
+- **Optional AI conversation mode** for planning
+
+**The new flow:**
+```
+> organize my yahoo mail folders
+
+[Shows your current folders]
+
+What would you like to do?
+  1) Get a quick overview (scan recent messages)
+  2) Deep dive into specific folders
+  3) Plan a folder reorganization strategy
+  4) Find and clean up spam/unwanted senders
+  5) Custom - tell me what you need
+
+Choose an option (1-5):
+```
+
+**Option 3 - Plan a folder reorganization strategy:**
+- Asks about your goals
+- Suggests strategies
+- Lets you create folders first
+- Then optionally scans to see what you have
+
+**Option 4 - Find and clean up spam:**
+- Focuses on finding unwanted senders
+- Scans specific folder (default: INBOX)
+- Shows top senders for you to mark as spam
+
+### 3. AI-Powered Mail Planning (Optional)
+Set `MAIL_USE_COLLAB=1` to enable conversational AI planning before organizing.
+
+**How it works:**
+```
+> organize my yahoo mail folders
+
+[MAIL COLLAB] Let's work together to organize your mail.
+
+[ASSISTANT] I'd be happy to help you organize your Yahoo mail folders! 
+To get started, could you tell me what's currently challenging about 
+your folder organization? Are you dealing with too many folders, 
+difficulty finding emails, or something else?
+
+You: I have too many folders and don't know what to keep
+
+[ASSISTANT] That's a common issue! Here's what I suggest:
+1. First, let's identify which folders you actually use
+2. Archive or delete folders you haven't touched in 6+ months
+3. Consolidate similar folders (e.g., merge "Work" and "Work Projects")
+
+Would you like to start by scanning your folders to see which ones 
+have the most messages?
+
+You: yes
+
+[Launches supervised mail mode with your context]
+```
+
+### 4. Automatic Mail Mode Routing
+Mail organization tasks are now automatically detected and routed to the **interactive mail mode**.
 
 **Detected patterns:**
 - "organize my mail/email/inbox"
@@ -41,40 +101,42 @@ Mail organization tasks are now automatically detected and routed to the **super
 **Examples:**
 ```
 > organize my yahoo mail folders
-[Routes to Mail: supervised mode]
+[Routes to interactive Mail mode]
 
 > clean my yahoo inbox
-[Routes to Mail: supervised mode]
+[Routes to interactive Mail mode]
 
 > help me organize my email
-[Routes to Mail: supervised mode]
+[Routes to interactive Mail mode]
 ```
 
-### 3. How to Use Mail Organization
+## How to Use
 
-**Option 1: Natural language (now auto-detected)**
+### Basic (Interactive Menu)
 ```
 > organize my yahoo mail folders
-> clean my yahoo inbox
-> help me organize my email
 ```
+Then choose from the menu what you want to do.
 
-**Option 2: Explicit Mail: prefix (always worked)**
+### With AI Planning (Conversational)
+```bash
+# In terminal, set environment variable:
+set MAIL_USE_COLLAB=1
+
+# Then in agent:
+> organize my yahoo mail folders
+```
+You'll get a conversational AI that helps you plan before organizing.
+
+### Explicit Mail Mode
 ```
 > Mail: review my Yahoo inbox and suggest rules
 ```
 
-**What happens:**
-1. Agent connects to your Yahoo mail via IMAP
-2. Prompts you to select folders to scan
-3. Shows you statistics (top senders, domains)
-4. Asks which senders are important/spam
-5. Suggests folder organization
-6. **Asks for your approval before making any changes**
-7. Only moves/organizes what you approve
-
 ## Files Modified
 - `agent/treys_agent.py` - Added simple question handling and mail intent detection
+- `agent/modes/mail_supervised.py` - Added interactive planning menu
+- `agent/modes/mail_collab.py` - NEW: AI-powered conversational mail planning
 
 ## Testing
 All changes have been tested and verified working.
