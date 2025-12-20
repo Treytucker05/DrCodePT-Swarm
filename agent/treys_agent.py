@@ -87,8 +87,12 @@ def show_help() -> None:
     - Research: best Python project structure
 
 {GREEN}Mail (supervised):{RESET}
-  Mail: [request]
-  Example:
+  Natural language about organizing mail/email/folders will route here automatically.
+  You can still force it with:
+    Mail: [request]
+  Examples:
+    - organize my yahoo mail folders
+    - clean my yahoo inbox
     - Mail: review my Yahoo inbox and suggest rules
 
 {GREEN}Collab (interactive planning):{RESET}
@@ -229,7 +233,154 @@ _EXEC_PHRASES = {
     "check the",
 }
 
+_MAIL_KEYWORDS = {
+    "mail",
+    "email",
+    "inbox",
+    "folder",
+    "folders",
+    "spam",
+    "organize",
+    "clean",
+    "yahoo",
+    "gmail",
+}
+
+_MAIL_PHRASES = {
+    "organize my mail",
+    "organize my email",
+    "clean my mail",
+    "clean my email",
+    "clean my inbox",
+    "organize my inbox",
+    "mail folders",
+    "email folders",
+    "yahoo mail",
+    "yahoo inbox",
+    "gmail inbox",
+}
+
 _DEFAULT_CRED_PROMPT_SITES = ["yahoo", "yahoo_imap"]
+
+_SIMPLE_QUESTION_PATTERNS = {
+    "do you have",
+    "do i have",
+    "is installed",
+    "is there",
+    "can you",
+    "can i",
+    "where is",
+    "what is",
+    "how do i",
+    "how can i",
+}
+
+
+def _is_simple_question(text: str) -> bool:
+    lowered = text.lower().strip()
+    if not lowered.endswith("?"):
+        return False
+
+    for pattern in _SIMPLE_QUESTION_PATTERNS:
+        if pattern in lowered:
+            return True
+
+    if lowered.startswith("is ") and "installed" in lowered:
+        return True
+    if lowered.startswith("are ") and "installed" in lowered:
+        return True
+
+    return False
+
+
+def _handle_simple_question(text: str) -> None:
+    lowered = text.lower().strip()
+
+    if "installed" in lowered:
+        import subprocess
+        query = text.replace("?", "").strip()
+        for prefix in ["is", "are"]:
+            if query.lower().startswith(prefix):
+                query = query[len(prefix):].strip()
+        if query.lower().endswith("installed"):
+            query = query[:-9].strip()
+
+        print(f"{CYAN}[QUERY]{RESET} Checking if '{query}' is installed...")
+        try:
+            result = subprocess.run(
+                ["pip", "show", query],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                lines = result.stdout.strip().split("\n")
+                version_line = next((l for l in lines if l.startswith("Version:")), None)
+                version = version_line.split(":", 1)[1].strip() if version_line else "unknown"
+                print(f"{GREEN}[YES]{RESET} {query} is installed (version {version})")
+            else:
+                result2 = subprocess.run(
+                    ["which", query] if sys.platform != "win32" else ["where", query],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if result2.returncode == 0:
+                    print(f"{GREEN}[YES]{RESET} {query} is installed at: {result2.stdout.strip()}")
+                else:
+                    print(f"{YELLOW}[NO]{RESET} {query} is not installed.")
+        except Exception as exc:
+            print(f"{RED}[ERROR]{RESET} Could not check installation: {exc}")
+    elif "do you have" in lowered or "do i have" in lowered:
+        package_query = text.replace("?", "").strip()
+        for prefix in ["do you have", "do i have"]:
+            if prefix in lowered:
+                package_query = package_query[len(prefix):].strip()
+                break
+
+        if package_query:
+            print(f"{CYAN}[QUERY]{RESET} Checking for '{package_query}'...")
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ["pip", "show", package_query],
+                    capture_output=True,
+                    text=True,
+                    timeout=5
+                )
+                if result.returncode == 0:
+                    lines = result.stdout.strip().split("\n")
+                    version_line = next((l for l in lines if l.startswith("Version:")), None)
+                    version = version_line.split(":", 1)[1].strip() if version_line else "unknown"
+                    print(f"{GREEN}[YES]{RESET} {package_query} is installed (version {version})")
+                else:
+                    print(f"{YELLOW}[NO]{RESET} {package_query} is not installed.")
+                    print(f"{CYAN}[TIP]{RESET} To install it, run: pip install {package_query}")
+            except Exception as exc:
+                print(f"{RED}[ERROR]{RESET} Could not check package: {exc}")
+        else:
+            print(f"{CYAN}[QUERY]{RESET} I'm an agent that can help you execute tasks, research topics, or plan strategies.")
+            print(f"{CYAN}[QUERY]{RESET} Type 'help' for available commands.")
+    elif "where is" in lowered:
+        import subprocess
+        query = text.replace("?", "").strip()
+        print(f"{CYAN}[QUERY]{RESET} Searching for location...")
+        try:
+            result = subprocess.run(
+                ["find", "/", "-name", query.split()[-1], "-type", "f"] if sys.platform != "win32" else ["where", query.split()[-1]],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.stdout.strip():
+                print(f"{GREEN}[FOUND]{RESET} {result.stdout.strip()}")
+            else:
+                print(f"{YELLOW}[NOT FOUND]{RESET} Could not locate {query.split()[-1]}.")
+        except Exception as exc:
+            print(f"{RED}[ERROR]{RESET} Search failed: {exc}")
+    else:
+        print(f"{CYAN}[QUERY]{RESET} {text}")
+        print(f"{YELLOW}[INFO]{RESET} For detailed answers, try 'Research: {text.rstrip('?')}'")
 
 
 def _score_intent(text: str, keywords: set[str], phrases: set[str]) -> int:
@@ -251,9 +402,12 @@ def _infer_intent(text: str) -> str:
         return "research"
     if lowered.startswith("collab:"):
         return "collab"
+    if lowered.startswith("mail:"):
+        return "mail"
     if lowered.startswith("auto:") or lowered.startswith("loop:") or lowered.startswith("learn:") or lowered.startswith("cred:") or lowered.startswith("credentials:"):
         return "execute"
 
+    mail_score = _score_intent(text, _MAIL_KEYWORDS, _MAIL_PHRASES)
     research_score = _score_intent(text, _RESEARCH_KEYWORDS, _RESEARCH_PHRASES)
     collab_score = _score_intent(text, _COLLAB_KEYWORDS, _COLLAB_PHRASES)
     exec_score = _score_intent(text, _EXEC_KEYWORDS, _EXEC_PHRASES)
@@ -261,19 +415,21 @@ def _infer_intent(text: str) -> str:
     if "research" in lowered or "citations" in lowered or "sources" in lowered:
         research_score += 2
 
-    if collab_score >= 2 and collab_score > max(research_score, exec_score):
+    if mail_score >= 3:
+        return "mail"
+    if collab_score >= 2 and collab_score > max(research_score, exec_score, mail_score):
         return "collab"
-    if research_score >= 2 and research_score > max(collab_score, exec_score):
+    if research_score >= 2 and research_score > max(collab_score, exec_score, mail_score):
         return "research"
-    if exec_score >= 2 and exec_score > max(collab_score, research_score):
+    if exec_score >= 2 and exec_score > max(collab_score, research_score, mail_score):
         return "execute"
     if collab_score > 0 and (research_score > 0 or exec_score > 0):
         return "ambiguous"
-    if research_score > 0 and collab_score == 0 and exec_score == 0:
+    if research_score > 0 and collab_score == 0 and exec_score == 0 and mail_score == 0:
         return "research"
-    if collab_score > 0 and research_score == 0 and exec_score == 0:
+    if collab_score > 0 and research_score == 0 and exec_score == 0 and mail_score == 0:
         return "collab"
-    if exec_score > 0 and research_score == 0 and collab_score == 0:
+    if exec_score > 0 and research_score == 0 and collab_score == 0 and mail_score == 0:
         return "execute"
     return "ambiguous"
 
@@ -552,6 +708,10 @@ def main() -> None:
             run_collab_session(task)
             continue
 
+        if _is_simple_question(user_input):
+            _handle_simple_question(user_input)
+            continue
+
         intent = _infer_intent(user_input)
         if intent == "ambiguous":
             if os.getenv("TREYS_AGENT_PROMPT_ON_AMBIGUOUS", "").strip().lower() in {"1", "true", "yes", "y", "on"}:
@@ -567,6 +727,11 @@ def main() -> None:
 
         if intent == "research":
             mode_research(user_input)
+            continue
+
+        if intent == "mail":
+            from agent.modes.mail_supervised import run_mail_supervised
+            run_mail_supervised(user_input)
             continue
 
         # Default: run a matching playbook; otherwise run the true autonomous loop.
