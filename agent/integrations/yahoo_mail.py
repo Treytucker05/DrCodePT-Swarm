@@ -76,17 +76,25 @@ def _parse_quoted(value: str) -> str:
     return "".join(out)
 
 
-def _parse_mailbox(line: str) -> str:
+def _parse_list_line(line: str) -> tuple[str, str]:
     # Typical IMAP LIST response: '(\\HasNoChildren) "/" "INBOX"'
     # Some servers omit quotes for simple names: '(\\HasNoChildren) "/" INBOX'
-    m = re.search(r'\)\s+"[^"]*"\s+(.+)$', line)
-    name = m.group(1).strip() if m else line.strip().split()[-1]
+    m = re.search(r'^\((.*?)\)\s+"([^"]*)"\s+(.+)$', line)
+    if m:
+        delim = m.group(2)
+        name = m.group(3).strip()
+    else:
+        # Fallback: split and assume last token is name, delimiter unknown
+        parts = line.strip().split()
+        delim = "/"
+        name = parts[-1] if parts else line
     if name.startswith('"'):
-        return _parse_quoted(name)
-    if name.startswith("{"):
-        # Literal; best-effort fallback
-        return name
-    return name
+        name = _parse_quoted(name)
+    return delim, name
+
+
+def _parse_mailbox(line: str) -> str:
+    return _parse_list_line(line)[1]
 
 
 def _quote_mailbox(name: str) -> str:
@@ -96,21 +104,28 @@ def _quote_mailbox(name: str) -> str:
     return f"\"{name}\""
 
 
-def list_folders() -> List[str]:
-    """Return a list of mailbox folders for the account."""
+def list_folders_with_delimiter() -> tuple[List[str], str]:
+    """Return a list of mailbox folders and the server delimiter."""
     with _imap_login() as imap:
         status, data = imap.list()
         if status != "OK" or not data:
             raise RuntimeError("Failed to list folders.")
         folders: List[str] = []
+        delimiter = "/"
         for item in data:
             if not item:
                 continue
             line = item.decode("utf-8", errors="replace") if isinstance(item, bytes) else str(item)
-            name = _parse_mailbox(line)
+            delim, name = _parse_list_line(line)
+            if delim:
+                delimiter = delim
             if name:
                 folders.append(name)
-        return folders
+        return folders, delimiter
+
+
+def list_folders() -> List[str]:
+    return list_folders_with_delimiter()[0]
 
 
 def folder_counts(folders: Optional[List[str]] = None) -> Dict[str, int]:
@@ -180,6 +195,108 @@ def iter_headers(
             if progress_cb and (idx % 200 == 0 or idx == total):
                 progress_cb(folder, idx, total)
     return results
+
+
+def list_message_ids(folder: str = "INBOX") -> List[bytes]:
+    """Return message IDs for a folder (ascending order)."""
+    with _imap_login() as imap:
+        status, _ = imap.select(_quote_mailbox(folder), readonly=True)
+        if status != "OK":
+            raise RuntimeError(f"Failed to select folder {folder}: {status}")
+        status, data = imap.search(None, "ALL")
+        if status != "OK" or not data or not data[0]:
+            return []
+        return data[0].split()
+
+
+def fetch_headers_by_uids(
+    folder: str,
+    uids: List[bytes | str],
+    *,
+    progress_cb=None,
+) -> List[Dict[str, Any]]:
+    """Fetch headers for a list of UIDs."""
+    if not uids:
+        return []
+    results: List[Dict[str, Any]] = []
+    with _imap_login() as imap:
+        status, _ = imap.select(_quote_mailbox(folder), readonly=True)
+        if status != "OK":
+            raise RuntimeError(f"Failed to select folder {folder}: {status}")
+        total = len(uids)
+        for idx, uid in enumerate(uids, 1):
+            uid_b = uid.encode("utf-8") if isinstance(uid, str) else uid
+            status, msg_data = imap.fetch(uid_b, "(RFC822.HEADER)")
+            if status != "OK" or not msg_data:
+                continue
+            header_bytes = msg_data[0][1]
+            msg = BytesParser(policy=default).parsebytes(header_bytes)
+            results.append(
+                {
+                    "uid": uid_b.decode("utf-8", errors="ignore"),
+                    "from": _decode(msg.get("From")),
+                    "to": _decode(msg.get("To")),
+                    "subject": _decode(msg.get("Subject")),
+                    "date": _decode(msg.get("Date")),
+                    "message_id": _decode(msg.get("Message-ID")),
+                    "folder": folder,
+                }
+            )
+            if progress_cb and (idx % 200 == 0 or idx == total):
+                progress_cb(folder, idx, total)
+    return results
+
+
+def create_folder(name: str) -> None:
+    with _imap_login() as imap:
+        status, _ = imap.create(_quote_mailbox(name))
+        if status != "OK":
+            raise RuntimeError(f"Failed to create folder: {name}")
+
+
+def delete_folder(name: str) -> None:
+    with _imap_login() as imap:
+        status, _ = imap.delete(_quote_mailbox(name))
+        if status != "OK":
+            raise RuntimeError(f"Failed to delete folder: {name}")
+
+
+def rename_folder(old: str, new: str) -> None:
+    with _imap_login() as imap:
+        status, _ = imap.rename(_quote_mailbox(old), _quote_mailbox(new))
+        if status != "OK":
+            raise RuntimeError(f"Failed to rename folder: {old} -> {new}")
+
+
+def move_by_sender(folder: str, sender: str, dest: str, *, expunge: bool = False) -> int:
+    return _move_by_search(folder, ["FROM", f"\"{sender}\""], dest, expunge=expunge)
+
+
+def move_by_domain(folder: str, domain: str, dest: str, *, expunge: bool = False) -> int:
+    # Search for @domain to reduce false positives
+    return _move_by_search(folder, ["FROM", f"\"@{domain}\""], dest, expunge=expunge)
+
+
+def _move_by_search(folder: str, criteria: List[str], dest: str, *, expunge: bool = False) -> int:
+    with _imap_login() as imap:
+        status, _ = imap.select(_quote_mailbox(folder))
+        if status != "OK":
+            raise RuntimeError(f"Failed to select folder {folder}: {status}")
+        status, data = imap.uid("search", None, *criteria)
+        if status != "OK" or not data or not data[0]:
+            return 0
+        uids = data[0].split()
+        if not uids:
+            return 0
+        uid_str = b",".join(uids).decode("utf-8", errors="ignore")
+        status, _ = imap.uid("copy", uid_str, _quote_mailbox(dest))
+        if status != "OK":
+            raise RuntimeError(f"Failed to copy messages to {dest}")
+        # Mark deleted in source
+        imap.uid("store", uid_str, "+FLAGS", "(\\Deleted)")
+        if expunge:
+            imap.expunge()
+        return len(uids)
 
 
 def list_messages(limit: int = 5, folder: str = "INBOX") -> List[Dict[str, Any]]:

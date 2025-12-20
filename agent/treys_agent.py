@@ -91,6 +91,10 @@ def show_help() -> None:
   If a request could be either research or execution, the agent will ask which you want.
   You can still force research with "Research:" (and pick light/moderate/deep when prompted).
 
+{GREEN}Credentials (startup prompt):{RESET}
+  If configured, the agent can prompt for credentials at startup to enable auto-login.
+  Set TREYS_AGENT_CRED_PROMPT_SITES="site1,site2" to control which sites to ask for.
+
 {GREEN}Routing defaults:{RESET}
   - If ambiguous, defaults to Execute (change with TREYS_AGENT_DEFAULT_MODE=collab|research|execute).
   - Set TREYS_AGENT_PROMPT_ON_AMBIGUOUS=1 to show a mode picker.
@@ -214,6 +218,8 @@ _EXEC_PHRASES = {
     "check the",
 }
 
+_DEFAULT_CRED_PROMPT_SITES = ["yahoo", "yahoo_imap"]
+
 
 def _score_intent(text: str, keywords: set[str], phrases: set[str]) -> int:
     lowered = text.lower()
@@ -297,6 +303,69 @@ def _prompt_mode_choice() -> tuple[str, str | None]:
     return "execute", None
 
 
+def _prompt_startup_credentials() -> None:
+    try:
+        import getpass
+
+        from agent.memory.credentials import CredentialError, get_credential, save_credential
+        from agent.memory.memory_manager import load_memory, save_memory
+    except Exception:
+        return
+
+    env_sites = (os.getenv("TREYS_AGENT_CRED_PROMPT_SITES") or "").strip()
+    if env_sites:
+        sites = [s.strip().lower() for s in env_sites.split(",") if s.strip()]
+    else:
+        sites = list(_DEFAULT_CRED_PROMPT_SITES)
+
+    if not sites:
+        return
+
+    memory = load_memory()
+    prefs = memory.get("preferences") or {}
+    skips = set(prefs.get("credential_prompt_skip") or [])
+
+    missing = [s for s in sites if s not in skips and not get_credential(s)]
+    if not missing:
+        return
+
+    print(
+        f"{YELLOW}[CREDENTIALS]{RESET} Missing saved credentials for: "
+        + ", ".join(missing)
+    )
+    print(
+        f"{YELLOW}[NOTE]{RESET} For Google services (Gmail/Tasks/Calendar), OAuth is recommended and does not require a password."
+    )
+
+    for site in missing:
+        ans = input(
+            f"{CYAN}Save credentials for '{site}' now? (y/n/skip):{RESET} "
+        ).strip().lower()
+        if ans in {"skip", "s"}:
+            skips.add(site)
+            continue
+        if ans not in {"y", "yes"}:
+            continue
+
+        try:
+            username = input(f"{CYAN}Username/email for {site}:{RESET} ").strip()
+            password = getpass.getpass(f"Password for {site} (input hidden): ").strip()
+            if not username or not password:
+                print(f"{YELLOW}[INFO]{RESET} Skipping {site}: username/password cannot be blank.")
+                continue
+            save_credential(site, username, password)
+            print(f"{GREEN}[SAVED]{RESET} Stored encrypted credentials for '{site}'.")
+        except CredentialError as exc:
+            print(f"{RED}[ERROR]{RESET} {exc}")
+        except Exception as exc:
+            print(f"{RED}[ERROR]{RESET} Failed to save credentials for {site}: {exc}")
+
+    if skips:
+        prefs["credential_prompt_skip"] = sorted(skips)
+        memory["preferences"] = prefs
+        save_memory(memory)
+
+
 def main() -> None:
     from agent.modes.autonomous import mode_autonomous
     from agent.modes.execute import find_matching_playbook, list_playbooks, load_playbooks, mode_execute
@@ -309,6 +378,7 @@ def main() -> None:
     print("Type 'help' for commands.\n")
 
     unsafe_mode = os.getenv("AGENT_UNSAFE_MODE", "").strip().lower() in {"1", "true", "yes", "y", "on"}
+    _prompt_startup_credentials()
 
     while True:
         try:

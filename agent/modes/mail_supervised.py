@@ -9,6 +9,68 @@ from typing import Dict, List, Tuple
 
 from agent.autonomous.memory.sqlite_store import SqliteMemoryStore
 from agent.integrations import yahoo_mail
+from agent.memory.credentials import get_credential
+
+
+SYSTEM_FOLDERS = {
+    "INBOX",
+    "Sent",
+    "Sent Mail",
+    "Draft",
+    "Drafts",
+    "Trash",
+    "Spam",
+    "Archive",
+}
+
+
+AUTO_CATEGORY_FOLDERS = {
+    "from_myself": ["From Myself", "Myself", "Self"],
+    "work_usertesting": ["Work/UserTesting", "Work - UserTesting", "UserTesting"],
+    "work_github": ["Work/GitHub", "Work - GitHub", "GitHub"],
+    "finance": ["Finance", "Bills", "Payments"],
+    "shopping": ["Shopping", "Shopping/Online", "Purchases"],
+    "deliveries": ["Deliveries", "Shopping/Deliveries"],
+    "newsletters": ["Newsletters", "Subscriptions/Newsletters", "Subscriptions"],
+    "social": ["Social", "Community", "Social/Community"],
+    "subscriptions": ["Subscriptions", "Entertainment", "Streaming"],
+    "fitness": ["Fitness", "Health/Fitness", "Health"],
+    "childcare": ["Childcare", "Family/Childcare", "Kids"],
+    "security": ["Security", "Important/Security", "Important"],
+    "sports": ["Sports", "Sports/Fantasy"],
+    "personal": ["Personal", "Personal/Family"],
+}
+
+
+AUTO_DOMAIN_RULES = {
+    "usertesting.com": "work_usertesting",
+    "github.com": "work_github",
+    "paypal.com": "finance",
+    "venmo.com": "finance",
+    "email.rocketmoney.com": "finance",
+    "m.purchasingpower.com": "finance",
+    "amazon.com": "shopping",
+    "woot.com": "shopping",
+    "crocs-email.com": "shopping",
+    "tryautobrush.com": "shopping",
+    "irobot.com": "shopping",
+    "email.informeddelivery.usps.com": "deliveries",
+    "mail.beehiiv.com": "newsletters",
+    "substack.com": "newsletters",
+    "patreon.com": "social",
+    "rumble.com": "social",
+    "contact@email.paramountplus.com": "subscriptions",
+    "paramountplus.com": "subscriptions",
+    "online.procaresoftware.com": "childcare",
+    "repfitness.com": "fitness",
+    "performbetter.com": "fitness",
+    "e.performbetter.com": "fitness",
+    "muscleandmotion.com": "fitness",
+    "brookbushinstitute.com": "fitness",
+    "altis.world": "fitness",
+    "accounts.google.com": "security",
+    "email.apple.com": "security",
+}
 
 
 def _prompt(text: str, default: str | None = None) -> str:
@@ -49,6 +111,22 @@ def _parse_indices(raw: str, max_index: int) -> List[int]:
             except Exception:
                 continue
     return sorted(set(picks))
+
+
+def _leaf_name(name: str, delimiter: str) -> str:
+    if not name:
+        return name
+    normalized = name.replace("/", delimiter)
+    return normalized.split(delimiter)[-1]
+
+
+def _normalize_path(path: str, delimiter: str) -> str:
+    if not path:
+        return path
+    path = path.replace("/", delimiter)
+    if delimiter != "/":
+        path = path.replace("\\", delimiter)
+    return path
 
 
 def _sender_domain(sender: str) -> str:
@@ -101,6 +179,47 @@ def _parse_sender_selection(raw: str, ranked: List[Tuple[str, int]]) -> Tuple[Li
     return sorted(set(important)), sorted(set(domains))
 
 
+def _guess_self_emails() -> List[str]:
+    creds = get_credential("yahoo_imap") or {}
+    username = (creds.get("username") or "").strip()
+    if username:
+        return [username.lower()]
+    return []
+
+
+def _choose_folder_name(key: str, folders: List[str]) -> str:
+    candidates = AUTO_CATEGORY_FOLDERS.get(key, [])
+    for cand in candidates:
+        for existing in folders:
+            if existing.lower() == cand.lower():
+                return existing
+    return candidates[0] if candidates else "Review"
+
+
+def _auto_classify(sender: str, domain: str, self_emails: List[str]) -> Tuple[str, str, str]:
+    sender_l = (sender or "").lower()
+    domain_l = (domain or "").lower()
+    for self_email in self_emails:
+        if self_email and self_email in sender_l:
+            return "from_myself", "high", "matches your email"
+
+    if domain_l in AUTO_DOMAIN_RULES:
+        return AUTO_DOMAIN_RULES[domain_l], "high", f"domain match: {domain_l}"
+
+    if "newsletter" in sender_l or "news" in sender_l:
+        return "newsletters", "medium", "sender contains newsletter/news"
+    if "receipt" in sender_l or "invoice" in sender_l:
+        return "finance", "medium", "sender looks like receipts"
+    if "shipping" in sender_l or "delivery" in sender_l:
+        return "deliveries", "medium", "sender looks like deliveries"
+    if "security" in sender_l or "account" in sender_l:
+        return "security", "medium", "sender looks like account/security"
+    if "fitness" in sender_l or "workout" in sender_l:
+        return "fitness", "medium", "sender looks like fitness"
+
+    return "personal", "low", "no strong match"
+
+
 def run_mail_supervised(task: str) -> None:
     _print_header("MAIL: Supervised mailbox review")
     print("This mode will ask questions and only propose actions. No changes are made automatically.")
@@ -111,7 +230,7 @@ def run_mail_supervised(task: str) -> None:
         return
 
     try:
-        folders = yahoo_mail.list_folders()
+        folders, delimiter = yahoo_mail.list_folders_with_delimiter()
     except Exception as exc:
         print(f"[MAIL] Failed to list folders: {exc}")
         print("[MAIL] Tip: run `Cred: yahoo_imap` with your app password.")
@@ -129,36 +248,75 @@ def run_mail_supervised(task: str) -> None:
         picks = _parse_indices(raw, len(folders))
         selected = [folders[i - 1] for i in picks] if picks else ["INBOX"]
 
-    full_scan = _prompt("Scan entire folders? (y/n)", "y").lower().startswith("y")
-    per_folder_limit = None if full_scan else _prompt_int("How many most recent messages per folder", 200)
+    chunked_scan = _prompt("Scan in chunks from most recent? (y/n)", "y").lower().startswith("y")
+    if chunked_scan:
+        chunk_size = _prompt_int("Chunk size (messages per folder)", 200)
+        chunks_per_folder = _prompt_int("How many chunks per folder this run", 1)
+        per_folder_limit = None
+    else:
+        full_scan = _prompt("Scan entire folders? (y/n)", "y").lower().startswith("y")
+        per_folder_limit = None if full_scan else _prompt_int("How many most recent messages per folder", 200)
+        chunk_size = 0
+        chunks_per_folder = 0
 
     senders = Counter()
     domains = Counter()
     message_headers: List[Dict[str, str]] = []
+    scan_errors: List[Dict[str, str]] = []
+    self_emails = _guess_self_emails()
 
     def _progress(folder: str, idx: int, total: int) -> None:
         print(f"[MAIL] Scanning {folder}: {idx}/{total}")
 
+    def _chunk_progress(folder: str, idx: int, total: int) -> None:
+        print(f"[MAIL] Scanning {folder} (chunk): {idx}/{total}")
+
     _print_header("Scanning")
     for folder in selected:
         try:
-            headers = yahoo_mail.iter_headers(folder=folder, limit=per_folder_limit, progress_cb=_progress)
-            message_headers.extend(headers)
-            for h in headers:
-                sender = h.get("from", "")
-                if sender:
-                    senders[sender] += 1
-                    dom = _sender_domain(sender)
-                    if dom:
-                        domains[dom] += 1
+            if chunked_scan:
+                ids = yahoo_mail.list_message_ids(folder)
+                total_ids = len(ids)
+                if total_ids == 0:
+                    continue
+                for chunk_idx in range(chunks_per_folder):
+                    end = total_ids - (chunk_idx * chunk_size)
+                    start = max(0, end - chunk_size)
+                    if start >= end:
+                        break
+                    chunk_uids = ids[start:end]
+                    print(
+                        f"[MAIL] {folder}: chunk {chunk_idx + 1}/{chunks_per_folder} "
+                        f"({start + 1}-{end} of {total_ids})"
+                    )
+                    headers = yahoo_mail.fetch_headers_by_uids(folder, chunk_uids, progress_cb=_chunk_progress)
+                    message_headers.extend(headers)
+                    for h in headers:
+                        sender = h.get("from", "")
+                        if sender:
+                            senders[sender] += 1
+                            dom = _sender_domain(sender)
+                            if dom:
+                                domains[dom] += 1
+            else:
+                headers = yahoo_mail.iter_headers(folder=folder, limit=per_folder_limit, progress_cb=_progress)
+                message_headers.extend(headers)
+                for h in headers:
+                    sender = h.get("from", "")
+                    if sender:
+                        senders[sender] += 1
+                        dom = _sender_domain(sender)
+                        if dom:
+                            domains[dom] += 1
         except Exception as exc:
             print(f"[MAIL] Failed to scan {folder}: {exc}")
+            scan_errors.append({"folder": folder, "error": str(exc)})
 
     if not message_headers:
         print("[MAIL] No messages found in selected folders.")
         return
 
-    _print_header("Top senders (most → least)")
+    _print_header("Top senders (most to least)")
     ranked_senders = senders.most_common()
     ranked_domains = domains.most_common()
 
@@ -184,11 +342,11 @@ def run_mail_supervised(task: str) -> None:
 
     _print_header("Folder health check")
     try:
-        counts = yahoo_mail.folder_counts(selected)
+        counts_all = yahoo_mail.folder_counts(folders)
     except Exception:
-        counts = {name: 0 for name in selected}
+        counts_all = {name: 0 for name in folders}
     for name in selected:
-        print(f"  - {name}: {counts.get(name, 0)} messages")
+        print(f"  - {name}: {counts_all.get(name, 0)} messages")
 
     folder_notes: Dict[str, str] = {}
     for name in selected:
@@ -198,14 +356,15 @@ def run_mail_supervised(task: str) -> None:
 
     _print_header("Rules cleanup")
     print("You said your existing rules/filters are wrong and should be removed.")
-    remove_rules = _prompt("Do you want me to open Yahoo Mail settings so we can remove all rules now? (y/n)", "y")
+    print("[MAIL] Yahoo doesn't expose filters via IMAP, so we must use the web UI to view/delete them.")
+    remove_rules = _prompt("Do you want to handle rules cleanup now via the browser? (y/n)", "y")
     if remove_rules.lower().startswith("y"):
-        print("\n[MAIL] Manual steps (we can automate later):")
+        print("\n[MAIL] Manual steps (we can automate with a playbook):")
         print("  1) Open Yahoo Mail")
         print("  2) Click Settings (gear) > More Settings")
         print("  3) Open Filters (or Rules)")
-        print("  4) Delete each filter/rule")
-        print("\n[MAIL] If you want automation, run: Learn: delete yahoo rules")
+        print("  4) Review and delete each filter/rule")
+        print("\n[MAIL] If you want automation, we can record a playbook: Learn: delete yahoo rules")
 
     suggestions = []
     for sender in spam_senders:
@@ -224,6 +383,239 @@ def run_mail_supervised(task: str) -> None:
     else:
         print("  (none yet)")
 
+    _print_header("Auto-triage suggestions (draft)")
+    auto_moves: List[Dict[str, str]] = []
+    ranked_for_auto = _summarize_counts(ranked_senders, 25)
+    for sender, count in ranked_for_auto:
+        dom = _sender_domain(sender)
+        key, confidence, reason = _auto_classify(sender, dom, self_emails)
+        folder = _choose_folder_name(key, folders)
+        auto_moves.append(
+            {
+                "type": "sender",
+                "value": sender,
+                "domain": dom,
+                "count": str(count),
+                "dest": folder,
+                "confidence": confidence,
+                "reason": reason,
+            }
+        )
+
+    print(f"{'Rank':>4}  {'Count':>5}  {'Confidence':>10}  {'Destination':<24}  Sender")
+    for idx, item in enumerate(auto_moves, 1):
+        print(
+            f"{idx:>4}  {item['count']:>5}  {item['confidence']:>10}  {item['dest']:<24}  {_format_sender(item['value'])}"
+        )
+
+    use_auto_raw = _prompt("Use auto-triage for high-confidence senders? (y/n)", "y")
+    use_auto = use_auto_raw.lower().startswith("y")
+    auto_apply_threshold = "high"
+
+    execution_log: List[Dict[str, str]] = []
+    execution_errors: List[Dict[str, str]] = []
+
+    _print_header("Optional: apply changes now")
+    apply_now = _prompt("Apply folder changes or message moves now? (y/n)", "n").lower().startswith("y")
+    if apply_now:
+        _print_header("Folder consolidation")
+        print("You can group folders under parent categories or delete unused folders.")
+        print("Use folder numbers from the list above.")
+
+        raw_delete = _prompt("Delete folders (numbers, blank to skip)", "")
+        delete_picks = _parse_indices(raw_delete, len(folders))
+        delete_targets = [folders[i - 1] for i in delete_picks] if delete_picks else []
+        safe_delete_targets = [f for f in delete_targets if f not in SYSTEM_FOLDERS]
+        if delete_targets and not safe_delete_targets:
+            print("[MAIL] Skipping deletion for system folders.")
+
+        mapping_lines: List[str] = []
+        while True:
+            line = _prompt("Map folders (e.g., 1,2 -> Finance or 4 -> Finance/Taxes). Blank to finish", "")
+            if not line:
+                break
+            mapping_lines.append(line)
+
+        rename_actions: List[Tuple[str, str]] = []
+        existing = set(folders)
+        for line in mapping_lines:
+            if "->" not in line:
+                continue
+            left, right = line.split("->", 1)
+            picks = _parse_indices(left.strip(), len(folders))
+            target = _normalize_path(right.strip(), delimiter)
+            for idx in picks:
+                old_name = folders[idx - 1]
+                if old_name in SYSTEM_FOLDERS:
+                    continue
+                if not target:
+                    continue
+                if delimiter in target:
+                    new_name = target
+                else:
+                    new_name = f"{target}{delimiter}{_leaf_name(old_name, delimiter)}"
+                new_name = _normalize_path(new_name, delimiter)
+                if new_name == old_name:
+                    continue
+                rename_actions.append((old_name, new_name))
+
+        if safe_delete_targets:
+            print("\n[MAIL] Delete folders:")
+            for name in safe_delete_targets:
+                print(f"  - {name} ({counts_all.get(name, 0)} messages)")
+            confirm_delete = _prompt("Type DELETE to confirm", "")
+            if confirm_delete.strip().upper() == "DELETE":
+                for name in safe_delete_targets:
+                    try:
+                        yahoo_mail.delete_folder(name)
+                        execution_log.append({"action": "delete_folder", "folder": name})
+                        existing.discard(name)
+                    except Exception as exc:
+                        execution_errors.append({"action": "delete_folder", "folder": name, "error": str(exc)})
+                        print(f"[MAIL] Failed to delete {name}: {exc}")
+            else:
+                print("[MAIL] Deletion skipped.")
+
+        if rename_actions:
+            print("\n[MAIL] Rename / move folders:")
+            for old_name, new_name in rename_actions:
+                print(f"  - {old_name} -> {new_name}")
+            if _prompt("Proceed with these renames? (y/n)", "n").lower().startswith("y"):
+                for old_name, new_name in rename_actions:
+                    try:
+                        # Ensure parent exists if needed
+                        if delimiter in new_name:
+                            parent = new_name.rsplit(delimiter, 1)[0]
+                            if parent and parent not in existing:
+                                yahoo_mail.create_folder(parent)
+                                existing.add(parent)
+                                execution_log.append({"action": "create_folder", "folder": parent})
+                        yahoo_mail.rename_folder(old_name, new_name)
+                        execution_log.append({"action": "rename_folder", "from": old_name, "to": new_name})
+                        existing.discard(old_name)
+                        existing.add(new_name)
+                    except Exception as exc:
+                        execution_errors.append(
+                            {"action": "rename_folder", "from": old_name, "to": new_name, "error": str(exc)}
+                        )
+                        print(f"[MAIL] Failed to rename {old_name} -> {new_name}: {exc}")
+
+        _print_header("Sender/domain moves")
+        if spam_senders or spam_domains or important_senders or important_domains:
+            do_moves = _prompt("Move messages by sender/domain now? (y/n)", "n").lower().startswith("y")
+            if do_moves:
+                spam_dest = _prompt("Spam destination folder", "Spam")
+                important_dest = _prompt("Important destination folder", "Important")
+                expunge = _prompt("Expunge (remove from source) after move? (y/n)", "n").lower().startswith("y")
+
+                for dest in [spam_dest, important_dest]:
+                    if dest and dest not in existing:
+                        try:
+                            yahoo_mail.create_folder(dest)
+                            existing.add(dest)
+                            execution_log.append({"action": "create_folder", "folder": dest})
+                        except Exception as exc:
+                            execution_errors.append({"action": "create_folder", "folder": dest, "error": str(exc)})
+                            print(f"[MAIL] Failed to create folder {dest}: {exc}")
+
+                for sender in spam_senders:
+                    try:
+                        moved = yahoo_mail.move_by_sender("INBOX", sender, spam_dest, expunge=expunge)
+                        execution_log.append(
+                            {"action": "move_by_sender", "sender": sender, "dest": spam_dest, "count": str(moved)}
+                        )
+                    except Exception as exc:
+                        execution_errors.append(
+                            {"action": "move_by_sender", "sender": sender, "dest": spam_dest, "error": str(exc)}
+                        )
+                        print(f"[MAIL] Failed to move sender {sender}: {exc}")
+
+                for dom in spam_domains:
+                    try:
+                        moved = yahoo_mail.move_by_domain("INBOX", dom, spam_dest, expunge=expunge)
+                        execution_log.append(
+                            {"action": "move_by_domain", "domain": dom, "dest": spam_dest, "count": str(moved)}
+                        )
+                    except Exception as exc:
+                        execution_errors.append(
+                            {"action": "move_by_domain", "domain": dom, "dest": spam_dest, "error": str(exc)}
+                        )
+                        print(f"[MAIL] Failed to move domain {dom}: {exc}")
+
+                for sender in important_senders:
+                    try:
+                        moved = yahoo_mail.move_by_sender("INBOX", sender, important_dest, expunge=expunge)
+                        execution_log.append(
+                            {
+                                "action": "move_by_sender",
+                                "sender": sender,
+                                "dest": important_dest,
+                                "count": str(moved),
+                            }
+                        )
+                    except Exception as exc:
+                        execution_errors.append(
+                            {"action": "move_by_sender", "sender": sender, "dest": important_dest, "error": str(exc)}
+                        )
+                        print(f"[MAIL] Failed to move sender {sender}: {exc}")
+
+                for dom in important_domains:
+                    try:
+                        moved = yahoo_mail.move_by_domain("INBOX", dom, important_dest, expunge=expunge)
+                        execution_log.append(
+                            {"action": "move_by_domain", "domain": dom, "dest": important_dest, "count": str(moved)}
+                        )
+                    except Exception as exc:
+                        execution_errors.append(
+                            {"action": "move_by_domain", "domain": dom, "dest": important_dest, "error": str(exc)}
+                        )
+                        print(f"[MAIL] Failed to move domain {dom}: {exc}")
+        else:
+            print("No senders/domains selected yet.")
+
+        if use_auto:
+            _print_header("Auto-triage moves")
+            do_auto = _prompt("Apply auto-triage moves now? (y/n)", "n").lower().startswith("y")
+            if do_auto:
+                expunge = _prompt("Expunge (remove from source) after auto moves? (y/n)", "n").lower().startswith("y")
+                for item in auto_moves:
+                    if item["confidence"] != auto_apply_threshold:
+                        continue
+                    dest = item["dest"]
+                    if dest and dest not in existing:
+                        try:
+                            yahoo_mail.create_folder(dest)
+                            existing.add(dest)
+                            execution_log.append({"action": "create_folder", "folder": dest})
+                        except Exception as exc:
+                            execution_errors.append({"action": "create_folder", "folder": dest, "error": str(exc)})
+                            print(f"[MAIL] Failed to create folder {dest}: {exc}")
+                            continue
+                    try:
+                        moved = yahoo_mail.move_by_sender("INBOX", item["value"], dest, expunge=expunge)
+                        execution_log.append(
+                            {
+                                "action": "auto_move_sender",
+                                "sender": item["value"],
+                                "dest": dest,
+                                "count": str(moved),
+                            }
+                        )
+                    except Exception as exc:
+                        execution_errors.append(
+                            {"action": "auto_move_sender", "sender": item["value"], "dest": dest, "error": str(exc)}
+                        )
+                        print(f"[MAIL] Failed to move sender {item['value']}: {exc}")
+
+        if execution_log:
+            _print_header("Execution summary")
+            for item in execution_log:
+                print(f"  - {item}")
+        if execution_errors:
+            _print_header("Execution issues")
+            for item in execution_errors:
+                print(f"  - {item}")
+
     # Store preferences to memory
     store = _open_memory_store()
     payload = {
@@ -232,6 +624,9 @@ def run_mail_supervised(task: str) -> None:
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "folders_scanned": selected,
         "scan_limit": per_folder_limit,
+        "chunked_scan": chunked_scan,
+        "chunk_size": chunk_size,
+        "chunks_per_folder": chunks_per_folder,
         "important_senders": important_senders,
         "important_domains": important_domains,
         "spam_senders": spam_senders,
@@ -241,6 +636,12 @@ def run_mail_supervised(task: str) -> None:
         "top_domains": domains.most_common(10),
         "top_senders": senders.most_common(10),
         "remove_rules_requested": remove_rules.lower().startswith("y"),
+        "scan_errors": scan_errors,
+        "execution_log": execution_log,
+        "execution_errors": execution_errors,
+        "auto_moves": auto_moves,
+        "auto_apply_threshold": auto_apply_threshold,
+        "auto_use_enabled": use_auto,
     }
     rec_id = store.upsert(
         kind="user_info",
@@ -251,4 +652,4 @@ def run_mail_supervised(task: str) -> None:
     store.close()
 
     print(f"\n[MAIL] Saved your preferences to memory (id={rec_id}).")
-    print("[MAIL] When you’re ready, I can help turn these suggestions into Yahoo rules.")
+    print("[MAIL] When you're ready, I can help turn these suggestions into Yahoo rules.")

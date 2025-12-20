@@ -23,7 +23,7 @@
         "type": "browser",
         "description": "Wait for mailbox UI to load",
         "action": "wait_for",
-        "selector": "a[data-test-folder-name='Spam'], a[aria-label='Spam']",
+        "selector": "a[data-test-folder-name='Inbox'], a[aria-label='Inbox'], [data-test-id='compose-button'], button[aria-label='Compose'], [data-test-id='mail-search']",
         "timeout_ms": 300000
       },
       {
@@ -97,7 +97,7 @@
         "type": "browser",
         "description": "Wait for mailbox UI to load",
         "action": "wait_for",
-        "selector": "a[data-test-folder-name='Spam'], a[aria-label='Spam']",
+        "selector": "a[data-test-folder-name='Inbox'], a[aria-label='Inbox'], [data-test-id='compose-button'], button[aria-label='Compose'], [data-test-id='mail-search']",
         "timeout_ms": 300000
       },
       {
@@ -107,8 +107,9 @@
       },
       {
         "type": "browser",
-        "description": "Keep the browser open (close the window when you're done)",
-        "action": "keep_open"
+        "description": "Pause so you can continue in the browser if needed",
+        "action": "pause_for_user",
+        "message": "Login complete. If you want to keep browsing, do so now. Press Enter to continue back in the console (this will close the browser)."
       }
     ],
     "login_site": "yahoo",
