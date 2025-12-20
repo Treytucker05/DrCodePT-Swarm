@@ -79,7 +79,7 @@ def _parse_quoted(value: str) -> str:
 def _parse_mailbox(line: str) -> str:
     # Typical IMAP LIST response: '(\\HasNoChildren) "/" "INBOX"'
     # Some servers omit quotes for simple names: '(\\HasNoChildren) "/" INBOX'
-    m = re.search(r'\\)\\s+"[^"]*"\\s+(.+)$', line)
+    m = re.search(r'\)\s+"[^"]*"\s+(.+)$', line)
     name = m.group(1).strip() if m else line.strip().split()[-1]
     if name.startswith('"'):
         return _parse_quoted(name)
