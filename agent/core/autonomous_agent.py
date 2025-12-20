@@ -58,7 +58,7 @@ class AutonomousAgent:
     
     def reflect(self, perception: str, action: Dict[str, Any], result: str):
         """
-        FEEDBACK LOOP: Learn from what happened
+        FEEDBACK LOOP: Learn from what happened using LLM reasoning
         """
         action_type = action.get("type", "unknown")
 
@@ -69,26 +69,33 @@ class AutonomousAgent:
             "perception": perception,
         })
 
-        # Learn from mistakes (failed actions)
-        if result and any(word in result.lower() for word in ["failed", "error", "could not", "unable"]):
-            lesson = {
-                "action": action_type,
-                "context": perception,
-                "what_went_wrong": result,
-                "timestamp": "now"
-            }
-            self.memory["mistakes"].append(lesson)
-            print(f"[LEARNING] Recorded mistake: {action_type} failed")
+        # Use LLM to analyze if this was a mistake or success
+        if result and action_type not in {"none", "ask_question"}:
+            analysis = self._analyze_outcome(perception, action, result)
 
-        # Learn from successes
-        elif result and action_type not in {"none", "ask_question"}:
-            pattern = {
-                "action": action_type,
-                "context": perception,
-                "outcome": result,
-                "timestamp": "now"
-            }
-            self.memory["successes"].append(pattern)
+            if analysis.get("is_mistake"):
+                lesson = {
+                    "action": action_type,
+                    "context": perception,
+                    "what_went_wrong": result,
+                    "lesson_learned": analysis.get("lesson", ""),
+                    "how_to_avoid": analysis.get("how_to_avoid", ""),
+                    "timestamp": "now"
+                }
+                self.memory["mistakes"].append(lesson)
+                print(f"[LEARNING] Recorded mistake: {analysis.get('lesson', action_type + ' failed')}")
+
+            elif analysis.get("is_success"):
+                pattern = {
+                    "action": action_type,
+                    "context": perception,
+                    "outcome": result,
+                    "why_it_worked": analysis.get("why_it_worked", ""),
+                    "when_to_repeat": analysis.get("when_to_repeat", ""),
+                    "timestamp": "now"
+                }
+                self.memory["successes"].append(pattern)
+                print(f"[LEARNING] Recorded success: {action_type}")
 
         # Keep memory bounded
         if len(self.memory["actions_taken"]) > 20:
@@ -197,3 +204,52 @@ class AutonomousAgent:
                 json.dump(to_save, f, indent=2)
         except Exception as e:
             print(f"[MEMORY] Could not save memory: {e}")
+
+    def _analyze_outcome(self, perception: str, action: Dict[str, Any], result: str) -> Dict[str, Any]:
+        """
+        Use LLM to analyze if an action was a mistake or success and extract lessons
+        """
+        prompt = f"""Analyze this action outcome and determine if it was a mistake or success.
+
+CONTEXT: {perception}
+ACTION: {json.dumps(action)}
+RESULT: {result}
+
+Determine:
+1. is_mistake: true if the action failed, produced an error, or didn't achieve the intended goal
+2. is_success: true if the action succeeded and achieved the intended goal
+3. If mistake:
+   - lesson: What went wrong in simple terms
+   - how_to_avoid: How to avoid this mistake in the future
+4. If success:
+   - why_it_worked: Why this action was successful
+   - when_to_repeat: When to use this pattern again
+
+Return JSON with these fields."""
+
+        try:
+            # Simple heuristic analysis
+            result_lower = result.lower()
+            is_error = any(word in result_lower for word in ["failed", "error", "could not", "unable", "exception"])
+            is_empty = not result or result.strip() == ""
+
+            if is_error:
+                return {
+                    "is_mistake": True,
+                    "is_success": False,
+                    "lesson": f"Action {action.get('type')} failed: {result[:100]}",
+                    "how_to_avoid": "Check preconditions before executing this action"
+                }
+            elif not is_empty:
+                return {
+                    "is_mistake": False,
+                    "is_success": True,
+                    "why_it_worked": f"Action {action.get('type')} completed successfully",
+                    "when_to_repeat": "When similar context and goals are present"
+                }
+            else:
+                return {"is_mistake": False, "is_success": False}
+
+        except Exception as e:
+            # Fallback to simple analysis
+            return {"is_mistake": False, "is_success": False}
