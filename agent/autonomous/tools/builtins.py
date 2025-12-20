@@ -20,7 +20,6 @@ from ..config import AgentConfig, RunContext
 from ..memory.sqlite_store import MemoryKind, SqliteMemoryStore
 from ..models import ToolResult
 from .registry import ToolRegistry, ToolSpec
-from agent.integrations import yahoo_mail
 
 
 def _is_within(child: Path, parent: Path) -> bool:
@@ -848,123 +847,6 @@ def desktop_action(ctx: RunContext, args: DesktopStubArgs) -> ToolResult:
         return ToolResult(success=False, error=f"Unsupported desktop action: {action}")
     except Exception as exc:
         return ToolResult(success=False, error=str(exc))
-
-
-class MailListFoldersArgs(BaseModel):
-    pass
-
-
-def mail_list_folders(ctx: RunContext, args: MailListFoldersArgs) -> ToolResult:
-    """List all Yahoo Mail folders with message counts."""
-    try:
-        folders = yahoo_mail.list_folders()
-        folder_counts = yahoo_mail.folder_counts(folders[:20])
-        return ToolResult(
-            success=True,
-            output={
-                "folders": folders,
-                "folder_counts": folder_counts,
-                "total_folders": len(folders)
-            }
-        )
-    except Exception as exc:
-        return ToolResult(success=False, error=f"Failed to list folders: {exc}")
-
-
-class MailListMessagesArgs(BaseModel):
-    folder: str = "INBOX"
-    limit: int = Field(default=10, ge=1, le=50)
-
-
-def mail_list_messages(ctx: RunContext, args: MailListMessagesArgs) -> ToolResult:
-    """List messages in a Yahoo Mail folder."""
-    try:
-        messages = yahoo_mail.list_messages(limit=args.limit, folder=args.folder)
-        return ToolResult(
-            success=True,
-            output={
-                "folder": args.folder,
-                "messages": messages,
-                "count": len(messages)
-            }
-        )
-    except Exception as exc:
-        return ToolResult(success=False, error=f"Failed to list messages: {exc}")
-
-
-class MailReadMessageArgs(BaseModel):
-    uid: str
-    folder: str = "INBOX"
-
-
-def mail_read_message(ctx: RunContext, args: MailReadMessageArgs) -> ToolResult:
-    """Read a specific email message."""
-    try:
-        message = yahoo_mail.read_message(uid=args.uid, folder=args.folder)
-        return ToolResult(success=True, output=message)
-    except Exception as exc:
-        return ToolResult(success=False, error=f"Failed to read message: {exc}")
-
-
-class MailCreateFolderArgs(BaseModel):
-    name: str
-
-
-def mail_create_folder(ctx: RunContext, args: MailCreateFolderArgs) -> ToolResult:
-    """Create a new Yahoo Mail folder."""
-    try:
-        yahoo_mail.create_folder(args.name)
-        return ToolResult(success=True, output={"folder": args.name, "created": True})
-    except Exception as exc:
-        return ToolResult(success=False, error=f"Failed to create folder: {exc}")
-
-
-class MailDeleteFolderArgs(BaseModel):
-    name: str
-
-
-def mail_delete_folder(ctx: RunContext, args: MailDeleteFolderArgs) -> ToolResult:
-    """Delete a Yahoo Mail folder."""
-    try:
-        yahoo_mail.delete_folder(args.name)
-        return ToolResult(success=True, output={"folder": args.name, "deleted": True})
-    except Exception as exc:
-        return ToolResult(success=False, error=f"Failed to delete folder: {exc}")
-
-
-class MailRenameFolderArgs(BaseModel):
-    old_name: str
-    new_name: str
-
-
-def mail_rename_folder(ctx: RunContext, args: MailRenameFolderArgs) -> ToolResult:
-    """Rename a Yahoo Mail folder."""
-    try:
-        yahoo_mail.rename_folder(args.old_name, args.new_name)
-        return ToolResult(success=True, output={"old_name": args.old_name, "new_name": args.new_name, "renamed": True})
-    except Exception as exc:
-        return ToolResult(success=False, error=f"Failed to rename folder: {exc}")
-
-
-class MailSendMessageArgs(BaseModel):
-    to: str
-    subject: str
-    body: str
-    cc: Optional[str] = None
-    bcc: Optional[str] = None
-
-
-def mail_send_message(ctx: RunContext, args: MailSendMessageArgs) -> ToolResult:
-    """Send an email via Yahoo Mail."""
-    try:
-        yahoo_mail.send_message(
-            to=args.to,
-            subject=args.subject,
-            body=args.body,
-            cc=args.cc,
-            bcc=args.bcc
-        )
-        return ToolResult(success=True, output={"to": args.to, "subject": args.subject, "sent": True})
     except Exception as exc:
         return ToolResult(success=False, error=f"Failed to send message: {exc}")
 

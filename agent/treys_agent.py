@@ -744,16 +744,8 @@ def main() -> None:
             mode_research(user_input)
             continue
 
-        if intent == "mail":
-            use_workflow = os.getenv("MAIL_USE_WORKFLOW", "").strip().lower() in {"1", "true", "yes", "y", "on"}
-
-            if use_workflow:
-                from agent.modes.mail_supervised import run_mail_supervised
-                run_mail_supervised(user_input)
-            else:
-                from agent.modes.mail_intelligent import run_mail_intelligent
-                run_mail_intelligent(user_input)
-            continue
+        # Mail tasks are now handled by the unified autonomous agent with mail tools
+        # No special routing needed - the agent will use the mail tool when appropriate
 
         # Default: run a matching playbook; otherwise run the true autonomous loop.
         pb_id, pb_data = find_matching_playbook(user_input, playbooks)
