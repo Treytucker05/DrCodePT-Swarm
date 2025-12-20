@@ -117,9 +117,9 @@ def folder_counts(folders: Optional[List[str]] = None) -> Dict[str, int]:
     """Return message counts per folder (best-effort)."""
     with _imap_login() as imap:
         if folders is None:
-        status, data = imap.list()
-        if status != "OK" or not data:
-            raise RuntimeError("Failed to list folders.")
+            status, data = imap.list()
+            if status != "OK" or not data:
+                raise RuntimeError("Failed to list folders.")
             folders = []
             for item in data:
                 if not item:
