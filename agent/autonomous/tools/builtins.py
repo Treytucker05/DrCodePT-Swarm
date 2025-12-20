@@ -4,6 +4,7 @@ import ast
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -282,6 +283,7 @@ def file_move_factory(agent_cfg: AgentConfig):
                 error=f"Move blocked outside allowed roots: {src} -> {dest}",
                 metadata={
                     "unsafe_blocked": True,
+                    "approval_required": True,
                     "workspace_dir": str(ctx.workspace_dir),
                     "allowed_roots": [str(r) for r in agent_cfg.fs_allowed_roots],
                 },
@@ -315,6 +317,7 @@ def file_delete_factory(agent_cfg: AgentConfig):
                 error=f"Delete blocked outside allowed roots: {path}",
                 metadata={
                     "unsafe_blocked": True,
+                    "approval_required": True,
                     "workspace_dir": str(ctx.workspace_dir),
                     "allowed_roots": [str(r) for r in agent_cfg.fs_allowed_roots],
                 },
@@ -609,6 +612,13 @@ def human_ask_factory(cfg: AgentConfig):
                 error="human_ask disabled (set AUTO_ALLOW_HUMAN_ASK=1 to enable)",
                 metadata={"needs_human": True},
             )
+        if re.search(r"(password|passcode|api key|token|secret|credential)", args.question, re.IGNORECASE):
+            if os.getenv("ALLOW_CREDENTIAL_ENTRY", "").strip().lower() not in {"1", "true", "yes", "y"}:
+                return ToolResult(
+                    success=False,
+                    error="credential entry requires approval (set ALLOW_CREDENTIAL_ENTRY=1)",
+                    metadata={"approval_required": True},
+                )
         answer = input(f"\n[HUMAN INPUT NEEDED]\n{args.question}\n> ").strip()
         return ToolResult(success=True, output={"answer": answer})
 
@@ -620,6 +630,7 @@ class FinishArgs(BaseModel):
 
 
 def finish(ctx: RunContext, args: FinishArgs) -> ToolResult:
+    _close_web_session(ctx)
     return ToolResult(success=True, output={"summary": args.summary})
 
 
@@ -685,23 +696,35 @@ class ShellExecArgs(BaseModel):
     cwd: Optional[str] = None
 
 
-def shell_exec(ctx: RunContext, args: ShellExecArgs) -> ToolResult:
-    try:
-        proc = subprocess.run(
-            args.command,
-            cwd=args.cwd or str(ctx.workspace_dir),
-            capture_output=True,
-            text=True,
-            timeout=args.timeout_seconds,
-            shell=True,
-        )
-        return ToolResult(
-            success=proc.returncode == 0,
-            output={"exit_code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr},
-            error=None if proc.returncode == 0 else (proc.stderr.strip() or f"exit_code={proc.returncode}"),
-        )
-    except subprocess.TimeoutExpired:
-        return ToolResult(success=False, error="shell_exec timeout", retryable=True)
+def shell_exec_factory(agent_cfg: AgentConfig):
+    def shell_exec(ctx: RunContext, args: ShellExecArgs) -> ToolResult:
+        allowlist = [s.strip() for s in (os.getenv("SHELL_ALLOWLIST") or "").split(",") if s.strip()]
+        approved = os.getenv("ALLOW_SHELL_EXEC", "").strip().lower() in {"1", "true", "yes", "y"}
+        cmd = (args.command or "").strip()
+        if not approved:
+            if not allowlist or not any(cmd.startswith(prefix) for prefix in allowlist):
+                return ToolResult(
+                    success=False,
+                    error="shell_exec requires approval or allowlist match (set ALLOW_SHELL_EXEC=1 or SHELL_ALLOWLIST)",
+                    metadata={"approval_required": True},
+                )
+        try:
+            proc = subprocess.run(
+                args.command,
+                cwd=args.cwd or str(ctx.workspace_dir),
+                capture_output=True,
+                text=True,
+                timeout=args.timeout_seconds,
+                shell=True,
+            )
+            return ToolResult(
+                success=proc.returncode == 0,
+                output={"exit_code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr},
+                error=None if proc.returncode == 0 else (proc.stderr.strip() or f"exit_code={proc.returncode}"),
+            )
+        except subprocess.TimeoutExpired:
+            return ToolResult(success=False, error="shell_exec timeout", retryable=True)
+    return shell_exec
 
 
 class WebGuiSnapshotArgs(BaseModel):
@@ -809,6 +832,24 @@ def _web_css_path_js() -> str:
       return parts.join(' > ');
     }
     """
+
+
+def _close_web_session(ctx: RunContext) -> None:
+    session = _WEB_SESSIONS.pop(ctx.run_id, None)
+    if not session:
+        return
+    try:
+        session.get("context") and session["context"].close()
+    except Exception:
+        pass
+    try:
+        session.get("browser") and session["browser"].close()
+    except Exception:
+        pass
+    try:
+        session.get("playwright") and session["playwright"].stop()
+    except Exception:
+        pass
 
 
 class WebFindElementsArgs(BaseModel):
@@ -949,6 +990,29 @@ def web_type(ctx: RunContext, args: WebTypeArgs) -> ToolResult:
         except Exception:
             shot_path = ""
         return ToolResult(success=True, output={"typed": selector, "screenshot": shot_path})
+    except Exception as exc:
+        return ToolResult(success=False, error=str(exc), retryable=True)
+
+
+class WebScrollArgs(BaseModel):
+    delta_y: int = 800
+    url: Optional[str] = None
+    headless: Optional[bool] = None
+
+
+def web_scroll(ctx: RunContext, args: WebScrollArgs) -> ToolResult:
+    try:
+        session = _get_web_session(ctx, headless=args.headless)
+        page = session["page"]
+        if args.url:
+            page.goto(args.url, wait_until="domcontentloaded")
+        page.mouse.wheel(0, int(args.delta_y))
+        shot_path = str(ctx.run_dir / f"web_scroll_{int(time.time())}.png")
+        try:
+            page.screenshot(path=shot_path, full_page=True)
+        except Exception:
+            shot_path = ""
+        return ToolResult(success=True, output={"scrolled": args.delta_y, "screenshot": shot_path})
     except Exception as exc:
         return ToolResult(success=False, error=str(exc), retryable=True)
 
@@ -1324,7 +1388,7 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
         ToolSpec(
             name="shell_exec",
             args_model=ShellExecArgs,
-            fn=shell_exec,
+            fn=shell_exec_factory(cfg),
             description="Execute a shell command (unsafe)",
             dangerous=True,
         )
@@ -1374,6 +1438,14 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
                 args_model=WebTypeArgs,
                 fn=web_type,
                 description="Type into a previously found element_id or selector",
+            )
+        )
+        reg.register(
+            ToolSpec(
+                name="web_scroll",
+                args_model=WebScrollArgs,
+                fn=web_scroll,
+                description="Scroll the current web page and capture a screenshot",
             )
         )
         reg.register(

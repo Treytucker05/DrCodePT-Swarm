@@ -53,7 +53,17 @@ class PlanFirstPlanner(Planner):
         if self._use_tot:
             candidates = self._plan_candidates(task, tool_catalog, memories, recent_obs)
             if dppm_plan is not None:
-                candidates.append({"plan": dppm_plan, "scores": {"grounding_confidence": 6, "tool_feasibility": 6, "destructiveness": 3, "length": len(dppm_plan.steps)}})
+                candidates.append(
+                    {
+                        "plan": model_dump(dppm_plan),
+                        "scores": {
+                            "grounding_confidence": 6,
+                            "tool_feasibility": 6,
+                            "destructiveness": 3,
+                            "length": len(dppm_plan.steps),
+                        },
+                    }
+                )
             best, fallback = self._pick_best_candidate(candidates)
             self._fallback_plan = fallback
             if best is not None:

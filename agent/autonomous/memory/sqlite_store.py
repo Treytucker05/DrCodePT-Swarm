@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import re
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -10,6 +12,22 @@ from typing import Any, Dict, Iterable, List, Literal, Optional
 
 
 MemoryKind = Literal["experience", "procedure", "knowledge", "user_info"]
+
+_EMBED_DIM = 256
+
+
+def _tokenize(text: str) -> List[str]:
+    return re.findall(r"[a-z0-9]+", (text or "").lower())
+
+
+def _embed(text: str, dim: int = _EMBED_DIM) -> tuple[List[float], float]:
+    vec = [0.0] * dim
+    for tok in _tokenize(text):
+        h = int(hashlib.md5(tok.encode("utf-8", errors="replace")).hexdigest(), 16)
+        idx = h % dim
+        vec[idx] += 1.0
+    norm = math.sqrt(sum(v * v for v in vec)) or 1.0
+    return vec, norm
 
 
 @dataclass(frozen=True)
@@ -58,8 +76,37 @@ class SqliteMemoryStore:
             );
             """
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_embeddings (
+              record_id INTEGER PRIMARY KEY,
+              dim INTEGER NOT NULL,
+              vector_json TEXT NOT NULL,
+              norm REAL NOT NULL,
+              updated_at REAL NOT NULL,
+              FOREIGN KEY(record_id) REFERENCES memory_records(id) ON DELETE CASCADE
+            );
+            """
+        )
         cur.execute("CREATE INDEX IF NOT EXISTS idx_memory_kind_updated ON memory_records(kind, updated_at DESC);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_memory_key ON memory_records(key);")
+        self._conn.commit()
+
+    def _upsert_embedding(self, record_id: int, content: str, *, now: Optional[float] = None) -> None:
+        now = now or time.time()
+        vec, norm = _embed(content)
+        cur = self._conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO memory_embeddings(record_id, dim, vector_json, norm, updated_at)
+            VALUES(?, ?, ?, ?, ?)
+            ON CONFLICT(record_id) DO UPDATE SET
+              vector_json=excluded.vector_json,
+              norm=excluded.norm,
+              updated_at=excluded.updated_at;
+            """,
+            (record_id, _EMBED_DIM, json.dumps(vec), float(norm), now),
+        )
         self._conn.commit()
 
     def upsert(
@@ -86,7 +133,23 @@ class SqliteMemoryStore:
             (kind, key, content, content_hash, meta_json, now, now),
         )
         self._conn.commit()
-        return int(cur.lastrowid or 0)
+        rec_id = int(cur.lastrowid or 0)
+        if rec_id == 0:
+            try:
+                row = cur.execute(
+                    "SELECT id FROM memory_records WHERE kind=? AND content_hash=? LIMIT 1",
+                    (kind, content_hash),
+                ).fetchone()
+                if row is not None:
+                    rec_id = int(row["id"])
+            except Exception:
+                rec_id = 0
+        if rec_id:
+            try:
+                self._upsert_embedding(rec_id, content, now=now)
+            except Exception:
+                pass
+        return rec_id
 
     def search(
         self,
@@ -98,25 +161,52 @@ class SqliteMemoryStore:
         q = (query or "").strip()
         if not q:
             return []
-        like = f"%{q}%"
         kinds = kinds or ["experience", "procedure", "knowledge"]
         placeholders = ",".join("?" for _ in kinds)
-        params: List[Any] = [*kinds, like, like, like, limit]
+        candidate_limit = max(limit * 25, 50)
+        params: List[Any] = [*kinds, candidate_limit]
         cur = self._conn.cursor()
         cur.execute(
             f"""
-            SELECT id, kind, key, content, metadata_json, created_at, updated_at
-            FROM memory_records
-            WHERE kind IN ({placeholders})
-              AND (content LIKE ? OR key LIKE ? OR metadata_json LIKE ?)
-            ORDER BY updated_at DESC
+            SELECT r.id, r.kind, r.key, r.content, r.metadata_json, r.created_at, r.updated_at,
+                   e.vector_json, e.norm
+            FROM memory_records r
+            LEFT JOIN memory_embeddings e ON r.id = e.record_id
+            WHERE r.kind IN ({placeholders})
+            ORDER BY r.updated_at DESC
             LIMIT ?;
             """,
             params,
         )
         rows = cur.fetchall()
-        out: List[MemoryRecord] = []
+        q_vec, q_norm = _embed(q)
+        now = time.time()
+        scored: List[tuple[float, sqlite3.Row]] = []
         for r in rows:
+            try:
+                vec = json.loads(r["vector_json"]) if r["vector_json"] else None
+                norm = float(r["norm"]) if r["norm"] else None
+            except Exception:
+                vec = None
+                norm = None
+            if not vec or not norm:
+                try:
+                    vec, norm = _embed(r["content"])
+                    self._upsert_embedding(int(r["id"]), r["content"], now=now)
+                except Exception:
+                    vec, norm = None, None
+            if vec and norm:
+                dot = sum((qv * rv for qv, rv in zip(q_vec, vec)))
+                cosine = dot / (q_norm * norm) if (q_norm and norm) else 0.0
+            else:
+                cosine = 0.0
+            age = max(0.0, now - float(r["updated_at"]))
+            recency = 1.0 / (1.0 + (age / 86400.0))
+            score = (0.85 * cosine) + (0.15 * recency)
+            scored.append((score, r))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        out: List[MemoryRecord] = []
+        for _, r in scored[: max(1, limit)]:
             out.append(
                 MemoryRecord(
                     kind=r["kind"],
@@ -129,4 +219,3 @@ class SqliteMemoryStore:
                 )
             )
         return out
-

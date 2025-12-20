@@ -25,6 +25,7 @@ class RunnerConfig:
     cost_budget_usd: Optional[float] = None
     loop_repeat_threshold: int = 3
     loop_window: int = 8
+    no_state_change_threshold: int = 3
     tool_max_retries: int = 2
     tool_retry_backoff_seconds: float = 0.8
     llm_max_retries: int = 2

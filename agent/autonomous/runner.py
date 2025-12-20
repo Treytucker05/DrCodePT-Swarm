@@ -137,11 +137,25 @@ class AgentRunner:
         steps_executed = 0
         consecutive_no_progress = 0
         last_plan_hash: Optional[str] = None
+        last_state_fingerprint = state.state_fingerprint()
+        same_state_steps = 0
 
         current_plan: Optional[Plan] = None
 
         try:
             while True:
+                if self._kill_switch_triggered():
+                    return self._stop(
+                        tracer=tracer,
+                        memory_store=memory_store,
+                        success=False,
+                        reason="kill_switch",
+                        steps=steps_executed,
+                        run_id=run_id,
+                        llm_stats=tracked_llm,
+                        task=task,
+                        state=state,
+                    )
                 if steps_executed >= self.cfg.max_steps:
                     return self._stop(
                         tracer=tracer,
@@ -315,7 +329,7 @@ class AgentRunner:
                 obs = perceptor.tool_result_to_observation(step.tool_name, tool_result)
                 state.add_observation(obs)
 
-                if tool_result.metadata.get("unsafe_blocked") is True:
+                if tool_result.metadata.get("unsafe_blocked") is True or tool_result.metadata.get("approval_required") is True:
                     tracer.log(
                         {
                             "type": "step",
@@ -324,14 +338,18 @@ class AgentRunner:
                             "action": {"tool_name": step.tool_name, "tool_args": step.tool_args},
                             "result": self._dump(tool_result),
                             "observation": self._dump(obs),
-                            "reflection": {"status": "replan", "explanation_short": "unsafe_blocked", "next_hint": tool_result.error or ""},
+                            "reflection": {
+                                "status": "replan",
+                                "explanation_short": "approval_required" if tool_result.metadata.get("approval_required") else "unsafe_blocked",
+                                "next_hint": tool_result.error or "",
+                            },
                         }
                     )
                     return self._stop(
                         tracer=tracer,
                         memory_store=memory_store,
                         success=False,
-                        reason="unsafe_action_blocked",
+                        reason="approval_required" if tool_result.metadata.get("approval_required") else "unsafe_action_blocked",
                         steps=steps_executed + 1,
                         run_id=run_id,
                         llm_stats=tracked_llm,
@@ -377,6 +395,26 @@ class AgentRunner:
                 )
 
                 steps_executed += 1
+
+                # Stuck detection: no state change across steps
+                current_fp = state.state_fingerprint()
+                if current_fp == last_state_fingerprint:
+                    same_state_steps += 1
+                else:
+                    same_state_steps = 0
+                    last_state_fingerprint = current_fp
+                if same_state_steps >= self.cfg.no_state_change_threshold:
+                    return self._stop(
+                        tracer=tracer,
+                        memory_store=memory_store,
+                        success=False,
+                        reason="no_state_change",
+                        steps=steps_executed,
+                        run_id=run_id,
+                        llm_stats=tracked_llm,
+                        task=task,
+                        state=state,
+                    )
 
                 self._memory_updates(memory_store, task, step, tool_result, obs, reflection, run_id, tracer)
 
@@ -496,6 +534,22 @@ class AgentRunner:
             return SqliteMemoryStore(path)
         except Exception:
             return None
+
+    def _kill_switch_triggered(self) -> bool:
+        if os.getenv("AGENT_KILL_SWITCH", "").strip().lower() in {"1", "true", "yes", "y"}:
+            return True
+        kill_path = os.getenv("AGENT_KILL_FILE")
+        if kill_path:
+            try:
+                return Path(kill_path).exists()
+            except Exception:
+                return False
+        # Default kill switch file at repo root
+        try:
+            repo_root = Path(__file__).resolve().parents[2]
+            return (repo_root / "kill.switch").exists()
+        except Exception:
+            return False
 
     def _retrieve_memories(self, store: Optional[SqliteMemoryStore], task: str) -> List[dict]:
         if store is None:
@@ -621,6 +675,18 @@ class AgentRunner:
             result = tools.call("web_close_modal", {}, ctx)
             obs = Perceptor().tool_result_to_observation("web_close_modal", result)
             tracer.log({"type": "recovery", "tool": "web_close_modal", "result": self._dump(result)})
+        if tools.has_tool("web_find_elements"):
+            query = None
+            if isinstance(step.tool_args, dict):
+                query = step.tool_args.get("query") or step.tool_args.get("text")
+            if isinstance(query, str) and query:
+                result = tools.call("web_find_elements", {"query": query}, ctx)
+                obs = Perceptor().tool_result_to_observation("web_find_elements", result)
+                tracer.log({"type": "recovery", "tool": "web_find_elements", "result": self._dump(result)})
+        if tools.has_tool("web_scroll"):
+            result = tools.call("web_scroll", {"delta_y": 800}, ctx)
+            obs = Perceptor().tool_result_to_observation("web_scroll", result)
+            tracer.log({"type": "recovery", "tool": "web_scroll", "result": self._dump(result)})
         if tools.has_tool("web_gui_snapshot"):
             # Attempt to refresh the grounding view if a URL is available.
             url = None
