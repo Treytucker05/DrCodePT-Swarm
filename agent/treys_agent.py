@@ -80,6 +80,11 @@ def show_help() -> None:
   Example:
     - Mail: review my Yahoo inbox and suggest rules
 
+{GREEN}Collab (interactive planning):{RESET}
+  Collab: [goal]
+  Example:
+    - Collab: reorganize my Yahoo folders and clean rules
+
 {GREEN}Smart mode selection:{RESET}
   If a request could be either research or execution, the agent will ask which you want.
   You can still force research with "Research:" (and pick light/moderate/deep when prompted).
@@ -365,6 +370,16 @@ def main() -> None:
             from agent.modes.mail_supervised import run_mail_supervised
 
             run_mail_supervised(task)
+            continue
+
+        if lower.startswith("collab:"):
+            task = user_input.split(":", 1)[1].strip()
+            if not task:
+                print(f"{YELLOW}[INFO]{RESET} Provide a goal after 'Collab:'.")
+                continue
+            from agent.modes.collab import run_collab_session
+
+            run_collab_session(task)
             continue
 
         intent = _infer_intent(user_input)
