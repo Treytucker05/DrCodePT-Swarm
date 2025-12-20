@@ -466,6 +466,16 @@ def execute_playbook(playbook_id: str, playbook_data: dict, *, run_path: Optiona
         step_type = str(step.get("type") or "shell").lower()
         desc = step.get("description") or step.get("name") or step_type
 
+        if step_type == "shell" and not _is_unsafe_mode():
+            if not bool(step.get("allow_shell")):
+                print(f"{RED}    Failed:{RESET} Shell step blocked (set allow_shell=true or enable unsafe_mode).")
+                return False
+
+        if step_type in {"python", "python_inline", "python_file", "python_script"} and not _is_unsafe_mode():
+            if not bool(step.get("allow_python")):
+                print(f"{RED}    Failed:{RESET} Python step blocked (set allow_python=true or enable unsafe_mode).")
+                return False
+
         if step_type == "browser":
             # Allow either direct browser actions or nested `browser_steps`.
             if "browser_steps" in step and isinstance(step.get("browser_steps"), list):
