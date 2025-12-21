@@ -298,6 +298,21 @@ _SIMPLE_QUESTION_PATTERNS = {
     "how can i",
 }
 
+_EXECUTE_PREFIXES = ("auto:", "plan:", "research:", "collab:", "mail:", "mail task:", "team:", "think:")
+
+
+def _confirm_execution(prompt: str) -> bool:
+    choice = input(prompt).strip().lower()
+    return choice in {"y", "yes", "sure", "ok", "okay", "run", "do it", "doit"}
+
+
+def _should_confirm(user_input: str) -> bool:
+    val = (os.getenv("TREYS_AGENT_CONFIRM_EXECUTION") or "1").strip().lower()
+    if val in {"0", "false", "no", "off"}:
+        return False
+    lowered = user_input.strip().lower()
+    return not lowered.startswith(_EXECUTE_PREFIXES)
+
 
 def _is_simple_question(text: str) -> bool:
     lowered = text.lower().strip()
@@ -532,6 +547,13 @@ def _maybe_route_mail(user_input: str, *, intent: str | None = None) -> bool:
         _run_mail_guided(objective)
         return True
     if intent == "mail":
+        if _should_confirm(user_input):
+            ok = _confirm_execution(
+                f"{YELLOW}[PROMPT]{RESET} Launch mail workflow for: \"{user_input}\"? (y/N) "
+            )
+            if not ok:
+                print(f"{YELLOW}[INFO]{RESET} Okay—tell me what you want and I can run it when you're ready.")
+                return True
         _run_mail_guided(user_input)
         return True
     return False
@@ -848,6 +870,14 @@ def main() -> None:
             mode_research(user_input)
             continue
 
+        if user_input.strip().endswith("?") and _should_confirm(user_input):
+            ok = _confirm_execution(
+                f"{YELLOW}[PROMPT]{RESET} I can act on this if you want. Run it as a task? (y/N) "
+            )
+            if not ok:
+                print(f"{YELLOW}[INFO]{RESET} Got it. Tell me what you want, and I'll ask before running anything.")
+                continue
+
         # Check if this is a complex task that should skip playbook matching
         # and go straight to autonomous mode (e.g., "organize", "consolidate", "help me")
         complex_task_keywords = [
@@ -860,19 +890,47 @@ def main() -> None:
 
         # If it's a complex task, skip playbook matching and use autonomous mode
         if is_complex_task:
+            if _should_confirm(user_input):
+                ok = _confirm_execution(
+                    f"{YELLOW}[PROMPT]{RESET} Run this task now? (y/N) "
+                )
+                if not ok:
+                    print(f"{YELLOW}[INFO]{RESET} Okay—tell me what you want and I can run it when you're ready.")
+                    continue
             mode_autonomous(user_input, unsafe_mode=unsafe_mode)
             continue
 
         # Default: run a matching playbook; otherwise run the true autonomous loop.
         pb_id, pb_data = find_matching_playbook(user_input, playbooks)
         if pb_data:
+            if _should_confirm(user_input):
+                ok = _confirm_execution(
+                    f"{YELLOW}[PROMPT]{RESET} Run playbook \"{pb_id}\" now? (y/N) "
+                )
+                if not ok:
+                    print(f"{YELLOW}[INFO]{RESET} Okay—tell me what you want and I can run it when you're ready.")
+                    continue
             status = mode_execute(user_input)
             playbooks = load_playbooks()
             if status == "failed":
                 print(f"{YELLOW}[INFO]{RESET} Playbook failed; falling back to Auto mode.")
+                if _should_confirm(user_input):
+                    ok = _confirm_execution(
+                        f"{YELLOW}[PROMPT]{RESET} Run Auto mode instead? (y/N) "
+                    )
+                    if not ok:
+                        print(f"{YELLOW}[INFO]{RESET} Okay—tell me what you want and I can run it when you're ready.")
+                        continue
                 mode_autonomous(user_input, unsafe_mode=unsafe_mode)
             continue
 
+        if _should_confirm(user_input):
+            ok = _confirm_execution(
+                f"{YELLOW}[PROMPT]{RESET} Run this task now? (y/N) "
+            )
+            if not ok:
+                print(f"{YELLOW}[INFO]{RESET} Okay—tell me what you want and I can run it when you're ready.")
+                continue
         mode_autonomous(user_input, unsafe_mode=unsafe_mode)
 
 
