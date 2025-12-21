@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 from agent.schemas.task_schema import TaskDefinition, TaskType, load_task_from_yaml
 from agent.tools.registry import get_tool
 from agent.verifiers.registry import get_verifier
-from agent.logging.run_logger import init_run, log_event, finalize_run
+from agent.agent_logging.run_logger import init_run, log_event, finalize_run
 from agent.evidence.capture import bundle_evidence
 from agent.supervisor.hardening import _last_events, self_heal_browser_failure
 

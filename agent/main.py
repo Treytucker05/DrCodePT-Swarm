@@ -18,7 +18,7 @@ if str(ROOT.parent) not in sys.path:
 
 from agent.schemas.task_schema import Task, TaskDefinition, load_task_from_yaml
 from agent.supervisor.supervisor import run_task
-from agent.logging.run_logger import init_run, log_event, finalize_run
+from agent.agent_logging.run_logger import init_run, log_event, finalize_run
 from agent.learning.learning_store import load_playbook
 
 load_dotenv()

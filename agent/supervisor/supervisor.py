@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from agent.learning.self_healing_llm import apply_self_healing, log_healing_attempt
-from agent.logging.run_logger import finalize_run, init_run, log_event
+from agent.agent_logging.run_logger import finalize_run, init_run, log_event
 from agent.schemas.task_schema import OnFailAction, TaskDefinition, TaskType, load_task_from_yaml
 from agent.supervisor.hardening import _last_events, abort, escalate, trigger_handoff, wait_for_continue
 from agent.tools.base import ToolResult

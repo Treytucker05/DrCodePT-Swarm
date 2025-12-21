@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
-from agent.logging.run_logger import finalize_run, log_event
+from agent.agent_logging.run_logger import finalize_run, log_event
 
 
 HANDOFF_DIR = Path(__file__).resolve().parents[1] / "handoff"
@@ -91,4 +91,3 @@ __all__ = [
     "abort",
     "self_heal_browser_failure",
 ]
-

@@ -664,7 +664,7 @@ class TestStructuredLogging:
 
     def test_logger_creates_json_output(self, tmp_path: Path) -> None:
         """Logger should produce valid JSON in file output."""
-        from agent.logging.structured_logger import AgentLogger, get_logger
+        from agent.agent_logging.structured_logger import AgentLogger, get_logger
 
         log_file = tmp_path / "test.log"
         AgentLogger.configure(level="DEBUG", log_dir=tmp_path, log_file="test.log")
@@ -686,7 +686,7 @@ class TestStructuredLogging:
 
     def test_logger_context_preservation(self, tmp_path: Path) -> None:
         """Logger should preserve context in output."""
-        from agent.logging.structured_logger import AgentLogger, get_logger
+        from agent.agent_logging.structured_logger import AgentLogger, get_logger
 
         AgentLogger.configure(level="DEBUG", log_dir=tmp_path, log_file="context.log")
 
