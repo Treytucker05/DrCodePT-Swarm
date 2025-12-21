@@ -73,6 +73,19 @@ QUESTIONER_SCHEMA: Dict[str, Any] = {
     "required": ["questions", "rationale"],
 }
 
+ANSWER_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "answers": {
+            "type": "object",
+            "additionalProperties": {"type": "string"},
+        },
+        "missing_required": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["answers", "missing_required"],
+}
+
 PLANNER_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -321,6 +334,19 @@ def _load_json_file(path: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
+def _write_state(run_dir: Path, state: str) -> None:
+    path = run_dir / "session_state.json"
+    payload = {"state": state, "time_utc": datetime.now(timezone.utc).isoformat()}
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _read_state(run_dir: Path) -> Optional[str]:
+    data = _load_json_file(run_dir / "session_state.json")
+    if not data:
+        return None
+    return data.get("state")
+
+
 def _planned_moves_count(plan: Dict[str, Any]) -> int:
     total = 0
     for rule in plan.get("rules") or []:
@@ -389,6 +415,34 @@ def _print_artifact_paths(run_dir: Optional[Path]) -> None:
     chat_log_path = run_dir / "chat_log.md"
     print(f"[MAIL GUIDED] Report path: {report_path}")
     print(f"[MAIL GUIDED] Chat log path: {chat_log_path}")
+
+
+def _questions_path(run_dir: Path) -> Path:
+    return run_dir / "questions.json"
+
+
+def _answers_path(run_dir: Path) -> Path:
+    return run_dir / "answers.json"
+
+
+def _write_questions(run_dir: Path, questions: List[str]) -> None:
+    payload = {
+        "questions": [
+            {"id": f"q{idx+1}", "text": text, "required": True}
+            for idx, text in enumerate(questions)
+        ]
+    }
+    _questions_path(run_dir).write_text(
+        json.dumps(payload, indent=2), encoding="utf-8"
+    )
+
+
+def _load_questions(run_dir: Path) -> Optional[Dict[str, Any]]:
+    return _load_json_file(_questions_path(run_dir))
+
+
+def _load_answers(run_dir: Path) -> Optional[Dict[str, Any]]:
+    return _load_json_file(_answers_path(run_dir))
 def _run_executor(args: List[str]) -> subprocess.CompletedProcess[str]:
     cmd = [sys.executable, "-m", "agent.autonomous.tools.mail_yahoo_imap_executor", *args]
     return subprocess.run(cmd, text=True, capture_output=True, encoding="utf-8", errors="ignore")
@@ -425,8 +479,61 @@ def run_mail_guided(objective: str | None = None) -> None:
     latest_scan = _newest_run_dir()
     scan_report_path = latest_scan / "mail_report.md" if latest_scan else Path("unknown")
     scan_summary = _scan_folder_summary(scan_report_path)
+    if latest_scan is not None:
+        _write_state(latest_scan, "SCAN_DONE")
 
     qa_pairs: List[Tuple[str, str]] = []
+
+    if latest_scan is not None:
+        existing_questions = _load_questions(latest_scan)
+        existing_answers = _load_answers(latest_scan)
+        if existing_questions and not existing_answers:
+            print("[MAIL GUIDED] Found pending questions. Please answer below.")
+            _write_state(latest_scan, "WAITING_FOR_ANSWERS")
+            questions_list = existing_questions.get("questions") or []
+            qa_pairs: List[Tuple[str, str]] = []
+            for q in questions_list:
+                qid = q.get("id") or "q"
+                qtext = q.get("text") or ""
+                ans = input(f"- {qid}: {qtext} ").strip()
+                qa_pairs.append((qid, ans))
+
+            print("Answer the questions, then type CONTINUE.")
+            confirm = input("> ").strip().lower()
+            if confirm != "continue":
+                print("[MAIL GUIDED] CONTINUE not confirmed. Exiting.")
+                return
+
+            raw_answers = {"answers": {qid: ans for qid, ans in qa_pairs}}
+            _answers_path(latest_scan).write_text(
+                json.dumps(raw_answers, indent=2), encoding="utf-8"
+            )
+
+            parser_prompt = (
+                "You are AnswerParser. Validate answers for required questions. "
+                "Return JSON: {answers: {qid: answer}, missing_required: [qid...]}. "
+                f"Questions: {json.dumps(questions_list)}\n"
+                f"Answers: {json.dumps(raw_answers)}"
+            )
+            parsed = _run_codex_json(parser_prompt, ANSWER_SCHEMA, profile="reason", timeout_seconds=60)
+            missing = parsed.get("missing_required") or []
+            got = sorted([k for k, v in (parsed.get("answers") or {}).items() if v])
+            if missing:
+                print(
+                    f"[MAIL GUIDED] I captured answers for {', '.join(got)}. "
+                    f"Missing: {', '.join(missing)}. Please answer: {', '.join(missing)}"
+                )
+                _write_state(latest_scan, "WAITING_FOR_ANSWERS")
+                return
+            print(f"[MAIL GUIDED] I captured answers for: {', '.join(got)}")
+            _answers_path(latest_scan).write_text(
+                json.dumps(parsed, indent=2), encoding="utf-8"
+            )
+            _write_state(latest_scan, "ANSWERS_CONFIRMED")
+            # Proceed directly to planner; skip Questioner on this pass.
+            execution_intent = False
+            qa_pairs = list((parsed.get("answers") or {}).items())
+
     proc_after = proc_before
     diff_summary = "no procedure changes"
 
@@ -440,30 +547,42 @@ def run_mail_guided(objective: str | None = None) -> None:
         execution_intent = False
 
     if not execution_intent:
-        questioner_prompt = (
-            "You are the Questioner. Ask up to 5 clarifying questions to safely update "
-            "the mail procedure. If no clarification is needed, return an empty list.\n"
-            f"Objective: {objective}\n"
-            f"Current procedure JSON:\n{proc_json}\n"
-            f"IMAP scan folders: {scan_summary[:1000] if scan_summary else '(none)'}\n"
-            "Return JSON: {questions: [..], rationale: string}."
-        )
+        questions: List[str] = []
+        if not qa_pairs:
+            questioner_prompt = (
+                "You are the Questioner. Ask up to 5 clarifying questions to safely update "
+                "the mail procedure. If no clarification is needed, return an empty list.\n"
+                f"Objective: {objective}\n"
+                f"Current procedure JSON:\n{proc_json}\n"
+                f"IMAP scan folders: {scan_summary[:1000] if scan_summary else '(none)'}\n"
+                "Return JSON: {questions: [..], rationale: string}."
+            )
 
-        print("[MAIL GUIDED] Running Questioner...")
-        try:
-            q_out = _run_codex_json(questioner_prompt, QUESTIONER_SCHEMA, profile="reason", timeout_seconds=60)
-            questions = [q for q in (q_out.get("questions") or []) if isinstance(q, str)]
-        except Exception as exc:
-            print(f"[WARN] Questioner failed: {exc}")
-            questions = []
+            print("[MAIL GUIDED] Running Questioner...")
+            try:
+                q_out = _run_codex_json(questioner_prompt, QUESTIONER_SCHEMA, profile="reason", timeout_seconds=60)
+                questions = [q for q in (q_out.get("questions") or []) if isinstance(q, str)]
+            except Exception as exc:
+                print(f"[WARN] Questioner failed: {exc}")
+                questions = []
 
         if questions:
-            print("[MAIL GUIDED] Please answer the questions:")
-            for q in questions:
-                ans = input(f"- {q} ").strip()
-                qa_pairs.append((q, ans))
+            if latest_scan is None:
+                print("[WARN] No run directory found; cannot persist questions.")
+                return
+            _write_questions(latest_scan, questions)
+            _write_state(latest_scan, "WAITING_FOR_ANSWERS")
+            print("[MAIL GUIDED] Questions saved. Answer the questions, then type CONTINUE.")
+            print(f"[MAIL GUIDED] Questions path: {_questions_path(latest_scan)}")
+            return
         else:
             print("[MAIL GUIDED] No clarifying questions.")
+
+        if latest_scan is not None:
+            parsed_answers = _load_answers(latest_scan)
+            if parsed_answers and parsed_answers.get("answers"):
+                qa_pairs = list(parsed_answers["answers"].items())
+                _write_state(latest_scan, "ANSWERS_CONFIRMED")
 
         planner_prompt = (
             "You are the Planner. Update the mail procedure JSON based on the objective "
@@ -489,6 +608,11 @@ def run_mail_guided(objective: str | None = None) -> None:
         save_procedure(proc_after)
         diff_summary = _summarize_diff(proc_before, proc_after)
         print(f"[MAIL GUIDED] Procedure saved. Diff: {diff_summary}")
+        if qa_pairs:
+            answered = ", ".join([q for q, _ in qa_pairs])
+            print(f"[MAIL GUIDED] Planner used your answers: {answered}")
+        if latest_scan is not None:
+            _write_state(latest_scan, "PLANNING")
     else:
         print("[MAIL GUIDED] Execution intent detected; reusing existing rules without planner.")
 
@@ -498,6 +622,9 @@ def run_mail_guided(objective: str | None = None) -> None:
         dry_args.append("--no-create-folders")
     dry_proc = _run_executor(dry_args)
     _print_process_output(dry_proc)
+    latest_run = _newest_run_dir()
+    if latest_run is not None:
+        _write_state(latest_run, "DRY_RUN")
 
     latest_run = _newest_run_dir()
     if latest_run is None:
@@ -595,6 +722,7 @@ def run_mail_guided(objective: str | None = None) -> None:
     confirm = input("Type EXECUTE to run the move (exactly): ").strip()
     if confirm.lower() != "execute":
         print("[MAIL GUIDED] EXECUTE not confirmed. Exiting.")
+        _print_artifact_paths(latest_run)
         return
 
     print("[MAIL GUIDED] Running IMAP execute...")
@@ -605,6 +733,8 @@ def run_mail_guided(objective: str | None = None) -> None:
         exec_args.extend(["--plan-path", str(latest_run / "mail_plan.json")])
     exec_proc = _run_executor(exec_args)
     _print_process_output(exec_proc)
+    if latest_run is not None:
+        _write_state(latest_run, "EXECUTING")
 
     latest_run = _newest_run_dir()
     report_path = latest_run / "mail_report.md" if latest_run else Path("unknown")
@@ -647,6 +777,7 @@ def run_mail_guided(objective: str | None = None) -> None:
             stage="execute",
         )
         _print_artifact_paths(latest_run)
+        _write_state(latest_run, "DONE")
 
     if exec_proc.returncode != 0:
         raise SystemExit(exec_proc.returncode)

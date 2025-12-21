@@ -25,7 +25,11 @@ def test_mail_guided_no_create_flag(monkeypatch, tmp_path):
 
     monkeypatch.setattr(mail_guided, "_run_executor", _fake_run_executor)
     monkeypatch.setattr(mail_guided, "_newest_run_dir", lambda: run_dir)
-    monkeypatch.setattr(mail_guided, "_run_codex_json", lambda *args, **kwargs: {"questions": [], "rationale": ""})
+    monkeypatch.setattr(
+        mail_guided,
+        "_run_codex_json",
+        lambda *args, **kwargs: {"questions": [], "rationale": ""},
+    )
     monkeypatch.setattr(mail_guided, "_planned_moves_count", lambda _plan: 0)
 
     mail_guided.run_mail_guided("Execute. Do not create folders.")
