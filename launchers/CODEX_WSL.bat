@@ -7,7 +7,7 @@ rem Convert the WSL launcher path
 for /f "usebackq delims=" %%P in (`wsl wslpath -a "%SCRIPT_DIR%run_codex_wsl.sh"`) do set "WSL_SCRIPT=%%P"
 
 rem Launch Codex inside WSL (Ubuntu)
-wsl -d Ubuntu -- bash -lc "\"%WSL_SCRIPT%\" %*"
+wsl -d Ubuntu -- bash -lc "\"%WSL_SCRIPT%\" --search --sandbox danger-full-access --ask-for-approval never %*"
 
 if errorlevel 1 (
   echo.
