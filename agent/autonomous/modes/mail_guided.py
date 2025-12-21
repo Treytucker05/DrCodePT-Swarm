@@ -367,6 +367,28 @@ def _scan_folder_summary(report_path: Path) -> str:
             if line.startswith("- "):
                 folders.append(line[2:].strip())
     return ", ".join(folders)
+
+
+def _objective_disables_folder_creation(objective: str) -> bool:
+    low = objective.lower()
+    return any(
+        phrase in low
+        for phrase in (
+            "do not create folders",
+            "do not create any new folders",
+            "do not create new folders",
+            "no new folders",
+        )
+    )
+
+
+def _print_artifact_paths(run_dir: Optional[Path]) -> None:
+    if not run_dir:
+        return
+    report_path = run_dir / "mail_report.md"
+    chat_log_path = run_dir / "chat_log.md"
+    print(f"[MAIL GUIDED] Report path: {report_path}")
+    print(f"[MAIL GUIDED] Chat log path: {chat_log_path}")
 def _run_executor(args: List[str]) -> subprocess.CompletedProcess[str]:
     cmd = [sys.executable, "-m", "agent.autonomous.tools.mail_yahoo_imap_executor", *args]
     return subprocess.run(cmd, text=True, capture_output=True, encoding="utf-8", errors="ignore")
@@ -390,9 +412,15 @@ def run_mail_guided(objective: str | None = None) -> None:
     proc_before = load_procedure()
     proc_json = json.dumps(proc_before.model_dump(), indent=2)
     execution_intent = _objective_implies_execution(objective)
+    no_create_folders = _objective_disables_folder_creation(objective)
+    if no_create_folders:
+        print("[MAIL GUIDED] Folder creation disabled by objective.")
 
     print("[MAIL GUIDED] Running IMAP scan...")
-    scan_proc = _run_executor(["--scan-all-folders"])
+    scan_args = ["--scan-all-folders"]
+    if no_create_folders:
+        scan_args.append("--no-create-folders")
+    scan_proc = _run_executor(scan_args)
     _print_process_output(scan_proc)
     latest_scan = _newest_run_dir()
     scan_report_path = latest_scan / "mail_report.md" if latest_scan else Path("unknown")
@@ -465,7 +493,10 @@ def run_mail_guided(objective: str | None = None) -> None:
         print("[MAIL GUIDED] Execution intent detected; reusing existing rules without planner.")
 
     print("[MAIL GUIDED] Running IMAP dry-run...")
-    dry_proc = _run_executor(["--dry-run"])
+    dry_args = ["--dry-run"]
+    if no_create_folders:
+        dry_args.append("--no-create-folders")
+    dry_proc = _run_executor(dry_args)
     _print_process_output(dry_proc)
 
     latest_run = _newest_run_dir()
@@ -481,6 +512,7 @@ def run_mail_guided(objective: str | None = None) -> None:
             report_path=report_path,
             stage="dry-run",
         )
+        _print_artifact_paths(latest_run)
 
     # Auto-recover if objective implies moves but planned_moves == 0
     plan_data = _load_json_file(latest_run / "mail_plan.json") if latest_run else None
@@ -488,7 +520,10 @@ def run_mail_guided(objective: str | None = None) -> None:
         zero_rules = _rules_with_zero_moves(plan_data)
         if zero_rules:
             print("[MAIL GUIDED] No planned moves; running scan-all-folders...")
-            scan_proc = _run_executor(["--scan-all-folders"])
+            scan_args = ["--scan-all-folders"]
+            if no_create_folders:
+                scan_args.append("--no-create-folders")
+            scan_proc = _run_executor(scan_args)
             _print_process_output(scan_proc)
 
             latest_run = _newest_run_dir()
@@ -525,7 +560,10 @@ def run_mail_guided(objective: str | None = None) -> None:
                         save_procedure(proc_update)
 
             print("[MAIL GUIDED] Re-running IMAP dry-run after scan...")
-            dry_proc = _run_executor(["--dry-run"])
+            dry_args = ["--dry-run"]
+            if no_create_folders:
+                dry_args.append("--no-create-folders")
+            dry_proc = _run_executor(dry_args)
             _print_process_output(dry_proc)
 
             latest_run = _newest_run_dir()
@@ -539,25 +577,33 @@ def run_mail_guided(objective: str | None = None) -> None:
                     report_path=report_path,
                     stage="dry-run-retry",
                 )
+                _print_artifact_paths(latest_run)
 
             plan_data = _load_json_file(latest_run / "mail_plan.json") if latest_run else None
 
     if plan_data and _objective_implies_moves(objective):
         if _planned_moves_count(plan_data) == 0:
             print("[MAIL GUIDED] Planned moves still 0; stopping before execute.")
+            _print_artifact_paths(latest_run)
             return
 
     if plan_data and _planned_moves_count(plan_data) == 0:
         print("No moves planned; ending session.")
+        _print_artifact_paths(latest_run)
         return
 
     confirm = input("Type EXECUTE to run the move (exactly): ").strip()
-    if confirm != "EXECUTE":
+    if confirm.lower() != "execute":
         print("[MAIL GUIDED] EXECUTE not confirmed. Exiting.")
         return
 
     print("[MAIL GUIDED] Running IMAP execute...")
-    exec_proc = _run_executor(["--execute", "--max-per-rule", "1"])
+    exec_args = ["--execute"]
+    if no_create_folders:
+        exec_args.append("--no-create-folders")
+    if latest_run is not None:
+        exec_args.extend(["--plan-path", str(latest_run / "mail_plan.json")])
+    exec_proc = _run_executor(exec_args)
     _print_process_output(exec_proc)
 
     latest_run = _newest_run_dir()
@@ -575,9 +621,14 @@ def run_mail_guided(objective: str | None = None) -> None:
     )
 
     print("[MAIL GUIDED] Running Critic...")
-    c_out = _run_codex_json(critic_prompt, CRITIC_SCHEMA, profile="reason", timeout_seconds=60)
-    critic_summary = c_out.get("summary", "")
-    critic_suggestions = c_out.get("suggestions") or []
+    critic_summary = ""
+    critic_suggestions = []
+    try:
+        c_out = _run_codex_json(critic_prompt, CRITIC_SCHEMA, profile="reason", timeout_seconds=60)
+        critic_summary = c_out.get("summary", "")
+        critic_suggestions = c_out.get("suggestions") or []
+    except Exception as exc:
+        print(f"[WARN] Critic failed: {exc}")
 
     if critic_summary:
         print(f"[MAIL GUIDED] Critic summary: {critic_summary}")
@@ -595,6 +646,7 @@ def run_mail_guided(objective: str | None = None) -> None:
             report_path=report_path,
             stage="execute",
         )
+        _print_artifact_paths(latest_run)
 
     if exec_proc.returncode != 0:
         raise SystemExit(exec_proc.returncode)

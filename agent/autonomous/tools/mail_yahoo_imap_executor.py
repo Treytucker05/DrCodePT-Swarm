@@ -195,6 +195,12 @@ def _is_protected(name: str, protected: List[str]) -> bool:
     return name in protected
 
 
+def _load_plan(path: Path) -> Dict:
+    if not path.is_file():
+        raise FileNotFoundError(f"Plan file not found: {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     mode = ap.add_mutually_exclusive_group()
@@ -205,6 +211,15 @@ def main() -> int:
         action="store_true",
         help="Scan all folders for rule matches (no moves)",
     )
+    ap.add_argument(
+        "--no-create-folders",
+        action="store_true",
+        help="Do not create missing target folders",
+    )
+    ap.add_argument(
+        "--plan-path",
+        help="Execute using a specific dry-run plan file",
+    )
     ap.add_argument("--max-per-rule", type=int, default=None)
     ap.add_argument("--host", default=DEFAULT_HOST)
     ap.add_argument("--port", default=DEFAULT_PORT)
@@ -214,6 +229,7 @@ def main() -> int:
     scan_mode = bool(args.scan_all_folders)
     execute = bool(args.execute) and not scan_mode
     dry_run = not execute
+    plan_path_arg = Path(args.plan_path).resolve() if args.plan_path else None
 
     proc = load_procedure()
     run_id = _run_id()
@@ -228,6 +244,8 @@ def main() -> int:
         "execute": execute,
         "dry_run": dry_run,
         "scan_all_folders": scan_mode,
+        "no_create_folders": bool(args.no_create_folders),
+        "plan_path": str(plan_path_arg) if plan_path_arg else None,
         "max_per_rule": args.max_per_rule,
         "procedure": proc.model_dump(),
         "source_folder": args.source,
@@ -243,6 +261,8 @@ def main() -> int:
         f"- execute: {execute}",
         f"- dry_run: {dry_run}",
         f"- scan_all_folders: {scan_mode}",
+        f"- no_create_folders: {bool(args.no_create_folders)}",
+        f"- plan_path: {str(plan_path_arg) if plan_path_arg else ''}",
         f"- source: {args.source}",
         "",
     ]
@@ -346,20 +366,35 @@ def main() -> int:
             else:
                 created = False
                 if not item["exists"]:
-                    try:
-                        created = ensure_folder(imap, target, execute=execute, report_lines=report_lines)
-                    except Exception as exc:
-                        success = False
-                        print(f"[ERR] Failed to create folder {target}: {exc}")
-                        report_lines.append(f"- create_failed: {target} error={exc}")
-                item["created"] = created
-                item["action"] = "ensure"
+                    if args.no_create_folders:
+                        print(f"[SKIP] Target missing and folder creation disabled: {target}")
+                        report_lines.append(f"- missing_target_no_create: {target}")
+                        item["action"] = "missing_no_create"
+                    else:
+                        try:
+                            created = ensure_folder(imap, target, execute=execute, report_lines=report_lines)
+                        except Exception as exc:
+                            success = False
+                            print(f"[ERR] Failed to create folder {target}: {exc}")
+                            report_lines.append(f"- create_failed: {target} error={exc}")
+                    item["created"] = created
+                else:
+                    item["created"] = False
+                    item["action"] = "ensure"
             plan["targets"].append(item)
         report_lines.append("")
 
         report_lines.append("## Rules")
         moved_total = 0
         matches_total = 0
+        plan_rules: Dict[str, Dict[str, object]] = {}
+        if execute and plan_path_arg:
+            plan_data = _load_plan(plan_path_arg)
+            for entry in plan_data.get("rules") or []:
+                name = entry.get("name")
+                if isinstance(name, str):
+                    plan_rules[name] = entry
+
         for rule in proc.rules:
             max_to_move = rule.max_messages
             if args.max_per_rule is not None:
@@ -386,47 +421,76 @@ def main() -> int:
                 plan["rules"].append(rule_entry)
                 continue
 
+            if args.no_create_folders and not folder_exists(folders, rule.to_folder):
+                success = False
+                print(
+                    f"[ERR] Rule '{rule.name}' target missing and folder creation disabled: {rule.to_folder}"
+                )
+                report_lines.append(
+                    f"- rule_missing_target_no_create: {rule.name} -> {rule.to_folder}"
+                )
+                rule_entry["status"] = "missing_target_no_create"
+                rule_entry["planned_moves"] = []
+                plan["rules"].append(rule_entry)
+                continue
+
             combos = build_search_tokens(rule)
             rule_entry["queries"] = combos
 
             planned_moves: List[Dict[str, str]] = []
-            seen_pairs: Dict[Tuple[str, str], bool] = {}
-            match_count = 0
-            folders_to_search = getattr(rule, "search_folders", None) or [args.source]
             searched_folders: List[str] = []
-            for folder in folders_to_search:
-                if folder == rule.to_folder:
-                    print(f"[SKIP] Rule '{rule.name}' source == destination: {folder}")
-                    continue
-                if _is_protected(folder, protected):
-                    print(f"[SKIP] Rule '{rule.name}' source folder protected: {folder}")
-                    report_lines.append(f"- rule_skip_protected_source: {rule.name} source={folder}")
-                    continue
-                searched_folders.append(folder)
-                try:
-                    for tokens in combos:
-                        print(f"[OK] Rule '{rule.name}' search in {folder}: {tokens or ['ALL']}")
-                        uids = search_uids(imap, folder, tokens)
-                        for uid in uids:
-                            pair = (folder, uid)
-                            if pair in seen_pairs:
-                                continue
-                            seen_pairs[pair] = True
-                            match_count += 1
-                            if len(planned_moves) < max_to_move:
-                                planned_moves.append({"source_folder": folder, "uid": uid})
-                except Exception as exc:
-                    success = False
-                    print(f"[ERR] Rule '{rule.name}' search failed in {folder}: {exc}")
-                    report_lines.append(f"- rule_search_failed: {rule.name} folder={folder} error={exc}")
-                    continue
-                if len(planned_moves) >= max_to_move:
-                    break
+            match_count = 0
+
+            if execute and plan_path_arg and rule.name in plan_rules:
+                planned_entry = plan_rules[rule.name]
+                planned_moves = list(planned_entry.get("planned_moves") or [])
+                if not planned_moves:
+                    planned_uids = planned_entry.get("planned_uids") or []
+                    source_folder = planned_entry.get("source_folder") or args.source
+                    planned_moves = [
+                        {"source_folder": source_folder, "uid": uid}
+                        for uid in planned_uids
+                        if isinstance(uid, str)
+                    ]
+                match_count = planned_entry.get("match_count") or len(planned_moves)
+                searched_folders = list(planned_entry.get("searched_folders") or [])
+            else:
+                seen_pairs: Dict[Tuple[str, str], bool] = {}
+                folders_to_search = getattr(rule, "search_folders", None) or [args.source]
+                for folder in folders_to_search:
+                    if folder == rule.to_folder:
+                        print(f"[SKIP] Rule '{rule.name}' source == destination: {folder}")
+                        continue
+                    if _is_protected(folder, protected):
+                        print(f"[SKIP] Rule '{rule.name}' source folder protected: {folder}")
+                        report_lines.append(f"- rule_skip_protected_source: {rule.name} source={folder}")
+                        continue
+                    searched_folders.append(folder)
+                    try:
+                        for tokens in combos:
+                            print(f"[OK] Rule '{rule.name}' search in {folder}: {tokens or ['ALL']}")
+                            uids = search_uids(imap, folder, tokens)
+                            for uid in uids:
+                                pair = (folder, uid)
+                                if pair in seen_pairs:
+                                    continue
+                                seen_pairs[pair] = True
+                                match_count += 1
+                                if len(planned_moves) < max_to_move:
+                                    planned_moves.append({"source_folder": folder, "uid": uid})
+                    except Exception as exc:
+                        success = False
+                        print(f"[ERR] Rule '{rule.name}' search failed in {folder}: {exc}")
+                        report_lines.append(f"- rule_search_failed: {rule.name} folder={folder} error={exc}")
+                        continue
+                    if len(planned_moves) >= max_to_move:
+                        break
 
             matches_total += match_count
             rule_entry["match_count"] = match_count
             rule_entry["planned_uids"] = [m["uid"] for m in planned_moves]
             rule_entry["planned_moves"] = planned_moves
+            rule_entry["searched_folders"] = searched_folders
             rule_entry["status"] = "planned"
 
             if dry_run:
@@ -434,13 +498,20 @@ def main() -> int:
                     f"[DRY] Rule '{rule.name}' planned moves: {len(planned_moves)} (searched: {', '.join(searched_folders)})"
                 )
                 report_lines.append(
-                    f"- rule: {rule.name} matched_total={match_count} planned={len(planned_moves)} moved_total=0"
+                    f"- rule: {rule.name} matched_total={match_count} planned={len(planned_moves)} attempted=0 moved_total=0"
                 )
                 plan["rules"].append(rule_entry)
                 continue
 
+            if args.max_per_rule is not None:
+                max_to_move = min(len(planned_moves), max(0, args.max_per_rule))
+            else:
+                max_to_move = len(planned_moves)
+            to_execute = planned_moves[:max_to_move]
+            attempted = 0
             moved = 0
-            for move in planned_moves:
+            for move in to_execute:
+                attempted += 1
                 ok, method = move_uid(imap, move["source_folder"], move["uid"], rule.to_folder)
                 if ok:
                     moved += 1
@@ -459,8 +530,9 @@ def main() -> int:
                     )
 
             report_lines.append(
-                f"- rule: {rule.name} matched_total={match_count} planned={len(planned_moves)} moved_total={moved}"
+                f"- rule: {rule.name} matched_total={match_count} planned={len(planned_moves)} attempted={attempted} moved_total={moved}"
             )
+            rule_entry["attempted"] = attempted
             rule_entry["moved"] = moved
             plan["rules"].append(rule_entry)
 
