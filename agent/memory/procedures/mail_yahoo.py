@@ -3,7 +3,7 @@
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -34,6 +34,13 @@ class MoveRule(BaseModel):
     search_folders: List[str] = Field(default_factory=lambda: ["INBOX"])
 
 
+class FolderMergeRule(BaseModel):
+    name: str
+    to_folder: str
+    source_folders: List[str] = Field(default_factory=list)
+    max_messages: int = 500
+
+
 class MailProcedure(BaseModel):
     version: str = "0.1"
     provider: Literal["yahoo"] = "yahoo"
@@ -42,6 +49,8 @@ class MailProcedure(BaseModel):
     # “desired end state” + rules
     target_folders: List[str] = Field(default_factory=list)
     rules: List[MoveRule] = Field(default_factory=list)
+    folder_merge_rules: List[FolderMergeRule] = Field(default_factory=list)
+    folder_merge_mapping: Dict[str, str] = Field(default_factory=dict)
 
     # guardrails
     protected_folders: List[str] = Field(

@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from agent.memory.procedures.mail_yahoo import load_procedure, MoveRule
+from agent.memory.procedures.mail_yahoo import FolderMergeRule, MoveRule, load_procedure
 
 DEFAULT_HOST = "imap.mail.yahoo.com"
 DEFAULT_PORT = 993
@@ -203,6 +203,12 @@ def _load_plan(path: Path) -> Dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
+    ap.add_argument(
+        "--mode",
+        choices=["rules", "folder_merge"],
+        default="rules",
+        help="Execution mode: rules (FROM/SUBJECT) or folder_merge",
+    )
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Plan only (default)")
     mode.add_argument("--execute", action="store_true", help="Execute moves")
@@ -226,6 +232,7 @@ def main() -> int:
     ap.add_argument("--source", default=DEFAULT_SOURCE)
     args = ap.parse_args()
 
+    plan_mode = args.mode
     scan_mode = bool(args.scan_all_folders)
     execute = bool(args.execute) and not scan_mode
     dry_run = not execute
@@ -244,6 +251,7 @@ def main() -> int:
         "execute": execute,
         "dry_run": dry_run,
         "scan_all_folders": scan_mode,
+        "mode": plan_mode,
         "no_create_folders": bool(args.no_create_folders),
         "plan_path": str(plan_path_arg) if plan_path_arg else None,
         "max_per_rule": args.max_per_rule,
@@ -261,6 +269,7 @@ def main() -> int:
         f"- execute: {execute}",
         f"- dry_run: {dry_run}",
         f"- scan_all_folders: {scan_mode}",
+        f"- mode: {plan_mode}",
         f"- no_create_folders: {bool(args.no_create_folders)}",
         f"- plan_path: {str(plan_path_arg) if plan_path_arg else ''}",
         f"- source: {args.source}",
@@ -286,6 +295,16 @@ def main() -> int:
         report_lines.append(f"## Folders ({len(folders)})")
         report_lines.extend([f"- {f}" for f in folders[:50]])
         report_lines.append("")
+
+        if scan_mode and plan_mode != "rules":
+            success = False
+            report_lines.append(
+                "- error: scan_all_folders only supported in rules mode"
+            )
+            _write_json(plan_path, plan)
+            _write_report(report_path, report_lines)
+            print("[ERR] scan-all-folders is only supported in rules mode.")
+            return 1
 
         if scan_mode:
             scan_results: Dict[str, Dict[str, int]] = {}
@@ -394,6 +413,173 @@ def main() -> int:
                 name = entry.get("name")
                 if isinstance(name, str):
                     plan_rules[name] = entry
+
+        if plan_mode == "folder_merge":
+            def _rule_limit(rule: FolderMergeRule) -> int:
+                max_to_move = rule.max_messages
+                if args.max_per_rule is not None:
+                    max_to_move = min(max_to_move, max(0, args.max_per_rule))
+                return max_to_move
+
+            report_lines.append("## Folder Merge Rules")
+            for rule in proc.folder_merge_rules:
+                max_to_move = _rule_limit(rule)
+                rule_entry: Dict[str, object] = {
+                    "name": rule.name,
+                    "to_folder": rule.to_folder,
+                    "source_folders": list(rule.source_folders),
+                    "max_messages": rule.max_messages,
+                    "max_per_rule": args.max_per_rule,
+                    "planned_limit": max_to_move,
+                    "planned_moves": [],
+                    "source_counts": {},
+                }
+
+                if _is_protected(rule.to_folder, protected):
+                    print(
+                        f"[SKIP] Merge rule '{rule.name}' targets protected folder: {rule.to_folder}"
+                    )
+                    report_lines.append(
+                        f"- merge_rule_skip_protected_target: {rule.name} -> {rule.to_folder}"
+                    )
+                    rule_entry["status"] = "skip_protected_target"
+                    plan["rules"].append(rule_entry)
+                    continue
+
+                if args.no_create_folders and not folder_exists(folders, rule.to_folder):
+                    success = False
+                    print(
+                        f"[ERR] Merge rule '{rule.name}' target missing and folder creation disabled: {rule.to_folder}"
+                    )
+                    report_lines.append(
+                        f"- merge_rule_missing_target_no_create: {rule.name} -> {rule.to_folder}"
+                    )
+                    rule_entry["status"] = "missing_target_no_create"
+                    plan["rules"].append(rule_entry)
+                    continue
+
+                planned_moves: List[Dict[str, str]] = []
+                source_counts: Dict[str, int] = {}
+                match_count = 0
+
+                if execute and plan_path_arg and rule.name in plan_rules:
+                    planned_entry = plan_rules[rule.name]
+                    planned_moves = list(planned_entry.get("planned_moves") or [])
+                    match_count = planned_entry.get("match_count") or len(planned_moves)
+                    source_counts = dict(planned_entry.get("source_counts") or {})
+                else:
+                    for folder in rule.source_folders:
+                        if folder == rule.to_folder:
+                            print(
+                                f"[SKIP] Merge rule '{rule.name}' source == destination: {folder}"
+                            )
+                            continue
+                        if _is_protected(folder, protected):
+                            print(
+                                f"[SKIP] Merge rule '{rule.name}' source folder protected: {folder}"
+                            )
+                            report_lines.append(
+                                f"- merge_rule_skip_protected_source: {rule.name} source={folder}"
+                            )
+                            continue
+                        try:
+                            uids = search_uids(imap, folder, ["ALL"])
+                        except Exception as exc:
+                            success = False
+                            print(
+                                f"[ERR] Merge rule '{rule.name}' search failed in {folder}: {exc}"
+                            )
+                            report_lines.append(
+                                f"- merge_rule_search_failed: {rule.name} folder={folder} error={exc}"
+                            )
+                            continue
+                        source_counts[folder] = len(uids)
+                        for uid in uids:
+                            match_count += 1
+                            if len(planned_moves) < max_to_move:
+                                planned_moves.append(
+                                    {
+                                        "source_folder": folder,
+                                        "uid": uid,
+                                        "to_folder": rule.to_folder,
+                                    }
+                                )
+                        if len(planned_moves) >= max_to_move:
+                            break
+
+                matches_total += match_count
+                rule_entry["match_count"] = match_count
+                rule_entry["planned_uids"] = [m["uid"] for m in planned_moves]
+                rule_entry["planned_moves"] = planned_moves
+                rule_entry["source_counts"] = source_counts
+                rule_entry["status"] = "planned"
+
+                report_lines.append(
+                    f"- merge_rule: {rule.name} matched_total={match_count} planned={len(planned_moves)}"
+                )
+                for folder, count in source_counts.items():
+                    report_lines.append(
+                        f"  - source: {folder} matches={count}"
+                    )
+
+                if dry_run:
+                    print(
+                        f"[DRY] Merge rule '{rule.name}' planned moves: {len(planned_moves)}"
+                    )
+                    plan["rules"].append(rule_entry)
+                    continue
+
+                if args.max_per_rule is not None:
+                    max_to_move = min(len(planned_moves), max(0, args.max_per_rule))
+                else:
+                    max_to_move = len(planned_moves)
+                to_execute = planned_moves[:max_to_move]
+                attempted = 0
+                moved = 0
+                for move in to_execute:
+                    attempted += 1
+                    ok, method = move_uid(
+                        imap, move["source_folder"], move["uid"], rule.to_folder
+                    )
+                    if ok:
+                        moved += 1
+                        moved_total += 1
+                        print(
+                            f"[OK] Moved UID {move['uid']} from {move['source_folder']} -> {rule.to_folder} via {method}"
+                        )
+                        report_lines.append(
+                            f"- moved: merge_rule={rule.name} source={move['source_folder']} uid={move['uid']} method={method}"
+                        )
+                    else:
+                        success = False
+                        print(f"[ERR] Failed to move UID {move['uid']}: {method}")
+                        report_lines.append(
+                            f"- move_failed: merge_rule={rule.name} source={move['source_folder']} uid={move['uid']} error={method}"
+                        )
+
+                report_lines.append(
+                    f"- merge_rule: {rule.name} matched_total={match_count} planned={len(planned_moves)} attempted={attempted} moved_total={moved}"
+                )
+                rule_entry["attempted"] = attempted
+                rule_entry["moved"] = moved
+                plan["rules"].append(rule_entry)
+
+            plan["summary"] = {
+                "rules_total": len(proc.folder_merge_rules),
+                "matches_total": matches_total,
+                "moved_total": moved_total,
+            }
+            report_lines.append("")
+            report_lines.append("## Summary")
+            report_lines.append(f"- rules_total: {len(proc.folder_merge_rules)}")
+            report_lines.append(f"- matches_total: {matches_total}")
+            report_lines.append(f"- moved_total: {moved_total}")
+
+            _write_json(plan_path, plan)
+            _write_report(report_path, report_lines)
+            print(f"[OK] Wrote plan: {plan_path}")
+            print(f"[OK] Wrote report: {report_path}")
+            return 0 if success else 1
 
         for rule in proc.rules:
             max_to_move = rule.max_messages

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from agent.memory.procedures.mail_yahoo import MailProcedure, MoveRule
+from agent.memory.procedures.mail_yahoo import FolderMergeRule, MailProcedure, MoveRule
 
 
 class DummyIMAP:
@@ -181,3 +181,24 @@ def test_execute_uses_planned_moves_count(tmp_path, monkeypatch):
     code = executor.main()
     assert code == 0
     assert len(moved) == 5
+
+
+def test_folder_merge_plans_from_source_folder(tmp_path, monkeypatch):
+    rule = FolderMergeRule(
+        name="merge_deliveries",
+        to_folder="Archive",
+        source_folders=["Deliveries"],
+        max_messages=2,
+    )
+    proc = MailProcedure(target_folders=["Archive"], folder_merge_rules=[rule])
+    search_map = {"Deliveries": ["10", "11"], "INBOX": [], "Archive": []}
+    plan = _run_executor(
+        tmp_path,
+        monkeypatch,
+        proc,
+        search_map,
+        argv=["prog", "--dry-run", "--mode", "folder_merge"],
+    )
+    planned_moves = plan["rules"][0].get("planned_moves")
+    assert planned_moves, "expected planned_moves"
+    assert planned_moves[0]["source_folder"] == "Deliveries"

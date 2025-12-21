@@ -52,4 +52,8 @@ def test_mail_guided_blocks_until_answers(monkeypatch, tmp_path):
 
     mail_guided.run_mail_guided("Plan something")
 
+    assert calls["planner"] == 0
+
+    mail_guided.run_mail_guided("Plan something")
+
     assert calls["planner"] == 1

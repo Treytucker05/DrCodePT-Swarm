@@ -110,6 +110,8 @@
       ]
     }
   ],
+  "folder_merge_rules": [],
+  "folder_merge_mapping": {},
   "protected_folders": [
     "Inbox",
     "Sent",
@@ -117,5 +119,5 @@
     "Drafts",
     "Spam"
   ],
-  "last_updated_utc": "2025-12-21T06:48:12.750649+00:00"
+  "last_updated_utc": "2025-12-21T07:04:33.572574+00:00"
 }

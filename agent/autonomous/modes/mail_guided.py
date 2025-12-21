@@ -40,6 +40,18 @@ RULE_SCHEMA: Dict[str, Any] = {
     ],
 }
 
+FOLDER_MERGE_RULE_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "name": {"type": "string"},
+        "to_folder": {"type": "string"},
+        "source_folders": {"type": "array", "items": {"type": "string"}},
+        "max_messages": {"type": "integer"},
+    },
+    "required": ["name", "to_folder", "source_folders", "max_messages"],
+}
+
 PROCEDURE_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -49,6 +61,11 @@ PROCEDURE_SCHEMA: Dict[str, Any] = {
         "account_label": {"type": "string"},
         "target_folders": {"type": "array", "items": {"type": "string"}},
         "rules": {"type": "array", "items": RULE_SCHEMA},
+        "folder_merge_rules": {"type": "array", "items": FOLDER_MERGE_RULE_SCHEMA},
+        "folder_merge_mapping": {
+            "type": "object",
+            "additionalProperties": {"type": "string"},
+        },
         "protected_folders": {"type": "array", "items": {"type": "string"}},
         "last_updated_utc": {"type": "string"},
     },
@@ -58,6 +75,8 @@ PROCEDURE_SCHEMA: Dict[str, Any] = {
         "account_label",
         "target_folders",
         "rules",
+        "folder_merge_rules",
+        "folder_merge_mapping",
         "protected_folders",
         "last_updated_utc",
     ],
@@ -94,6 +113,19 @@ PLANNER_SCHEMA: Dict[str, Any] = {
         "summary": {"type": "string"},
     },
     "required": ["procedure", "summary"],
+}
+
+FOLDER_GROUPER_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "targets": {"type": "array", "items": {"type": "string"}},
+        "mapping": {
+            "type": "object",
+            "additionalProperties": {"type": "string"},
+        },
+    },
+    "required": ["targets", "mapping"],
 }
 
 CRITIC_SCHEMA: Dict[str, Any] = {
@@ -244,6 +276,25 @@ def _summarize_diff(before: MailProcedure, after: MailProcedure) -> str:
 
     lines.extend(changed)
 
+    before_merge = {r.name: r for r in before.folder_merge_rules}
+    after_merge = {r.name: r for r in after.folder_merge_rules}
+    added_merge = [name for name in after_merge if name not in before_merge]
+    removed_merge = [name for name in before_merge if name not in after_merge]
+    if added_merge:
+        lines.append(f"merge rules added: {', '.join(added_merge)}")
+    if removed_merge:
+        lines.append(f"merge rules removed: {', '.join(removed_merge)}")
+
+    merge_fields = ["to_folder", "source_folders", "max_messages"]
+    for name in before_merge.keys() & after_merge.keys():
+        b = before_merge[name]
+        a = after_merge[name]
+        for field in merge_fields:
+            if getattr(b, field) != getattr(a, field):
+                lines.append(
+                    f"merge rule {name}: {field} {getattr(b, field)} -> {getattr(a, field)}"
+                )
+
     if not lines:
         return "no procedure changes"
     return "; ".join(lines)
@@ -309,6 +360,19 @@ def _objective_implies_moves(objective: str) -> bool:
         if token in low:
             return True
     return False
+
+
+def _objective_implies_folder_merge(objective: str) -> bool:
+    low = objective.lower()
+    phrases = (
+        "consolidate folders",
+        "consolidate my folders",
+        "reduce folders",
+        "merge folders",
+        "folder consolidation",
+        "folder merge",
+    )
+    return any(phrase in low for phrase in phrases)
 
 
 def _objective_implies_execution(objective: str) -> bool:
@@ -483,6 +547,7 @@ def run_mail_guided(objective: str | None = None) -> None:
         _write_state(latest_scan, "SCAN_DONE")
 
     qa_pairs: List[Tuple[str, str]] = []
+    folder_merge_intent = _objective_implies_folder_merge(objective)
 
     if latest_scan is not None:
         existing_questions = _load_questions(latest_scan)
@@ -530,9 +595,147 @@ def run_mail_guided(objective: str | None = None) -> None:
                 json.dumps(parsed, indent=2), encoding="utf-8"
             )
             _write_state(latest_scan, "ANSWERS_CONFIRMED")
-            # Proceed directly to planner; skip Questioner on this pass.
-            execution_intent = False
-            qa_pairs = list((parsed.get("answers") or {}).items())
+            return
+
+    if latest_scan is not None:
+        parsed_answers = _load_answers(latest_scan)
+        if parsed_answers and parsed_answers.get("answers"):
+            qa_pairs = list(parsed_answers["answers"].items())
+            _write_state(latest_scan, "ANSWERS_CONFIRMED")
+
+    if folder_merge_intent:
+        if latest_scan is None:
+            print("[WARN] No run directory found; cannot load folder list.")
+            return
+        if not qa_pairs:
+            questions = [
+                "Which top-level target folders should everything be consolidated into? (comma-separated)",
+                "Any folders to exclude or keep as-is? (comma-separated or 'none')",
+            ]
+            _write_questions(latest_scan, questions)
+            _write_state(latest_scan, "WAITING_FOR_ANSWERS")
+            print("[MAIL GUIDED] Questions saved. Answer the questions, then type CONTINUE.")
+            print(f"[MAIL GUIDED] Questions path: {_questions_path(latest_scan)}")
+            return
+
+        folder_list = scan_summary[:2000] if scan_summary else "(none)"
+        grouper_prompt = (
+            "You are FolderGrouper. Consolidate existing folders by moving ALL messages "
+            "from source folders into target folders. Propose 5-6 target folders, "
+            "and map every existing folder to exactly one target. "
+            "Do NOT use sender-based or subject-based searches. "
+            "Never output FROM/SUBJECT queries for folder consolidation.\n"
+            f"Objective: {objective}\n"
+            f"Q/A: {json.dumps(qa_pairs, indent=2)}\n"
+            f"IMAP folder list: {folder_list}\n"
+            "Return JSON: {targets: [..], mapping: {OldFolder: Target, ...}}."
+        )
+        print("[MAIL GUIDED] Running FolderGrouper...")
+        grouper_out = _run_codex_json(
+            grouper_prompt, FOLDER_GROUPER_SCHEMA, profile="reason", timeout_seconds=60
+        )
+        targets = [t for t in (grouper_out.get("targets") or []) if isinstance(t, str)]
+        mapping = {
+            k: v
+            for k, v in (grouper_out.get("mapping") or {}).items()
+            if isinstance(k, str) and isinstance(v, str)
+        }
+        rules = []
+        for target in targets:
+            sources = [
+                folder
+                for folder, mapped in mapping.items()
+                if mapped == target and folder != target
+            ]
+            if sources:
+                rules.append(
+                    {
+                        "name": f"merge_{target}",
+                        "to_folder": target,
+                        "source_folders": sources,
+                        "max_messages": 500,
+                    }
+                )
+
+        proc_after = MailProcedure.model_validate(
+            {
+                **proc_before.model_dump(),
+                "target_folders": targets,
+                "folder_merge_rules": rules,
+                "folder_merge_mapping": mapping,
+            }
+        )
+        save_procedure(proc_after)
+        diff_summary = _summarize_diff(proc_before, proc_after)
+        print(f"[MAIL GUIDED] Procedure saved. Diff: {diff_summary}")
+        if latest_scan is not None:
+            _write_state(latest_scan, "PLANNING")
+
+        print("[MAIL GUIDED] Running IMAP dry-run (folder merge mode)...")
+        dry_args = ["--dry-run", "--mode", "folder_merge"]
+        if no_create_folders:
+            dry_args.append("--no-create-folders")
+        dry_proc = _run_executor(dry_args)
+        _print_process_output(dry_proc)
+        latest_run = _newest_run_dir()
+        if latest_run is not None:
+            _write_state(latest_run, "DRY_RUN")
+
+        latest_run = _newest_run_dir()
+        if latest_run is None:
+            print("[WARN] Could not find runs directory for dry-run log.")
+            return
+
+        report_path = latest_run / "mail_report.md"
+        _append_chat_log(
+            run_dir=latest_run,
+            objective=objective,
+            qa_pairs=qa_pairs,
+            diff_summary=diff_summary,
+            report_path=report_path,
+            stage="dry-run",
+        )
+        _print_artifact_paths(latest_run)
+
+        plan_data = _load_json_file(latest_run / "mail_plan.json")
+        if plan_data and _planned_moves_count(plan_data) == 0:
+            print("No moves planned; ending session.")
+            _print_artifact_paths(latest_run)
+            return
+
+        confirm = input("Type EXECUTE to run the move (exactly): ").strip()
+        if confirm.lower() != "execute":
+            print("[MAIL GUIDED] EXECUTE not confirmed. Exiting.")
+            _print_artifact_paths(latest_run)
+            return
+
+        print("[MAIL GUIDED] Running IMAP execute (folder merge mode)...")
+        exec_args = ["--execute", "--mode", "folder_merge"]
+        if no_create_folders:
+            exec_args.append("--no-create-folders")
+        exec_args.extend(["--plan-path", str(latest_run / "mail_plan.json")])
+        exec_proc = _run_executor(exec_args)
+        _print_process_output(exec_proc)
+        if latest_run is not None:
+            _write_state(latest_run, "EXECUTING")
+
+        latest_run = _newest_run_dir()
+        report_path = latest_run / "mail_report.md" if latest_run else Path("unknown")
+        if latest_run is not None:
+            _append_chat_log(
+                run_dir=latest_run,
+                objective=objective,
+                qa_pairs=qa_pairs,
+                diff_summary=diff_summary,
+                report_path=report_path,
+                stage="execute",
+            )
+            _print_artifact_paths(latest_run)
+            _write_state(latest_run, "DONE")
+
+        if exec_proc.returncode != 0:
+            raise SystemExit(exec_proc.returncode)
+        return
 
     proc_after = proc_before
     diff_summary = "no procedure changes"
@@ -577,12 +780,6 @@ def run_mail_guided(objective: str | None = None) -> None:
             return
         else:
             print("[MAIL GUIDED] No clarifying questions.")
-
-        if latest_scan is not None:
-            parsed_answers = _load_answers(latest_scan)
-            if parsed_answers and parsed_answers.get("answers"):
-                qa_pairs = list(parsed_answers["answers"].items())
-                _write_state(latest_scan, "ANSWERS_CONFIRMED")
 
         planner_prompt = (
             "You are the Planner. Update the mail procedure JSON based on the objective "
