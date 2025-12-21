@@ -602,6 +602,17 @@ class AgentRunner:
                 )
 
                 steps_executed += 1
+                self._save_checkpoint(
+                    run_dir,
+                    state=state,
+                    task=task,
+                    run_id=run_id,
+                    steps_executed=steps_executed,
+                    consecutive_no_progress=consecutive_no_progress,
+                    last_plan_hash=last_plan_hash,
+                    exploration_nudge_next=exploration_nudge_next,
+                    exploration_reason=exploration_reason,
+                )
 
                 # Stuck detection: no state change across steps
                 current_fp = state.state_fingerprint()
