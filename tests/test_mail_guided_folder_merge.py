@@ -22,7 +22,7 @@ def test_folder_merge_saves_mapping_and_skips_planner(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    def _fake_run_executor(_args):
+    def _fake_run_executor(_args, **_kwargs):
         class _Proc:
             stdout = ""
             stderr = ""

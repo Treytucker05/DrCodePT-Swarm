@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -201,6 +202,42 @@ def _load_plan(path: Path) -> Dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _format_progress_line(
+    *,
+    label: str,
+    count: int,
+    total: int,
+    current: Optional[str],
+) -> str:
+    percent = int((count / total) * 100) if total > 0 else 0
+    suffix = f" current={current}" if current else ""
+    return f"[PROGRESS] {label}: {count}/{total} ({percent}%)" + suffix
+
+
+def _format_timing_line(
+    *,
+    elapsed: float,
+    count: int,
+    total: int,
+    unit_label: str,
+) -> str:
+    avg_per = (elapsed / count) if count > 0 else 0.0
+    remaining = max(total - count, 0)
+    eta = avg_per * remaining
+    return (
+        f"[PROGRESS] elapsed={elapsed:.1f}s "
+        f"avg_per_{unit_label}={avg_per:.2f}s eta=~{eta:.1f}s"
+    )
+
+
+def _tqdm_bar(total: int, desc: str):
+    try:
+        from tqdm import tqdm  # type: ignore
+    except Exception:
+        return None
+    return tqdm(total=total, desc=desc, leave=False)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -225,6 +262,32 @@ def main() -> int:
     ap.add_argument(
         "--plan-path",
         help="Execute using a specific dry-run plan file",
+    )
+    if hasattr(argparse, "BooleanOptionalAction"):
+        ap.add_argument(
+            "--progress",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="Enable progress reporting",
+        )
+    else:
+        ap.add_argument(
+            "--progress",
+            action="store_true",
+            default=True,
+            help="Enable progress reporting",
+        )
+        ap.add_argument(
+            "--no-progress",
+            dest="progress",
+            action="store_false",
+            help="Disable progress reporting",
+        )
+    ap.add_argument(
+        "--progress-interval",
+        type=float,
+        default=2.0,
+        help="Seconds between progress updates",
     )
     ap.add_argument("--max-per-rule", type=int, default=None)
     ap.add_argument("--host", default=DEFAULT_HOST)
@@ -271,6 +334,8 @@ def main() -> int:
         f"- scan_all_folders: {scan_mode}",
         f"- mode: {plan_mode}",
         f"- no_create_folders: {bool(args.no_create_folders)}",
+        f"- progress: {bool(getattr(args, 'progress', True))}",
+        f"- progress_interval: {args.progress_interval}",
         f"- plan_path: {str(plan_path_arg) if plan_path_arg else ''}",
         f"- source: {args.source}",
         "",
@@ -316,6 +381,22 @@ def main() -> int:
                 combos = build_search_tokens(rule)
                 rule_counts: Dict[str, int] = {}
                 rule_total = 0
+                total_folders = len(folders)
+                progress_enabled = bool(getattr(args, "progress", True))
+                progress_bar = None
+                if progress_enabled:
+                    print(
+                        _format_progress_line(
+                            label="Scanning folders",
+                            count=0,
+                            total=total_folders,
+                            current=None,
+                        )
+                    )
+                    progress_bar = _tqdm_bar(total_folders, "Scanning folders")
+                last_progress = time.monotonic()
+                start_time = time.monotonic()
+                scanned = 0
                 for folder in folders:
                     try:
                         seen: Dict[str, bool] = {}
@@ -337,6 +418,33 @@ def main() -> int:
                         print(f"[SCAN] Rule '{rule.name}' folder '{folder}' matches={count}")
                         rule_counts[folder] = count
                         rule_total += count
+
+                    scanned += 1
+                    if progress_bar is not None:
+                        progress_bar.update(1)
+                    if progress_enabled:
+                        now = time.monotonic()
+                        if now - last_progress >= args.progress_interval or scanned == total_folders:
+                            elapsed = now - start_time
+                            print(
+                                _format_progress_line(
+                                    label="Scanning folders",
+                                    count=scanned,
+                                    total=total_folders,
+                                    current=folder,
+                                )
+                            )
+                            print(
+                                _format_timing_line(
+                                    elapsed=elapsed,
+                                    count=scanned,
+                                    total=total_folders,
+                                    unit_label="folder",
+                                )
+                            )
+                            last_progress = now
+                if progress_bar is not None:
+                    progress_bar.close()
 
                 scan_results[rule.name] = rule_counts
                 scan_totals[rule.name] = rule_total
@@ -424,6 +532,22 @@ def main() -> int:
             report_lines.append("## Folder Merge Rules")
             for rule in proc.folder_merge_rules:
                 max_to_move = _rule_limit(rule)
+                progress_enabled = bool(getattr(args, "progress", True))
+                total_sources = len(rule.source_folders)
+                if progress_enabled:
+                    print(
+                        _format_progress_line(
+                            label=f"Planning rule {rule.name}: sources",
+                            count=0,
+                            total=total_sources,
+                            current=None,
+                        )
+                    )
+                last_progress = time.monotonic()
+                start_time = time.monotonic()
+                processed_sources = 0
+                collected_uids = 0
+
                 rule_entry: Dict[str, object] = {
                     "name": rule.name,
                     "to_folder": rule.to_folder,
@@ -469,10 +593,36 @@ def main() -> int:
                     source_counts = dict(planned_entry.get("source_counts") or {})
                 else:
                     for folder in rule.source_folders:
+                        processed_sources += 1
                         if folder == rule.to_folder:
                             print(
                                 f"[SKIP] Merge rule '{rule.name}' source == destination: {folder}"
                             )
+                            if progress_enabled:
+                                now = time.monotonic()
+                                if now - last_progress >= args.progress_interval:
+                                    elapsed = now - start_time
+                                    print(
+                                        _format_progress_line(
+                                            label=f"Planning rule {rule.name}: sources",
+                                            count=processed_sources,
+                                            total=total_sources,
+                                            current=folder,
+                                        )
+                                    )
+                                    print(
+                                        f"[PROGRESS] uids_collected={collected_uids} "
+                                        f"elapsed={elapsed:.1f}s"
+                                    )
+                                    print(
+                                        _format_timing_line(
+                                            elapsed=elapsed,
+                                            count=processed_sources,
+                                            total=total_sources,
+                                            unit_label="source",
+                                        )
+                                    )
+                                    last_progress = now
                             continue
                         if _is_protected(folder, protected):
                             print(
@@ -481,6 +631,31 @@ def main() -> int:
                             report_lines.append(
                                 f"- merge_rule_skip_protected_source: {rule.name} source={folder}"
                             )
+                            if progress_enabled:
+                                now = time.monotonic()
+                                if now - last_progress >= args.progress_interval:
+                                    elapsed = now - start_time
+                                    print(
+                                        _format_progress_line(
+                                            label=f"Planning rule {rule.name}: sources",
+                                            count=processed_sources,
+                                            total=total_sources,
+                                            current=folder,
+                                        )
+                                    )
+                                    print(
+                                        f"[PROGRESS] uids_collected={collected_uids} "
+                                        f"elapsed={elapsed:.1f}s"
+                                    )
+                                    print(
+                                        _format_timing_line(
+                                            elapsed=elapsed,
+                                            count=processed_sources,
+                                            total=total_sources,
+                                            unit_label="source",
+                                        )
+                                    )
+                                    last_progress = now
                             continue
                         try:
                             uids = search_uids(imap, folder, ["ALL"])
@@ -492,8 +667,34 @@ def main() -> int:
                             report_lines.append(
                                 f"- merge_rule_search_failed: {rule.name} folder={folder} error={exc}"
                             )
+                            if progress_enabled:
+                                now = time.monotonic()
+                                if now - last_progress >= args.progress_interval:
+                                    elapsed = now - start_time
+                                    print(
+                                        _format_progress_line(
+                                            label=f"Planning rule {rule.name}: sources",
+                                            count=processed_sources,
+                                            total=total_sources,
+                                            current=folder,
+                                        )
+                                    )
+                                    print(
+                                        f"[PROGRESS] uids_collected={collected_uids} "
+                                        f"elapsed={elapsed:.1f}s"
+                                    )
+                                    print(
+                                        _format_timing_line(
+                                            elapsed=elapsed,
+                                            count=processed_sources,
+                                            total=total_sources,
+                                            unit_label="source",
+                                        )
+                                    )
+                                    last_progress = now
                             continue
                         source_counts[folder] = len(uids)
+                        collected_uids += len(uids)
                         for uid in uids:
                             match_count += 1
                             if len(planned_moves) < max_to_move:
@@ -506,6 +707,55 @@ def main() -> int:
                                 )
                         if len(planned_moves) >= max_to_move:
                             break
+                        if progress_enabled:
+                            now = time.monotonic()
+                            if now - last_progress >= args.progress_interval:
+                                elapsed = now - start_time
+                                print(
+                                    _format_progress_line(
+                                        label=f"Planning rule {rule.name}: sources",
+                                        count=processed_sources,
+                                        total=total_sources,
+                                        current=folder,
+                                    )
+                                )
+                                print(
+                                    f"[PROGRESS] uids_collected={collected_uids} "
+                                    f"elapsed={elapsed:.1f}s"
+                                )
+                                print(
+                                    _format_timing_line(
+                                        elapsed=elapsed,
+                                        count=processed_sources,
+                                        total=total_sources,
+                                        unit_label="source",
+                                    )
+                                )
+                                last_progress = now
+
+                if progress_enabled and total_sources > 0:
+                    elapsed = time.monotonic() - start_time
+                    print(
+                        _format_progress_line(
+                            label=f"Planning rule {rule.name}: sources",
+                            count=processed_sources,
+                            total=total_sources,
+                            current=rule.source_folders[-1]
+                            if rule.source_folders
+                            else None,
+                        )
+                    )
+                    print(
+                        f"[PROGRESS] uids_collected={collected_uids} elapsed={elapsed:.1f}s"
+                    )
+                    print(
+                        _format_timing_line(
+                            elapsed=elapsed,
+                            count=max(processed_sources, 1),
+                            total=total_sources,
+                            unit_label="source",
+                        )
+                    )
 
                 matches_total += match_count
                 rule_entry["match_count"] = match_count

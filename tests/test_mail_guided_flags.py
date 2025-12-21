@@ -15,7 +15,7 @@ def test_mail_guided_no_create_flag(monkeypatch, tmp_path):
 
     captured = {"args": []}
 
-    def _fake_run_executor(args):
+    def _fake_run_executor(args, **_kwargs):
         captured["args"].append(list(args))
         class _Proc:
             stdout = ""

@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -16,6 +17,8 @@ from agent.memory.procedures.mail_yahoo import load_procedure, save_procedure, M
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 RUNS_DIR = REPO_ROOT / "runs"
+PROGRESS_INTERVAL_DEFAULT = 2.0
+HEARTBEAT_AFTER_SECONDS = 10.0
 
 RULE_SCHEMA: Dict[str, Any] = {
     "type": "object",
@@ -507,9 +510,31 @@ def _load_questions(run_dir: Path) -> Optional[Dict[str, Any]]:
 
 def _load_answers(run_dir: Path) -> Optional[Dict[str, Any]]:
     return _load_json_file(_answers_path(run_dir))
-def _run_executor(args: List[str]) -> subprocess.CompletedProcess[str]:
+def _run_executor(
+    args: List[str],
+    *,
+    phase: Optional[str] = None,
+    heartbeat_after: float = HEARTBEAT_AFTER_SECONDS,
+) -> subprocess.CompletedProcess[str]:
     cmd = [sys.executable, "-m", "agent.autonomous.tools.mail_yahoo_imap_executor", *args]
-    return subprocess.run(cmd, text=True, capture_output=True, encoding="utf-8", errors="ignore")
+    proc = subprocess.Popen(
+        cmd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        encoding="utf-8",
+        errors="ignore",
+    )
+    start = time.monotonic()
+    last_heartbeat = start
+    while proc.poll() is None:
+        time.sleep(1.0)
+        if phase and (time.monotonic() - last_heartbeat) >= heartbeat_after:
+            elapsed = time.monotonic() - start
+            print(f"[MAIL GUIDED] Still working... elapsed={elapsed:.1f}s")
+            last_heartbeat = time.monotonic()
+    stdout, stderr = proc.communicate()
+    return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
 def _print_process_output(proc: subprocess.CompletedProcess[str]) -> None:
@@ -517,6 +542,10 @@ def _print_process_output(proc: subprocess.CompletedProcess[str]) -> None:
         print(proc.stdout.strip())
     if proc.stderr:
         print(proc.stderr.strip())
+
+
+def _progress_args() -> List[str]:
+    return ["--progress", "--progress-interval", str(PROGRESS_INTERVAL_DEFAULT)]
 
 
 def run_mail_guided(objective: str | None = None) -> None:
@@ -534,11 +563,11 @@ def run_mail_guided(objective: str | None = None) -> None:
     if no_create_folders:
         print("[MAIL GUIDED] Folder creation disabled by objective.")
 
-    print("[MAIL GUIDED] Running IMAP scan...")
-    scan_args = ["--scan-all-folders"]
+    print("[MAIL GUIDED] Phase: SCAN_ALL_FOLDERS (this may take a few minutes)")
+    scan_args = ["--scan-all-folders", *_progress_args()]
     if no_create_folders:
         scan_args.append("--no-create-folders")
-    scan_proc = _run_executor(scan_args)
+    scan_proc = _run_executor(scan_args, phase="SCAN_ALL_FOLDERS")
     _print_process_output(scan_proc)
     latest_scan = _newest_run_dir()
     scan_report_path = latest_scan / "mail_report.md" if latest_scan else Path("unknown")
@@ -671,11 +700,11 @@ def run_mail_guided(objective: str | None = None) -> None:
         if latest_scan is not None:
             _write_state(latest_scan, "PLANNING")
 
-        print("[MAIL GUIDED] Running IMAP dry-run (folder merge mode)...")
-        dry_args = ["--dry-run", "--mode", "folder_merge"]
+        print("[MAIL GUIDED] Phase: FOLDER_MERGE_PLANNING")
+        dry_args = ["--dry-run", "--mode", "folder_merge", *_progress_args()]
         if no_create_folders:
             dry_args.append("--no-create-folders")
-        dry_proc = _run_executor(dry_args)
+        dry_proc = _run_executor(dry_args, phase="FOLDER_MERGE_PLANNING")
         _print_process_output(dry_proc)
         latest_run = _newest_run_dir()
         if latest_run is not None:
@@ -709,12 +738,12 @@ def run_mail_guided(objective: str | None = None) -> None:
             _print_artifact_paths(latest_run)
             return
 
-        print("[MAIL GUIDED] Running IMAP execute (folder merge mode)...")
-        exec_args = ["--execute", "--mode", "folder_merge"]
+        print("[MAIL GUIDED] Phase: FOLDER_MERGE_EXECUTE")
+        exec_args = ["--execute", "--mode", "folder_merge", *_progress_args()]
         if no_create_folders:
             exec_args.append("--no-create-folders")
         exec_args.extend(["--plan-path", str(latest_run / "mail_plan.json")])
-        exec_proc = _run_executor(exec_args)
+        exec_proc = _run_executor(exec_args, phase="FOLDER_MERGE_EXECUTE")
         _print_process_output(exec_proc)
         if latest_run is not None:
             _write_state(latest_run, "EXECUTING")
@@ -813,11 +842,11 @@ def run_mail_guided(objective: str | None = None) -> None:
     else:
         print("[MAIL GUIDED] Execution intent detected; reusing existing rules without planner.")
 
-    print("[MAIL GUIDED] Running IMAP dry-run...")
-    dry_args = ["--dry-run"]
+    print("[MAIL GUIDED] Phase: RULES_DRY_RUN")
+    dry_args = ["--dry-run", *_progress_args()]
     if no_create_folders:
         dry_args.append("--no-create-folders")
-    dry_proc = _run_executor(dry_args)
+    dry_proc = _run_executor(dry_args, phase="RULES_DRY_RUN")
     _print_process_output(dry_proc)
     latest_run = _newest_run_dir()
     if latest_run is not None:
@@ -843,11 +872,11 @@ def run_mail_guided(objective: str | None = None) -> None:
     if plan_data and _objective_implies_moves(objective):
         zero_rules = _rules_with_zero_moves(plan_data)
         if zero_rules:
-            print("[MAIL GUIDED] No planned moves; running scan-all-folders...")
-            scan_args = ["--scan-all-folders"]
+            print("[MAIL GUIDED] Phase: SCAN_ALL_FOLDERS (this may take a few minutes)")
+            scan_args = ["--scan-all-folders", *_progress_args()]
             if no_create_folders:
                 scan_args.append("--no-create-folders")
-            scan_proc = _run_executor(scan_args)
+            scan_proc = _run_executor(scan_args, phase="SCAN_ALL_FOLDERS")
             _print_process_output(scan_proc)
 
             latest_run = _newest_run_dir()
@@ -883,11 +912,11 @@ def run_mail_guided(objective: str | None = None) -> None:
                     if updated:
                         save_procedure(proc_update)
 
-            print("[MAIL GUIDED] Re-running IMAP dry-run after scan...")
-            dry_args = ["--dry-run"]
+            print("[MAIL GUIDED] Phase: RULES_DRY_RUN (after scan)")
+            dry_args = ["--dry-run", *_progress_args()]
             if no_create_folders:
                 dry_args.append("--no-create-folders")
-            dry_proc = _run_executor(dry_args)
+            dry_proc = _run_executor(dry_args, phase="RULES_DRY_RUN")
             _print_process_output(dry_proc)
 
             latest_run = _newest_run_dir()
@@ -922,13 +951,13 @@ def run_mail_guided(objective: str | None = None) -> None:
         _print_artifact_paths(latest_run)
         return
 
-    print("[MAIL GUIDED] Running IMAP execute...")
-    exec_args = ["--execute"]
+    print("[MAIL GUIDED] Phase: RULES_EXECUTE")
+    exec_args = ["--execute", *_progress_args()]
     if no_create_folders:
         exec_args.append("--no-create-folders")
     if latest_run is not None:
         exec_args.extend(["--plan-path", str(latest_run / "mail_plan.json")])
-    exec_proc = _run_executor(exec_args)
+    exec_proc = _run_executor(exec_args, phase="RULES_EXECUTE")
     _print_process_output(exec_proc)
     if latest_run is not None:
         _write_state(latest_run, "EXECUTING")

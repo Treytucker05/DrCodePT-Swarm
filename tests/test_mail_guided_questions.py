@@ -9,7 +9,7 @@ def test_mail_guided_blocks_until_answers(monkeypatch, tmp_path):
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "mail_report.md").write_text("# report\n", encoding="utf-8")
 
-    def _fake_run_executor(_args):
+    def _fake_run_executor(_args, **_kwargs):
         class _Proc:
             stdout = ""
             stderr = ""
