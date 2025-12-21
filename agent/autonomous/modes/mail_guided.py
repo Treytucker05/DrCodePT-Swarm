@@ -297,6 +297,20 @@ def _objective_implies_moves(objective: str) -> bool:
     return False
 
 
+def _objective_implies_execution(objective: str) -> bool:
+    low = objective.lower()
+    for token in (
+        "execute",
+        "continue",
+        "use saved plan",
+        "existing rule",
+        "consolidation execution",
+    ):
+        if token in low:
+            return True
+    return False
+
+
 def _load_json_file(path: Path) -> Optional[Dict[str, Any]]:
     if not path.is_file():
         return None
@@ -373,6 +387,7 @@ def run_mail_guided() -> None:
 
     proc_before = load_procedure()
     proc_json = json.dumps(proc_before.model_dump(), indent=2)
+    execution_intent = _objective_implies_execution(objective)
 
     print("[MAIL GUIDED] Running IMAP scan...")
     scan_proc = _run_executor(["--scan-all-folders"])
@@ -381,56 +396,71 @@ def run_mail_guided() -> None:
     scan_report_path = latest_scan / "mail_report.md" if latest_scan else Path("unknown")
     scan_summary = _scan_folder_summary(scan_report_path)
 
-    questioner_prompt = (
-        "You are the Questioner. Ask up to 5 clarifying questions to safely update "
-        "the mail procedure. If no clarification is needed, return an empty list.\n"
-        f"Objective: {objective}\n"
-        f"Current procedure JSON:\n{proc_json}\n"
-        f"IMAP scan folders: {scan_summary[:1000] if scan_summary else '(none)'}\n"
-        "Return JSON: {questions: [..], rationale: string}."
-    )
-
-    print("[MAIL GUIDED] Running Questioner...")
-    try:
-        q_out = _run_codex_json(questioner_prompt, QUESTIONER_SCHEMA, profile="reason", timeout_seconds=60)
-        questions = [q for q in (q_out.get("questions") or []) if isinstance(q, str)]
-    except Exception as exc:
-        print(f"[WARN] Questioner failed: {exc}")
-        questions = []
-
     qa_pairs: List[Tuple[str, str]] = []
-    if questions:
-        print("[MAIL GUIDED] Please answer the questions:")
-        for q in questions:
-            ans = input(f"- {q} ").strip()
-            qa_pairs.append((q, ans))
+    proc_after = proc_before
+    diff_summary = "no procedure changes"
+
+    if execution_intent and not proc_before.rules:
+        choice = input(
+            "No existing rules found. Create a new rule for this execution? (y/N): "
+        ).strip().lower()
+        if choice != "y":
+            print("[MAIL GUIDED] No rules to execute. Exiting.")
+            return
+        execution_intent = False
+
+    if not execution_intent:
+        questioner_prompt = (
+            "You are the Questioner. Ask up to 5 clarifying questions to safely update "
+            "the mail procedure. If no clarification is needed, return an empty list.\n"
+            f"Objective: {objective}\n"
+            f"Current procedure JSON:\n{proc_json}\n"
+            f"IMAP scan folders: {scan_summary[:1000] if scan_summary else '(none)'}\n"
+            "Return JSON: {questions: [..], rationale: string}."
+        )
+
+        print("[MAIL GUIDED] Running Questioner...")
+        try:
+            q_out = _run_codex_json(questioner_prompt, QUESTIONER_SCHEMA, profile="reason", timeout_seconds=60)
+            questions = [q for q in (q_out.get("questions") or []) if isinstance(q, str)]
+        except Exception as exc:
+            print(f"[WARN] Questioner failed: {exc}")
+            questions = []
+
+        if questions:
+            print("[MAIL GUIDED] Please answer the questions:")
+            for q in questions:
+                ans = input(f"- {q} ").strip()
+                qa_pairs.append((q, ans))
+        else:
+            print("[MAIL GUIDED] No clarifying questions.")
+
+        planner_prompt = (
+            "You are the Planner. Update the mail procedure JSON based on the objective "
+            "and Q/A. Keep protected_folders unless explicitly changed. Return JSON with "
+            "a full 'procedure' object suitable for MailProcedure.\n"
+            f"Objective: {objective}\n"
+            f"Q/A: {json.dumps(qa_pairs, indent=2)}\n"
+            f"Current procedure JSON:\n{proc_json}\n"
+            f"IMAP scan folders: {scan_summary[:1000] if scan_summary else '(none)'}\n"
+            "Return JSON: {procedure: {...}, summary: string}."
+        )
+
+        print("[MAIL GUIDED] Running Planner...")
+        p_out = _run_codex_json(planner_prompt, PLANNER_SCHEMA, profile="reason", timeout_seconds=60)
+        updated_proc_raw = p_out.get("procedure") or {}
+
+        try:
+            proc_after = MailProcedure.model_validate(updated_proc_raw)
+        except Exception as exc:
+            print(f"[WARN] Planner returned invalid procedure. Using existing procedure. Error: {exc}")
+            proc_after = proc_before
+
+        save_procedure(proc_after)
+        diff_summary = _summarize_diff(proc_before, proc_after)
+        print(f"[MAIL GUIDED] Procedure saved. Diff: {diff_summary}")
     else:
-        print("[MAIL GUIDED] No clarifying questions.")
-
-    planner_prompt = (
-        "You are the Planner. Update the mail procedure JSON based on the objective "
-        "and Q/A. Keep protected_folders unless explicitly changed. Return JSON with "
-        "a full 'procedure' object suitable for MailProcedure.\n"
-        f"Objective: {objective}\n"
-        f"Q/A: {json.dumps(qa_pairs, indent=2)}\n"
-        f"Current procedure JSON:\n{proc_json}\n"
-        f"IMAP scan folders: {scan_summary[:1000] if scan_summary else '(none)'}\n"
-        "Return JSON: {procedure: {...}, summary: string}."
-    )
-
-    print("[MAIL GUIDED] Running Planner...")
-    p_out = _run_codex_json(planner_prompt, PLANNER_SCHEMA, profile="reason", timeout_seconds=60)
-    updated_proc_raw = p_out.get("procedure") or {}
-
-    try:
-        proc_after = MailProcedure.model_validate(updated_proc_raw)
-    except Exception as exc:
-        print(f"[WARN] Planner returned invalid procedure. Using existing procedure. Error: {exc}")
-        proc_after = proc_before
-
-    save_procedure(proc_after)
-    diff_summary = _summarize_diff(proc_before, proc_after)
-    print(f"[MAIL GUIDED] Procedure saved. Diff: {diff_summary}")
+        print("[MAIL GUIDED] Execution intent detected; reusing existing rules without planner.")
 
     print("[MAIL GUIDED] Running IMAP dry-run...")
     dry_proc = _run_executor(["--dry-run"])

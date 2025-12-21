@@ -1,1 +1,0 @@
-{"goal":"hello","steps":[{"id":"step-1","goal":"finish","rationale_short":"User requested a single step using tool_name finish.","tool_name":"finish","tool_args":[],"success_criteria":["Response returned in required JSON format."],"preconditions":[],"postconditions":[]}]}

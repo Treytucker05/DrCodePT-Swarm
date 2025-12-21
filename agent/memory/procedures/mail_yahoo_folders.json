@@ -8,9 +8,23 @@
     "Insurance",
     "UTMB",
     "Finance-Bills",
-    "Personal"
+    "Personal",
+    "Shopping-Online"
   ],
-  "rules": [],
+  "rules": [
+    {
+      "name": "deliveries_to_shopping_online_small_merge",
+      "to_folder": "Shopping-Online",
+      "from_contains": [],
+      "subject_contains": [],
+      "max_messages": 5,
+      "newer_than_days": null,
+      "unread_only": false,
+      "search_folders": [
+        "Deliveries"
+      ]
+    }
+  ],
   "protected_folders": [
     "Inbox",
     "Sent",
@@ -18,5 +32,5 @@
     "Drafts",
     "Spam"
   ],
-  "last_updated_utc": "2025-12-21T04:59:10.049451+00:00"
+  "last_updated_utc": "2025-12-21T05:21:50.812499+00:00"
 }
