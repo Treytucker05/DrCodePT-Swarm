@@ -3,25 +3,110 @@
   "provider": "yahoo",
   "account_label": "default",
   "target_folders": [
-    "PowerHouseATX",
-    "Medical-Healthcare",
-    "Insurance",
-    "UTMB",
-    "Finance-Bills",
+    "Work",
+    "Business",
+    "Finance",
     "Personal",
-    "Shopping-Online"
+    "Health",
+    "Shopping"
   ],
   "rules": [
     {
-      "name": "deliveries_to_shopping_online_small_merge",
-      "to_folder": "Shopping-Online",
-      "from_contains": [],
+      "name": "to_Work",
+      "to_folder": "Work",
+      "from_contains": [
+        "PowerHouseATX",
+        "PowerHouseATX/2017",
+        "PowerHouseATX/2018",
+        "PowerHouseATX/2019",
+        "PowerHouseATX/2021",
+        "PowerHouseATX/2022",
+        "PowerHouseATX/Bills &- Payments",
+        "PowerHouseATX/EIDL LOAN",
+        "PowerHouseATX/Side Hustles",
+        "PowerHouseATX/Taxes 2024",
+        "GitHub"
+      ],
       "subject_contains": [],
       "max_messages": 5,
       "newer_than_days": null,
       "unread_only": false,
       "search_folders": [
-        "Deliveries"
+        "INBOX"
+      ]
+    },
+    {
+      "name": "to_Finance",
+      "to_folder": "Finance",
+      "from_contains": [
+        "Finance",
+        "Finance-Bills",
+        "Recurring-Bills",
+        "Insurance",
+        "Real-Estate",
+        "Topstep"
+      ],
+      "subject_contains": [],
+      "max_messages": 5,
+      "newer_than_days": null,
+      "unread_only": false,
+      "search_folders": [
+        "INBOX"
+      ]
+    },
+    {
+      "name": "to_Health",
+      "to_folder": "Health",
+      "from_contains": [
+        "Medical-Healthcare",
+        "UTMB",
+        "Fitness",
+        "Kids Childcare"
+      ],
+      "subject_contains": [],
+      "max_messages": 5,
+      "newer_than_days": null,
+      "unread_only": false,
+      "search_folders": [
+        "INBOX"
+      ]
+    },
+    {
+      "name": "to_Shopping",
+      "to_folder": "Shopping",
+      "from_contains": [
+        "Shopping-Online",
+        "Deliveries",
+        "Food - Resturants",
+        "Newsletters-Subscriptions"
+      ],
+      "subject_contains": [],
+      "max_messages": 5,
+      "newer_than_days": null,
+      "unread_only": false,
+      "search_folders": [
+        "INBOX"
+      ]
+    },
+    {
+      "name": "to_Personal",
+      "to_folder": "Personal",
+      "from_contains": [
+        "Personal",
+        "Entertainment",
+        "Sports-Fantasy",
+        "Tech-AI",
+        "NextDoor",
+        "From Myself",
+        "Notes",
+        "Maria"
+      ],
+      "subject_contains": [],
+      "max_messages": 5,
+      "newer_than_days": null,
+      "unread_only": false,
+      "search_folders": [
+        "INBOX"
       ]
     }
   ],
@@ -32,5 +117,5 @@
     "Drafts",
     "Spam"
   ],
-  "last_updated_utc": "2025-12-21T05:21:50.812499+00:00"
+  "last_updated_utc": "2025-12-21T06:48:12.750649+00:00"
 }
