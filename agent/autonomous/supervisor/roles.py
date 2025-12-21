@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from agent.llm.base import LLMClient
+from agent.llm import schemas as llm_schemas
 
 
 class ResearcherOutput(BaseModel):
@@ -48,11 +49,44 @@ def _run_llm_json(llm: LLMClient, prompt: str, schema: Dict[str, Any]) -> Dict[s
     schema_path = _write_schema(schema)
     try:
         return llm.reason_json(prompt, schema_path=schema_path, timeout_seconds=60)
+    except Exception as exc:
+        try:
+            setattr(exc, "prompt_length", len(prompt))
+            setattr(exc, "schema_path", str(schema_path))
+        except Exception:
+            pass
+        raise
     finally:
         try:
             schema_path.unlink(missing_ok=True)  # type: ignore[arg-type]
         except Exception:
             pass
+
+
+def _compact_planner_schema() -> Dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "next_steps": {
+                "type": "array",
+                "maxItems": 3,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "id": {"type": "string"},
+                        "description": {"type": "string"},
+                        "tool": {"type": "string"},
+                        "args": {"type": "object"},
+                    },
+                    "required": ["id", "description", "tool", "args"],
+                },
+            },
+            "questions": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["next_steps", "questions"],
+    }
 
 
 def run_researcher(
@@ -96,8 +130,43 @@ def run_planner(
         "Return JSON: {next_steps:[{id, description, tool, args, success_check, fallback}], questions:[...]}\n"
     )
     schema = PlannerOutput.model_json_schema()
-    data = _run_llm_json(llm, prompt, schema)
-    return PlannerOutput.model_validate(data)
+    try:
+        data = _run_llm_json(llm, prompt, schema)
+        return PlannerOutput.model_validate(data)
+    except Exception:
+        compact_prompt = (
+            "Planner: Provide up to 3 next steps OR questions.\n"
+            f"Objective: {objective}\n"
+            f"Context: {context[:1200]}\n"
+            f"Tools: {[t.get('name') for t in tools][:30]}\n"
+            "Return JSON with next_steps and questions."
+        )
+        data = _run_llm_json(llm, compact_prompt, _compact_planner_schema())
+        return PlannerOutput.model_validate(data)
+
+
+def run_planner_fallback_text(llm: LLMClient, prompt: str) -> PlannerOutput:
+    text = ""
+    try:
+        data = llm.reason_json(prompt, schema_path=llm_schemas.CHAT_RESPONSE, timeout_seconds=60)
+        if isinstance(data, dict):
+            text = str(data.get("response") or "")
+    except Exception:
+        text = ""
+    note = text.strip() or "Planner JSON failed. Ask user to retry or reduce the task."
+    return PlannerOutput(
+        next_steps=[
+            PlanStep(
+                id="ask_user",
+                description="Ask user to retry or reduce the task",
+                tool="human_ask",
+                args={"question": note},
+                success_check="",
+                fallback=note,
+            )
+        ],
+        questions=[],
+    )
 
 
 def run_critic(

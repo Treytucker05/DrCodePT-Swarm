@@ -21,7 +21,15 @@ from agent.autonomous.models import ToolResult
 from agent.llm import CodexCliAuthError, CodexCliClient, CodexCliNotFoundError
 from agent.llm.base import LLMClient
 
-from .roles import CriticOutput, PlannerOutput, ResearcherOutput, run_critic, run_planner, run_researcher
+from .roles import (
+    CriticOutput,
+    PlannerOutput,
+    ResearcherOutput,
+    run_critic,
+    run_planner,
+    run_planner_fallback_text,
+    run_researcher,
+)
 
 
 class Phase(str, Enum):
@@ -174,6 +182,29 @@ class SupervisorOrchestrator:
     def _log_phase(self, phase: Phase) -> None:
         _phase_banner(phase)
         _append_jsonl(self.phase_log, {"ts": _now_iso(), "phase": phase.value})
+
+    def _write_planner_error(self, exc: BaseException, *, prompt_len: int | None = None, schema_path: str | None = None) -> Path:
+        errors_dir = self.run_dir / "errors"
+        errors_dir.mkdir(parents=True, exist_ok=True)
+        path = errors_dir / "planner_error.txt"
+        lines = [
+            f"type: {type(exc).__name__}",
+            f"message: {exc}",
+            f"prompt_length: {prompt_len if prompt_len is not None else getattr(exc, 'prompt_length', '')}",
+            f"schema_path: {schema_path or getattr(exc, 'schema_path', '')}",
+            f"cwd: {getattr(exc, 'cwd', '') or str(Path.cwd())}",
+            f"workdir: {getattr(exc, 'workdir', '') or getattr(exc, 'cwd', '') or str(Path.cwd())}",
+        ]
+        stdout_tail = getattr(exc, "stdout_tail", "")
+        stderr_tail = getattr(exc, "stderr_tail", "")
+        if stdout_tail:
+            lines.append("stdout_tail:")
+            lines.append(stdout_tail)
+        if stderr_tail:
+            lines.append("stderr_tail:")
+            lines.append(stderr_tail)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
 
     def _observe(self, state: OrchestratorState) -> str:
         workspace = list(p.name for p in self.ctx.workspace_dir.iterdir())
@@ -342,13 +373,22 @@ class SupervisorOrchestrator:
                         try:
                             state.last_plan = future_plan.result()
                         except Exception as exc:
-                            state.last_error = f"planner_error: {exc}"
-                            state.last_plan = PlannerOutput(
-                                next_steps=[],
-                                questions=[
-                                    "Planner failed to load. What should I do next? (e.g., 'retry', 'abort', or describe the next step)"
-                                ],
+                            err_path = self._write_planner_error(
+                                exc,
+                                prompt_len=getattr(exc, "prompt_length", None),
+                                schema_path=getattr(exc, "schema_path", None),
                             )
+                            print(
+                                "[TEAM MODE] Planner JSON call failed; falling back to text planner. "
+                                f"Error logged at {err_path}"
+                            )
+                            fallback_prompt = (
+                                "Planner failed to return JSON. Provide a brief suggestion to ask the user what to do next.\n"
+                                f"Objective: {self.objective}\n"
+                                f"Context: {state.context}\n"
+                            )
+                            state.last_error = f"planner_error: {exc}"
+                            state.last_plan = run_planner_fallback_text(self.llm, fallback_prompt)
                         try:
                             state.last_research = future_research.result()
                         except Exception as exc:
@@ -366,13 +406,22 @@ class SupervisorOrchestrator:
                             _do_plan, heartbeat_seconds=self.config.heartbeat_seconds
                         )
                     except Exception as exc:
-                        state.last_error = f"planner_error: {exc}"
-                        state.last_plan = PlannerOutput(
-                            next_steps=[],
-                            questions=[
-                                "Planner failed to load. What should I do next? (e.g., 'retry', 'abort', or describe the next step)"
-                            ],
+                        err_path = self._write_planner_error(
+                            exc,
+                            prompt_len=getattr(exc, "prompt_length", None),
+                            schema_path=getattr(exc, "schema_path", None),
                         )
+                        print(
+                            "[TEAM MODE] Planner JSON call failed; falling back to text planner. "
+                            f"Error logged at {err_path}"
+                        )
+                        fallback_prompt = (
+                            "Planner failed to return JSON. Provide a brief suggestion to ask the user what to do next.\n"
+                            f"Objective: {self.objective}\n"
+                            f"Context: {state.context}\n"
+                        )
+                        state.last_error = f"planner_error: {exc}"
+                        state.last_plan = run_planner_fallback_text(self.llm, fallback_prompt)
                 _write_json(self.plan_path, state.last_plan.model_dump())
 
                 if state.last_plan.questions:
@@ -475,8 +524,10 @@ class SupervisorOrchestrator:
                 continue
 
         status = "success" if state.phase == Phase.DONE else "aborted"
+        result_label = "PASS" if status == "success" else "FAIL"
         self.summary_path.write_text(
-            f"status: {status}\nerror: {state.last_error}\n", encoding="utf-8"
+            f"status: {status}\nresult: {result_label}\nerror: {state.last_error}\nrepro: Team: {self.objective}\n",
+            encoding="utf-8",
         )
         return 0 if state.phase == Phase.DONE else 1
 

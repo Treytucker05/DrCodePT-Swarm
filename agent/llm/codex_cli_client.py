@@ -28,6 +28,13 @@ def _snippet(text: str | None, *, limit: int = 500) -> str:
     return t[:limit] + "…"
 
 
+def _tail(text: str | None, *, limit: int = 2000) -> str:
+    t = (text or "").strip()
+    if len(t) <= limit:
+        return t
+    return t[-limit:]
+
+
 def _looks_like_auth_error(stdout: str, stderr: str) -> bool:
     combined = f"{stdout}\n{stderr}".lower()
     needles = [
@@ -153,17 +160,38 @@ class CodexCliClient(LLMClient):
         stderr = proc.stderr or ""
 
         if proc.returncode != 0:
+            stderr_tail = _tail(stderr)
+            stdout_tail = _tail(stdout)
             if _looks_like_auth_error(stdout, stderr):
-                raise CodexCliAuthError(
+                exc = CodexCliAuthError(
                     "Codex CLI is not authenticated. Run `codex login` and try again.\n"
                     f"stdout: {_snippet(stdout)}\n"
                     f"stderr: {_snippet(stderr)}"
                 )
-            raise CodexCliExecutionError(
+                try:
+                    exc.stdout_tail = stdout_tail
+                    exc.stderr_tail = stderr_tail
+                    exc.cwd = str(Path.cwd())
+                    exc.workdir = str(Path.cwd())
+                    exc.cmd = cmd
+                except Exception:
+                    pass
+                raise exc
+            exc = CodexCliExecutionError(
                 f"codex exec failed (exit={proc.returncode}).\n"
                 f"stdout: {_snippet(stdout)}\n"
-                f"stderr: {_snippet(stderr)}"
+                f"stderr: {_snippet(stderr)}\n"
+                f"stderr_tail: {stderr_tail}"
             )
+            try:
+                exc.stdout_tail = stdout_tail
+                exc.stderr_tail = stderr_tail
+                exc.cwd = str(Path.cwd())
+                exc.workdir = str(Path.cwd())
+                exc.cmd = cmd
+            except Exception:
+                pass
+            raise exc
 
         if not out_path.is_file():
             raise CodexCliOutputError(
