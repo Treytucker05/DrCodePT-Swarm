@@ -7,14 +7,6 @@ Set env vars (recommended):
   YAHOO_IMAP_USER="you@yahoo.com"
   YAHOO_IMAP_PASS="app-password-here"
 
-Credential storage references (no secrets read; shown for operator awareness):
-  - .env (environment variables, often API keys/secrets)
-  - agent/memory/credential_store.json (encrypted credential tokens)
-  - agent/memory/agent_memory.json (maps site names -> credential IDs)
-  - agent/memory/credentials.json (legacy credential file)
-  - agent/memory/credential_key.key (legacy encryption key)
-  - sessions/yahoo_state.json (saved browser session cookies for Yahoo)
-
 Examples:
   python scripts/imap_smoke_test.py --list-folders
   python scripts/imap_smoke_test.py --source INBOX --from-contains amazon --test-folder AgentTest
