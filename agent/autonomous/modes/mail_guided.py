@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import argparse
 import json
 import os
 import shutil
@@ -378,9 +379,10 @@ def _print_process_output(proc: subprocess.CompletedProcess[str]) -> None:
         print(proc.stderr.strip())
 
 
-def run_mail_guided() -> None:
+def run_mail_guided(objective: str | None = None) -> None:
     print("[MAIL GUIDED] Interactive mail session")
-    objective = input("Objective: ").strip()
+    if objective is None:
+        objective = input("Objective: ").strip()
     if not objective:
         print("No objective provided. Exiting.")
         return
@@ -599,7 +601,10 @@ def run_mail_guided() -> None:
 
 
 def main() -> None:
-    run_mail_guided()
+    parser = argparse.ArgumentParser(description="Guided mail workflow")
+    parser.add_argument("--objective", help="Objective text for the mail session")
+    args = parser.parse_args()
+    run_mail_guided(args.objective)
 
 
 if __name__ == "__main__":

@@ -92,11 +92,13 @@ def show_help() -> None:
 
   You can still force it with:
     Mail: [request]
+    Mail task: [request]
 
   Examples:
     - organize my yahoo mail folders
     - clean my yahoo inbox
     - I need help organizing my email
+    - Mail task: Continue consolidation using saved rule deliveries_to_shopping_online_small_merge...
 
   The agent will ask questions, understand your goals, and execute actions as needed.
   {YELLOW}Advanced:{RESET} Set MAIL_USE_WORKFLOW=1 for the structured workflow mode.
@@ -265,6 +267,11 @@ _MAIL_PHRASES = {
     "yahoo inbox",
     "gmail inbox",
 }
+
+_MAIL_PREFIX_RE = re.compile(
+    r"^(mail(?:\s*-?\s*task)?|mailtask)\s*:\s*(.*)$",
+    re.IGNORECASE,
+)
 
 _DEFAULT_CRED_PROMPT_SITES = ["yahoo", "yahoo_imap"]
 
@@ -447,6 +454,43 @@ def _infer_intent(text: str) -> str:
     if exec_score > 0 and research_score == 0 and collab_score == 0 and mail_score == 0:
         return "execute"
     return "ambiguous"
+
+
+def _extract_mail_objective(text: str) -> str | None:
+    match = _MAIL_PREFIX_RE.match(text.strip())
+    if not match:
+        return None
+    return match.group(2).strip()
+
+
+def _run_mail_guided(objective: str) -> None:
+    import subprocess
+
+    cmd = [
+        sys.executable,
+        "-m",
+        "agent.autonomous.modes.mail_guided",
+        "--objective",
+        objective,
+    ]
+    subprocess.run(cmd, check=False)
+
+
+def _maybe_route_mail(user_input: str, *, intent: str | None = None) -> bool:
+    objective = _extract_mail_objective(user_input)
+    if objective is not None:
+        if not objective:
+            print(
+                f"{YELLOW}[INFO]{RESET} Provide a task after 'Mail:' "
+                "or 'Mail task:'."
+            )
+            return True
+        _run_mail_guided(objective)
+        return True
+    if intent == "mail":
+        _run_mail_guided(user_input)
+        return True
+    return False
 
 
 def _prompt_mode_choice() -> tuple[str, str | None]:
@@ -703,14 +747,7 @@ def main() -> None:
             mode_autonomous(task, unsafe_mode=unsafe_mode)
             continue
 
-        if lower.startswith("mail:"):
-            task = user_input.split(":", 1)[1].strip()
-            if not task:
-                print(f"{YELLOW}[INFO]{RESET} Provide a task after 'Mail:'.")
-                continue
-            from agent.modes.mail_supervised import run_mail_supervised
-
-            run_mail_supervised(task)
+        if _maybe_route_mail(user_input):
             continue
 
         if lower.startswith("collab:"):
@@ -739,6 +776,9 @@ def main() -> None:
                 if default_mode not in {"execute", "research", "collab"}:
                     default_mode = "execute"
                 intent = default_mode
+
+        if _maybe_route_mail(user_input, intent=intent):
+            continue
 
         if intent == "research":
             mode_research(user_input)
