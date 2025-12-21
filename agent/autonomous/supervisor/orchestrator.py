@@ -95,7 +95,12 @@ def _phase_banner(phase: Phase) -> None:
     print(f"[TEAM MODE] Phase: {phase.value}")
 
 
-def _with_heartbeat(fn: Callable[[], Any], *, heartbeat_seconds: float) -> Any:
+def _with_heartbeat(
+    fn: Callable[[], Any],
+    *,
+    heartbeat_seconds: float,
+    label: str = "",
+) -> Any:
     done = threading.Event()
     result: Dict[str, Any] = {}
     error: Dict[str, BaseException] = {}
@@ -113,10 +118,34 @@ def _with_heartbeat(fn: Callable[[], Any], *, heartbeat_seconds: float) -> Any:
     start = time.monotonic()
     while not done.wait(timeout=heartbeat_seconds):
         elapsed = time.monotonic() - start
-        print(f"[TEAM MODE] Still working... elapsed={elapsed:.1f}s")
+        suffix = f" ({label})" if label else ""
+        print(f"[TEAM MODE] Still working... elapsed={elapsed:.1f}s{suffix}")
     if error:
         raise error["exc"]
     return result.get("value")
+
+
+def _truncate(text: str, *, limit: int = 160) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def _format_intent(plan: PlannerOutput) -> str:
+    if plan.questions:
+        return f"ask_user — {_truncate(plan.questions[0])}"
+    if not plan.next_steps:
+        return "no next steps"
+    step = plan.next_steps[0]
+    desc = step.description or step.id or "next step"
+    args = ""
+    if step.args:
+        try:
+            args = json.dumps(step.args, ensure_ascii=False)
+        except Exception:
+            args = str(step.args)
+    args_part = f"({ _truncate(args, limit=120) })" if args else ""
+    return f"{step.tool}{args_part} — {_truncate(desc)}"
 
 
 def _tool_catalog(tools: ToolRegistry) -> List[Dict[str, Any]]:
@@ -321,7 +350,9 @@ class SupervisorOrchestrator:
 
                 try:
                     state.last_research = _with_heartbeat(
-                        _do_research, heartbeat_seconds=self.config.heartbeat_seconds
+                        _do_research,
+                        heartbeat_seconds=self.config.heartbeat_seconds,
+                        label="Research",
                     )
                 except Exception as exc:
                     state.last_error = f"research_error: {exc}"
@@ -368,7 +399,9 @@ class SupervisorOrchestrator:
                             now = time.monotonic()
                             if now - last_beat >= self.config.heartbeat_seconds:
                                 elapsed = now - start
-                                print(f"[TEAM MODE] Still working... elapsed={elapsed:.1f}s")
+                                print(
+                                    f"[TEAM MODE] Still working... elapsed={elapsed:.1f}s (Planning+Research)"
+                                )
                                 last_beat = now
                         try:
                             state.last_plan = future_plan.result()
@@ -403,7 +436,9 @@ class SupervisorOrchestrator:
                 else:
                     try:
                         state.last_plan = _with_heartbeat(
-                            _do_plan, heartbeat_seconds=self.config.heartbeat_seconds
+                            _do_plan,
+                            heartbeat_seconds=self.config.heartbeat_seconds,
+                            label="Planning",
                         )
                     except Exception as exc:
                         err_path = self._write_planner_error(
@@ -423,6 +458,12 @@ class SupervisorOrchestrator:
                         state.last_error = f"planner_error: {exc}"
                         state.last_plan = run_planner_fallback_text(self.llm, fallback_prompt)
                 _write_json(self.plan_path, state.last_plan.model_dump())
+                try:
+                    intent = _format_intent(state.last_plan)
+                    print(f"[TEAM MODE] Intent: {intent}")
+                    _append_jsonl(self.execution_log, {"ts": _now_iso(), "type": "intent", "intent": intent})
+                except Exception:
+                    pass
 
                 if state.last_plan.questions:
                     state.phase = Phase.ASK_USER
@@ -461,6 +502,7 @@ class SupervisorOrchestrator:
                 result = _with_heartbeat(
                     lambda: self._execute_step(step),
                     heartbeat_seconds=self.config.heartbeat_seconds,
+                    label=f"Executing {state.last_tool}",
                 )
                 state.last_tool_result = result
                 state.last_error = result.error or ""

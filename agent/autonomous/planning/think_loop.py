@@ -45,6 +45,22 @@ def _append_jsonl(path: Path, payload: Dict) -> None:
         handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
+def _truncate(text: str, limit: int = 140) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "…"
+
+
+def _format_intent(plan: PlannerOutput) -> str:
+    if plan.questions:
+        return f"ask_user — {_truncate(plan.questions[0])}"
+    if not plan.next_steps:
+        return "no next steps"
+    step = plan.next_steps[0]
+    desc = step.description or step.id or "next step"
+    return f"{step.tool} — {_truncate(desc)}"
+
+
 def run_think_loop(
     objective: str,
     *,
@@ -85,6 +101,7 @@ def run_think_loop(
     researcher_notes: List[str] = []
 
     for round_idx in range(cfg.max_rounds):
+        print(f"[THINK MODE] Round {round_idx + 1}/{cfg.max_rounds}")
         planner_out = planner_fn(
             llm,
             objective=objective,
@@ -92,6 +109,7 @@ def run_think_loop(
             tools=[],
             reflexions=[],
         )
+        print(f"[THINK MODE] Intent: {_format_intent(planner_out)}")
         _write_json(plan_path, planner_out.model_dump())
 
         if planner_out.questions:
