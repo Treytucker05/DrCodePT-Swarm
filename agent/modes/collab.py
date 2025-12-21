@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import List
@@ -60,7 +61,8 @@ def run_collab_session(task: str) -> None:
         return
 
     store = _open_memory_store()
-    memories = store.search(task, limit=6)
+    raw_memories = store.search(task, limit=6)
+    memories = [asdict(m) for m in raw_memories]
 
     notes: List[str] = []
     while True:
