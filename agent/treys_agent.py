@@ -67,6 +67,16 @@ def show_help() -> None:
     - Plan: setup Google Tasks API and test it
     - Plan: consolidate my Yahoo folders and create rules
 
+{GREEN}Supervisor Team Mode:{RESET}
+  Team: [task]   - Runs observe->research->plan->execute->verify->reflect loop
+  Example:
+    - Team: audit my project and propose fixes
+
+{GREEN}Think Mode (no tool execution):{RESET}
+  Think: [task]  - Iterative planning/refinement without executing tools
+  Example:
+    - Think: design a migration plan for the repo
+
 {GREEN}Issue Tracking:{RESET}
   issues         - List all tracked issues
   issues open    - List open issues
@@ -739,6 +749,26 @@ def main() -> None:
                 continue
             from agent.modes.autonomous_enhanced import mode_plan_and_execute
             mode_plan_and_execute(task)
+            continue
+
+        if lower.startswith("team:"):
+            task = user_input.split(":", 1)[1].strip()
+            if not task:
+                print(f"{YELLOW}[INFO]{RESET} Provide a task after 'Team:'.")
+                continue
+            from agent.autonomous.supervisor.orchestrator import run_team
+
+            run_team(task, unsafe_mode=unsafe_mode)
+            continue
+
+        if lower.startswith("think:"):
+            task = user_input.split(":", 1)[1].strip()
+            if not task:
+                print(f"{YELLOW}[INFO]{RESET} Provide a task after 'Think:'.")
+                continue
+            from agent.autonomous.planning.think_loop import run_think_loop
+
+            run_think_loop(task)
             continue
 
         if lower in {"issues", "issues open", "issues resolved"}:

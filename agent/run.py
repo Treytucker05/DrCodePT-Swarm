@@ -17,6 +17,7 @@ def _load_dotenv() -> None:
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m agent.run", description="Run the autonomous agent loop.")
     p.add_argument("--task", required=True, help="Goal/task for the agent to accomplish.")
+    p.add_argument("--mode", choices=["runner", "team", "think"], default="runner")
     p.add_argument("--planner-mode", choices=["react", "plan_first"], default="react")
     p.add_argument("--num-candidates", type=int, default=1, help="Plan-first: number of candidate plans to generate.")
     p.add_argument("--max-plan-steps", type=int, default=6, help="Plan-first: max steps per plan.")
@@ -102,6 +103,20 @@ def main(argv: list[str] | None = None) -> int:
         except CodexCliAuthError as exc:
             print(str(exc), file=sys.stderr)
             return 2
+
+    if args.mode == "team":
+        from agent.autonomous.supervisor.orchestrator import run_team
+
+        return run_team(
+            args.task,
+            unsafe_mode=bool(args.unsafe_mode),
+            run_dir=run_dir,
+            llm=llm,
+        )
+    if args.mode == "think":
+        from agent.autonomous.planning.think_loop import run_think_loop
+
+        return run_think_loop(args.task, run_dir=run_dir, llm=llm)
 
     runner = AgentRunner(cfg=runner_cfg, agent_cfg=agent_cfg, planner_cfg=planner_cfg, llm=llm, run_dir=run_dir)
     result = runner.run(args.task)
