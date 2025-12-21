@@ -49,6 +49,24 @@ def _looks_like_auth_error(stdout: str, stderr: str) -> bool:
     return any(n in combined for n in needles)
 
 
+def _strip_disable_flags(cmd: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    skip_next = False
+    for token in cmd:
+        if skip_next:
+            skip_next = False
+            continue
+        if token == "--disable":
+            skip_next = True
+            continue
+        cleaned.append(token)
+    return cleaned
+
+
+def _looks_like_unknown_feature_flag(stderr: str) -> bool:
+    return "unknown feature flag" in (stderr or "").lower()
+
+
 @dataclass(frozen=True)
 class CodexCliClient(LLMClient):
     """
@@ -111,11 +129,20 @@ class CodexCliClient(LLMClient):
             "--profile",
             profile,
             "--dangerously-bypass-approvals-and-sandbox",
-            "--search",
-            "--disable",
-            "rmcp_client",
+            "-c",
+            "mcp_servers.obsidian.enabled=false",
+            "-c",
+            "mcp_servers.playwright.enabled=false",
+            "-c",
+            "mcp_servers.desktop.enabled=false",
             "--disable",
             "shell_tool",
+            "--disable",
+            "web_search_request",
+            "--disable",
+            "unified_exec",
+            "--disable",
+            "shell_snapshot",
             "exec",
             "--skip-git-repo-check",
             "--output-schema",
@@ -130,31 +157,39 @@ class CodexCliClient(LLMClient):
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"] = "1"
 
-        try:
+        def _run(cmd_args: list[str]) -> subprocess.CompletedProcess[str]:
             try:
-                from agent.ui.spinner import Spinner
+                try:
+                    from agent.ui.spinner import Spinner
 
-                spinner_ctx = Spinner("CODEX") if sys.stdout.isatty() else nullcontext()
-            except Exception:
-                spinner_ctx = nullcontext()
+                    spinner_ctx = Spinner("CODEX") if sys.stdout.isatty() else nullcontext()
+                except Exception:
+                    spinner_ctx = nullcontext()
 
-            with spinner_ctx:
-                proc = subprocess.run(
-                    cmd,
-                    input=prompt,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="ignore",
-                    env=env,
-                    timeout=timeout_seconds or self.timeout_seconds,
-                )
-        except FileNotFoundError as exc:
-            raise CodexCliNotFoundError(
-                f"Codex CLI not found: {self.codex_bin}. Install Codex CLI and ensure it is on PATH."
-            ) from exc
-        except subprocess.TimeoutExpired as exc:
-            raise CodexCliExecutionError(f"codex exec timed out after {timeout_seconds or self.timeout_seconds}s") from exc
+                with spinner_ctx:
+                    return subprocess.run(
+                        cmd_args,
+                        input=prompt,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="ignore",
+                        env=env,
+                        timeout=timeout_seconds or self.timeout_seconds,
+                    )
+            except FileNotFoundError as exc:
+                raise CodexCliNotFoundError(
+                    f"Codex CLI not found: {self.codex_bin}. Install Codex CLI and ensure it is on PATH."
+                ) from exc
+            except subprocess.TimeoutExpired as exc:
+                raise CodexCliExecutionError(
+                    f"codex exec timed out after {timeout_seconds or self.timeout_seconds}s"
+                ) from exc
+
+        proc = _run(cmd)
+        if proc.returncode != 0 and _looks_like_unknown_feature_flag(proc.stderr or ""):
+            cmd = _strip_disable_flags(cmd)
+            proc = _run(cmd)
 
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""
@@ -269,7 +304,8 @@ class CodexCliClient(LLMClient):
             raise CodexCliExecutionError(f"Failed to load schema: {schema_path}") from exc
 
         # Build reasoning prompt that enforces JSON-only output
-        reasoning_prompt = f"""DO NOT EXECUTE ANYTHING. DO NOT RUN COMMANDS. DO NOT EDIT FILES.
+        reasoning_prompt = f"""You are producing JSON for an external runner. Do NOT execute commands yourself; just output JSON.
+It is OK to propose tool actions inside the JSON.
 
 Return ONLY valid JSON matching this exact schema:
 

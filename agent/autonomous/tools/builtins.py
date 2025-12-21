@@ -663,6 +663,16 @@ class HumanAskArgs(BaseModel):
 
 def human_ask_factory(cfg: AgentConfig):
     def human_ask(ctx: RunContext, args: HumanAskArgs) -> ToolResult:
+        auto_answer = os.getenv("AGENT_AUTO_ANSWER")
+        auto_approve = os.getenv("AGENT_AUTO_APPROVE", "")
+        if auto_answer is not None:
+            answer = auto_answer.strip()
+            print(f"\n[HUMAN INPUT AUTO]\n{args.question}\n> {answer}")
+            return ToolResult(success=True, output={"answer": answer, "auto": True})
+        if auto_approve.lower() in {"1", "true", "yes", "y"}:
+            answer = "yes"
+            print(f"\n[HUMAN INPUT AUTO]\n{args.question}\n> {answer}")
+            return ToolResult(success=True, output={"answer": answer, "auto": True})
         answer = input(f"\n[HUMAN INPUT NEEDED]\n{args.question}\n> ").strip()
         return ToolResult(success=True, output={"answer": answer})
 

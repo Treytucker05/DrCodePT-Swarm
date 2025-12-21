@@ -287,8 +287,8 @@ def _call_codex(
         cmd += ["--json"]
     if not allow_tools:
         cmd += ["--disable", "shell_tool"]
-        if "rmcp_client" not in _CODEX_UNSUPPORTED_FLAGS:
-            cmd += ["--disable", "rmcp_client"]
+    if "rmcp_client" not in _CODEX_UNSUPPORTED_FLAGS:
+        cmd += ["--disable", "rmcp_client"]
 
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"

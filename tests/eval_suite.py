@@ -449,7 +449,11 @@ class EvalRunner:
                 run_dir=run_dir,
             )
             
-            agent_result = runner.run(task_spec.task)
+            task_with_permission = (
+                "You have permission to create, modify, and read files in the workspace.\n"
+                + task_spec.task
+            )
+            agent_result = runner.run(task_with_permission)
             
             # Update workspace to actual location created by runner
             workspace = run_dir / "workspace"
@@ -658,6 +662,12 @@ def main():
     )
     
     args = parser.parse_args()
+
+    # Auto-answer human_ask prompts during eval runs unless explicitly overridden.
+    if os.getenv("AGENT_AUTO_ANSWER") is None and os.getenv("AGENT_AUTO_APPROVE") is None:
+        os.environ["AGENT_AUTO_ANSWER"] = "yes"
+    if os.getenv("AGENT_SKIP_PRECONDITIONS") is None:
+        os.environ["AGENT_SKIP_PRECONDITIONS"] = "1"
     
     # List tasks
     if args.list:

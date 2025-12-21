@@ -299,6 +299,24 @@ _SIMPLE_QUESTION_PATTERNS = {
 }
 
 _EXECUTE_PREFIXES = ("auto:", "plan:", "research:", "collab:", "mail:", "mail task:", "team:", "think:")
+_MODE_SWITCH_PHRASES = (
+    "different mode",
+    "switch mode",
+    "change mode",
+    "another mode",
+    "mode switch",
+    "go into a different mode",
+    "go into another mode",
+    "enter a different mode",
+    "enter another mode",
+)
+
+_APPROACH_LABELS = {
+    "collab": "Collab (talk it through + plan)",
+    "execute": "Execute (do the task)",
+    "research": "Research (sources + analysis)",
+    "auto": "Auto (hands-off execution)",
+}
 
 
 def _confirm_execution(prompt: str) -> bool:
@@ -324,8 +342,9 @@ def _is_simple_question(text: str) -> bool:
     mail_score = _score_intent(text, _MAIL_KEYWORDS, _MAIL_PHRASES)
     research_score = _score_intent(text, _RESEARCH_KEYWORDS, _RESEARCH_PHRASES)
     collab_score = _score_intent(text, _COLLAB_KEYWORDS, _COLLAB_PHRASES)
+    exec_score = _score_intent(text, _EXEC_KEYWORDS, _EXEC_PHRASES)
 
-    if mail_score >= 3 or research_score >= 2 or collab_score >= 2:
+    if mail_score > 0 or research_score > 0 or collab_score > 0 or exec_score > 0:
         return False
 
     for pattern in _SIMPLE_QUESTION_PATTERNS:
@@ -353,10 +372,81 @@ def _is_capability_query(text: str) -> bool:
     return any(trigger in lowered for trigger in triggers if len(trigger.split()) > 1)
 
 
+def _is_mode_switch_request(text: str) -> bool:
+    lowered = text.lower().strip()
+    if any(phrase in lowered for phrase in _MODE_SWITCH_PHRASES):
+        return True
+    return lowered in {"mode", "modes", "switch modes", "change modes"}
+
+
 def _run_capabilities() -> None:
     from agent.autonomous.help.capabilities import build_capabilities_response
 
     print(build_capabilities_response())
+
+
+def _suggest_mode(text: str) -> tuple[str, str]:
+    lowered = text.lower()
+    mail_score = _score_intent(text, _MAIL_KEYWORDS, _MAIL_PHRASES)
+    research_score = _score_intent(text, _RESEARCH_KEYWORDS, _RESEARCH_PHRASES)
+    collab_score = _score_intent(text, _COLLAB_KEYWORDS, _COLLAB_PHRASES)
+    exec_score = _score_intent(text, _EXEC_KEYWORDS, _EXEC_PHRASES)
+
+    if "research" in lowered or "sources" in lowered or "citations" in lowered:
+        research_score += 2
+
+    if mail_score >= max(research_score, collab_score, exec_score) and mail_score > 0:
+        return "mail", "you mentioned email-related wording"
+    if research_score >= max(collab_score, exec_score) and research_score > 0:
+        return "research", "this looks like a request for information or comparisons"
+    if collab_score >= exec_score and collab_score > 0:
+        return "collab", "this sounds like planning or organizing"
+    if exec_score > 0:
+        return "execute", "this sounds like a task you want done"
+    return "collab", "a short back-and-forth will help clarify the goal"
+
+
+def _prompt_mode_with_suggestion(user_input: str) -> tuple[str, str | None]:
+    suggestion, reason = _suggest_mode(user_input)
+    if suggestion == "mail":
+        return "mail", None
+
+    print(f"{YELLOW}[SUGGEST]{RESET} I think this fits: {suggestion} ({reason}).")
+    prompt = (
+        f"{YELLOW}[PROMPT]{RESET} Choose an approach:\n"
+        f"  1) {_APPROACH_LABELS['collab']}\n"
+        f"  2) {_APPROACH_LABELS['execute']}\n"
+        f"  3) {_APPROACH_LABELS['research']}\n"
+        f"  4) {_APPROACH_LABELS['auto']} (opt-in)\n"
+        f"{CYAN}Choose 1/2/3/4 (default {suggestion}). You can also type the word:{RESET} "
+    )
+    choice = input(prompt).strip().lower()
+    if not choice:
+        return suggestion, None
+
+    depth_map = {
+        "light": "light",
+        "l": "light",
+        "balanced": "balanced",
+        "b": "balanced",
+        "moderate": "balanced",
+        "m": "balanced",
+        "deep": "deep",
+        "d": "deep",
+    }
+
+    if choice in {"1", "collab", "plan"}:
+        return "collab", None
+    if choice in {"2", "execute", "exec"}:
+        return "execute", None
+    if choice in {"3", "research", "r"}:
+        return "research", None
+    if choice in {"4", "auto"}:
+        return "auto", None
+    if choice in depth_map:
+        return "research", depth_map[choice]
+
+    return suggestion, None
 
 
 def _handle_simple_question(text: str) -> None:
@@ -710,6 +800,19 @@ def main() -> None:
             _run_capabilities()
             continue
 
+        if _is_mode_switch_request(user_input):
+            chosen, depth = _prompt_mode_with_suggestion(user_input)
+            if depth:
+                os.environ["TREYS_AGENT_RESEARCH_MODE"] = depth
+            os.environ["TREYS_AGENT_DEFAULT_MODE"] = chosen
+            print(
+                f"{YELLOW}[INFO]{RESET} Default mode set to {chosen} for this session."
+            )
+            print(
+                f"{YELLOW}[TIP]{RESET} You can still force a mode with 'Research:', 'Collab:', or 'Auto:'."
+            )
+            continue
+
         if lower == "playbooks":
             list_playbooks()
             continue
@@ -869,24 +972,45 @@ def main() -> None:
             _handle_simple_question(user_input)
             continue
 
+        selected_mode = None
         intent = _infer_intent(user_input)
         if intent == "ambiguous":
-            if os.getenv("TREYS_AGENT_PROMPT_ON_AMBIGUOUS", "").strip().lower() in {"1", "true", "yes", "y", "on"}:
-                chosen, depth = _prompt_mode_choice()
-                intent = chosen
-                if depth:
-                    os.environ["TREYS_AGENT_RESEARCH_MODE"] = depth
-            else:
-                default_mode = (os.getenv("TREYS_AGENT_DEFAULT_MODE") or "execute").strip().lower()
-                if default_mode not in {"execute", "research", "collab"}:
-                    default_mode = "execute"
-                intent = default_mode
+            chosen, depth = _prompt_mode_with_suggestion(user_input)
+            intent = chosen
+            selected_mode = chosen
+            if depth:
+                os.environ["TREYS_AGENT_RESEARCH_MODE"] = depth
+        elif intent in {"execute", "research", "collab"}:
+            chosen, depth = _prompt_mode_with_suggestion(user_input)
+            intent = chosen
+            selected_mode = chosen
+            if depth:
+                os.environ["TREYS_AGENT_RESEARCH_MODE"] = depth
 
         if _maybe_route_mail(user_input, intent=intent):
             continue
 
         if intent == "research":
             mode_research(user_input)
+            continue
+
+        if intent == "collab":
+            from agent.modes.collab import run_collab_session
+
+            run_collab_session(user_input)
+            continue
+
+        if intent == "auto":
+            if _should_confirm(user_input):
+                ok = _confirm_execution(
+                    f"{YELLOW}[PROMPT]{RESET} Run Auto mode now? (y/N) "
+                )
+                if not ok:
+                    print(
+                        f"{YELLOW}[INFO]{RESET} Okay—tell me what you want and we can plan it first."
+                    )
+                    continue
+            mode_autonomous(user_input, unsafe_mode=unsafe_mode)
             continue
 
         if user_input.strip().endswith("?") and _should_confirm(user_input):
@@ -897,8 +1021,8 @@ def main() -> None:
                 print(f"{YELLOW}[INFO]{RESET} Got it. Tell me what you want, and I'll ask before running anything.")
                 continue
 
-        # Check if this is a complex task that should skip playbook matching
-        # and go straight to autonomous mode (e.g., "organize", "consolidate", "help me")
+        # Check if this is a complex task that benefits from planning
+        # (e.g., "organize", "consolidate", "help me")
         complex_task_keywords = [
             "organize", "consolidate", "help me", "assist me", "manage",
             "clean up", "sort out", "figure out", "work on", "set up",
@@ -907,19 +1031,31 @@ def main() -> None:
         lower_input = user_input.lower()
         is_complex_task = any(keyword in lower_input for keyword in complex_task_keywords)
 
-        # If it's a complex task, skip playbook matching and use autonomous mode
+        # If it's a complex task, avoid auto-running unless explicitly chosen.
         if is_complex_task:
-            if _should_confirm(user_input):
-                ok = _confirm_execution(
-                    f"{YELLOW}[PROMPT]{RESET} Run this task now? (y/N) "
-                )
-                if not ok:
-                    print(f"{YELLOW}[INFO]{RESET} Okay—tell me what you want and I can run it when you're ready.")
-                    continue
-            mode_autonomous(user_input, unsafe_mode=unsafe_mode)
+            if selected_mode == "auto":
+                if _should_confirm(user_input):
+                    ok = _confirm_execution(
+                        f"{YELLOW}[PROMPT]{RESET} Run this task in Auto mode now? (y/N) "
+                    )
+                    if not ok:
+                        print(f"{YELLOW}[INFO]{RESET} Okay - tell me what you want and I can run it when you're ready.")
+                        continue
+                mode_autonomous(user_input, unsafe_mode=unsafe_mode)
+                continue
+
+            choice = input(
+                f"{YELLOW}[PROMPT]{RESET} I can try Auto mode or we can plan it together. Type 'auto' to run, or press Enter for Collab: "
+            ).strip().lower()
+            if choice == "auto":
+                mode_autonomous(user_input, unsafe_mode=unsafe_mode)
+            else:
+                from agent.modes.collab import run_collab_session
+
+                run_collab_session(user_input)
             continue
 
-        # Default: run a matching playbook; otherwise run the true autonomous loop.
+        # Default: run a matching playbook; otherwise offer Collab or Auto.
         pb_id, pb_data = find_matching_playbook(user_input, playbooks)
         if pb_data:
             if _should_confirm(user_input):
@@ -927,31 +1063,32 @@ def main() -> None:
                     f"{YELLOW}[PROMPT]{RESET} Run playbook \"{pb_id}\" now? (y/N) "
                 )
                 if not ok:
-                    print(f"{YELLOW}[INFO]{RESET} Okay—tell me what you want and I can run it when you're ready.")
+                    print(f"{YELLOW}[INFO]{RESET} Okay - tell me what you want and I can run it when you're ready.")
                     continue
             status = mode_execute(user_input)
             playbooks = load_playbooks()
             if status == "failed":
-                print(f"{YELLOW}[INFO]{RESET} Playbook failed; falling back to Auto mode.")
-                if _should_confirm(user_input):
-                    ok = _confirm_execution(
-                        f"{YELLOW}[PROMPT]{RESET} Run Auto mode instead? (y/N) "
-                    )
-                    if not ok:
-                        print(f"{YELLOW}[INFO]{RESET} Okay—tell me what you want and I can run it when you're ready.")
-                        continue
-                mode_autonomous(user_input, unsafe_mode=unsafe_mode)
+                print(f"{YELLOW}[INFO]{RESET} Playbook failed. Choose next step.")
+                choice = input(
+                    f"{YELLOW}[PROMPT]{RESET} Type 'auto' to run Auto mode, or press Enter for Collab: "
+                ).strip().lower()
+                if choice == "auto":
+                    mode_autonomous(user_input, unsafe_mode=unsafe_mode)
+                else:
+                    from agent.modes.collab import run_collab_session
+
+                    run_collab_session(user_input)
             continue
 
-        if _should_confirm(user_input):
-            ok = _confirm_execution(
-                f"{YELLOW}[PROMPT]{RESET} Run this task now? (y/N) "
-            )
-            if not ok:
-                print(f"{YELLOW}[INFO]{RESET} Okay—tell me what you want and I can run it when you're ready.")
-                continue
-        mode_autonomous(user_input, unsafe_mode=unsafe_mode)
+        choice = input(
+            f"{YELLOW}[PROMPT]{RESET} No playbook matched. Type 'auto' to run Auto mode, or press Enter for Collab: "
+        ).strip().lower()
+        if choice == "auto":
+            mode_autonomous(user_input, unsafe_mode=unsafe_mode)
+        else:
+            from agent.modes.collab import run_collab_session
 
+            run_collab_session(user_input)
 
 if __name__ == "__main__":
     main()
