@@ -860,15 +860,21 @@ class AgentRunner:
                 obs = Perceptor().tool_result_to_observation("web_gui_snapshot", result)
                 tracer.log({"type": "recovery", "tool": "web_gui_snapshot", "result": self._dump(result)})
         if tools.has_tool("desktop_som_snapshot"):
-            result = tools.call("desktop_som_snapshot", {}, ctx)
-            obs = Perceptor().tool_result_to_observation("desktop_som_snapshot", result)
-            tracer.log({"type": "recovery", "tool": "desktop_som_snapshot", "result": self._dump(result)})
+            try:
+                result = tools.call("desktop_som_snapshot", {}, ctx)
+                obs = Perceptor().tool_result_to_observation("desktop_som_snapshot", result)
+                tracer.log({"type": "recovery", "tool": "desktop_som_snapshot", "result": self._dump(result)})
+            except Exception as e:
+                tracer.log({"type": "recovery_failed", "tool": "desktop_som_snapshot", "error": str(e)})
         if tools.has_tool("desktop"):
-            # Gentle exploration: scroll a bit and rescan.
-            tools.call("desktop", {"action": "scroll", "params": {"clicks": -400}}, ctx)
-            result = tools.call("desktop", {"action": "hotkey", "params": {"keys": ["alt", "tab"]}}, ctx)
-            obs = Perceptor().tool_result_to_observation("desktop", result)
-            tracer.log({"type": "recovery", "tool": "desktop", "result": self._dump(result)})
+            try:
+                # Gentle exploration: scroll a bit and rescan.
+                tools.call("desktop", {"action": "scroll", "params": {"clicks": -400}}, ctx)
+                result = tools.call("desktop", {"action": "hotkey", "params": {"keys": ["alt", "tab"]}}, ctx)
+                obs = Perceptor().tool_result_to_observation("desktop", result)
+                tracer.log({"type": "recovery", "tool": "desktop", "result": self._dump(result)})
+            except Exception as e:
+                tracer.log({"type": "recovery_failed", "tool": "desktop", "error": str(e)})
         return obs
 
     def _tool_category(self, tool_name: str) -> Optional[str]:
@@ -907,8 +913,11 @@ class AgentRunner:
                     result = tools.call("web_gui_snapshot", {"url": url, "include_screenshot": True}, ctx)
                     snapshot = result.output if isinstance(result.output, dict) else {"error": result.error}
             if category == "desktop" and tools.has_tool("desktop_som_snapshot"):
-                result = tools.call("desktop_som_snapshot", {}, ctx)
-                snapshot = result.output if isinstance(result.output, dict) else {"error": result.error}
+                try:
+                    result = tools.call("desktop_som_snapshot", {}, ctx)
+                    snapshot = result.output if isinstance(result.output, dict) else {"error": result.error}
+                except Exception:
+                    snapshot = None
         if snapshot is None:
             return None
         step_snapshots_taken.add(step.id)
