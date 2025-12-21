@@ -463,8 +463,15 @@ def _extract_mail_objective(text: str) -> str | None:
     return match.group(2).strip()
 
 
-def _run_mail_guided(objective: str) -> None:
+def _run_mail_guided(objective: str) -> int:
     import subprocess
+
+    repo_root = Path(__file__).resolve().parents[1]
+    env = os.environ.copy()
+    if "PYTHONPATH" in env and env["PYTHONPATH"]:
+        env["PYTHONPATH"] = str(repo_root) + os.pathsep + env["PYTHONPATH"]
+    else:
+        env["PYTHONPATH"] = str(repo_root)
 
     cmd = [
         sys.executable,
@@ -473,7 +480,34 @@ def _run_mail_guided(objective: str) -> None:
         "--objective",
         objective,
     ]
-    subprocess.run(cmd, check=False)
+    result = subprocess.run(cmd, check=False, cwd=str(repo_root), env=env)
+    if result.returncode != 0:
+        check = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import agent.autonomous.modes.mail_guided as _m",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(repo_root),
+            env=env,
+        )
+        combined = (check.stdout or "") + (check.stderr or "")
+        if "ModuleNotFoundError" in combined:
+            print(
+                f"{RED}[ERROR]{RESET} Mail workflow failed to import. "
+                f"cwd={repo_root} python={sys.executable}"
+            )
+            print(
+                f"{YELLOW}[INFO]{RESET} PYTHONPATH="
+                f"{env.get('PYTHONPATH', '')}"
+            )
+            print(
+                f"{YELLOW}[INFO]{RESET} Try running from the repo root or "
+                "ensure PYTHONPATH includes the repo root."
+            )
+    return result.returncode
 
 
 def _maybe_route_mail(user_input: str, *, intent: str | None = None) -> bool:
