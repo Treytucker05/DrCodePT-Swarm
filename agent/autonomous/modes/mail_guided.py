@@ -103,7 +103,7 @@ def _read_json(path: Path) -> Dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8", errors="replace"))
 
 
-def _run_codex_json(prompt: str, schema: Dict[str, Any], *, profile: str = "reason") -> Dict[str, Any]:
+def _run_codex_json(prompt: str, schema: Dict[str, Any], *, profile: str = "reason", timeout_seconds: Optional[int] = 60) -> Dict[str, Any]:
     codex_bin = (os.getenv("CODEX_BIN") or "codex").strip()
     model = (os.getenv("CODEX_MODEL") or "").strip()
     resolved = shutil.which(codex_bin) or codex_bin
@@ -155,6 +155,7 @@ def _run_codex_json(prompt: str, schema: Dict[str, Any], *, profile: str = "reas
             encoding="utf-8",
             errors="ignore",
             env=env,
+            timeout=timeout_seconds,
         )
     finally:
         try:
@@ -333,6 +334,24 @@ def _rules_with_zero_moves(plan: Dict[str, Any]) -> List[str]:
     return names
 
 
+
+
+def _scan_folder_summary(report_path: Path) -> str:
+    if not report_path.is_file():
+        return ""
+    lines = report_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    in_folders = False
+    folders = []
+    for line in lines:
+        if line.strip() == "## Folders (39)" or line.strip().startswith("## Folders"):
+            in_folders = True
+            continue
+        if in_folders:
+            if not line.strip():
+                break
+            if line.startswith("- "):
+                folders.append(line[2:].strip())
+    return ", ".join(folders)
 def _run_executor(args: List[str]) -> subprocess.CompletedProcess[str]:
     cmd = [sys.executable, "-m", "agent.autonomous.tools.mail_yahoo_imap_executor", *args]
     return subprocess.run(cmd, text=True, capture_output=True, encoding="utf-8", errors="ignore")
@@ -355,17 +374,29 @@ def run_mail_guided() -> None:
     proc_before = load_procedure()
     proc_json = json.dumps(proc_before.model_dump(), indent=2)
 
+    print("[MAIL GUIDED] Running IMAP scan...")
+    scan_proc = _run_executor(["--scan-all-folders"])
+    _print_process_output(scan_proc)
+    latest_scan = _newest_run_dir()
+    scan_report_path = latest_scan / "mail_report.md" if latest_scan else Path("unknown")
+    scan_summary = _scan_folder_summary(scan_report_path)
+
     questioner_prompt = (
         "You are the Questioner. Ask up to 5 clarifying questions to safely update "
         "the mail procedure. If no clarification is needed, return an empty list.\n"
         f"Objective: {objective}\n"
         f"Current procedure JSON:\n{proc_json}\n"
+        f"IMAP scan folders: {scan_summary[:1000] if scan_summary else '(none)'}\n"
         "Return JSON: {questions: [..], rationale: string}."
     )
 
     print("[MAIL GUIDED] Running Questioner...")
-    q_out = _run_codex_json(questioner_prompt, QUESTIONER_SCHEMA, profile="reason")
-    questions = [q for q in (q_out.get("questions") or []) if isinstance(q, str)]
+    try:
+        q_out = _run_codex_json(questioner_prompt, QUESTIONER_SCHEMA, profile="reason", timeout_seconds=60)
+        questions = [q for q in (q_out.get("questions") or []) if isinstance(q, str)]
+    except Exception as exc:
+        print(f"[WARN] Questioner failed: {exc}")
+        questions = []
 
     qa_pairs: List[Tuple[str, str]] = []
     if questions:
@@ -383,11 +414,12 @@ def run_mail_guided() -> None:
         f"Objective: {objective}\n"
         f"Q/A: {json.dumps(qa_pairs, indent=2)}\n"
         f"Current procedure JSON:\n{proc_json}\n"
+        f"IMAP scan folders: {scan_summary[:1000] if scan_summary else '(none)'}\n"
         "Return JSON: {procedure: {...}, summary: string}."
     )
 
     print("[MAIL GUIDED] Running Planner...")
-    p_out = _run_codex_json(planner_prompt, PLANNER_SCHEMA, profile="reason")
+    p_out = _run_codex_json(planner_prompt, PLANNER_SCHEMA, profile="reason", timeout_seconds=60)
     updated_proc_raw = p_out.get("procedure") or {}
 
     try:
@@ -483,6 +515,10 @@ def run_mail_guided() -> None:
             print("[MAIL GUIDED] Planned moves still 0; stopping before execute.")
             return
 
+    if plan_data and _planned_moves_count(plan_data) == 0:
+        print("No moves planned; ending session.")
+        return
+
     confirm = input("Type EXECUTE to run the move (exactly): ").strip()
     if confirm != "EXECUTE":
         print("[MAIL GUIDED] EXECUTE not confirmed. Exiting.")
@@ -507,7 +543,7 @@ def run_mail_guided() -> None:
     )
 
     print("[MAIL GUIDED] Running Critic...")
-    c_out = _run_codex_json(critic_prompt, CRITIC_SCHEMA, profile="reason")
+    c_out = _run_codex_json(critic_prompt, CRITIC_SCHEMA, profile="reason", timeout_seconds=60)
     critic_summary = c_out.get("summary", "")
     critic_suggestions = c_out.get("suggestions") or []
 
