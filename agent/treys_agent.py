@@ -47,19 +47,25 @@ def show_help() -> None:
         f"""
 {CYAN}TREY'S AGENT - Commands{RESET}
 
-{GREEN}Execute mode (default):{RESET}
-  Just type what you want to do.
-  If a playbook matches, it runs instantly.
-  If no playbook matches, it runs the autonomous loop (dynamic replanning).
+{GREEN}Chat mode (default):{RESET}
+  Just type what you want to say.
+  The agent will respond conversationally without running tools.
+  To run tools, use Auto:, Plan:, Team:, Swarm:, Mail:, or Learn: prefixes.
+  Or ask for a task and then reply "team", "auto", or "swarm" to proceed.
   Examples:
     - clean my yahoo spam
     - download school files
     - create a python calculator
 
-{GREEN}Autonomous loop (true agent):{RESET}
-  Auto: [task]
+{GREEN}Autonomous loop (explicit):{RESET}
+  Auto: [task]  (same as default, just explicit)
   Example:
     - Auto: research autonomous AI agents
+
+{GREEN}Swarm mode (parallel sub-agents):{RESET}
+  Swarm: [task]  - Splits work into subtasks and runs them in parallel
+  Example:
+    - Swarm: compare 3 CRMs and summarize pros/cons
 
 {GREEN}Enhanced Autonomous (Self-Healing):{RESET}
   Plan: [task]   - Creates execution plan, then runs with error recovery
@@ -133,6 +139,8 @@ def show_help() -> None:
   - Set TREYS_AGENT_PROMPT_ON_AMBIGUOUS=1 to show a mode picker.
 
 {GREEN}Other:{RESET}
+  menu       - Show full capability menu
+  grade      - Grade the last run (trace evaluation)
   playbooks  - List saved playbooks
   help       - Show this help
   exit       - Quit
@@ -299,7 +307,17 @@ _SIMPLE_QUESTION_PATTERNS = {
     "how can i",
 }
 
-_EXECUTE_PREFIXES = ("auto:", "plan:", "research:", "collab:", "mail:", "mail task:", "team:", "think:")
+_EXECUTE_PREFIXES = (
+    "auto:",
+    "plan:",
+    "research:",
+    "collab:",
+    "mail:",
+    "mail task:",
+    "team:",
+    "think:",
+    "swarm:",
+)
 _MODE_SWITCH_PHRASES = (
     "different mode",
     "switch mode",
@@ -317,6 +335,53 @@ _APPROACH_LABELS = {
     "execute": "Execute (do the task)",
     "research": "Research (sources + analysis)",
     "auto": "Auto (hands-off execution)",
+    "swarm": "Swarm (parallel sub-agents)",
+}
+
+_ACTION_VERBS = {
+    "open",
+    "show",
+    "bring",
+    "pull",
+    "launch",
+    "start",
+    "run",
+    "execute",
+    "download",
+    "upload",
+    "install",
+    "uninstall",
+    "delete",
+    "remove",
+    "move",
+    "rename",
+    "create",
+    "edit",
+    "update",
+    "clean",
+    "organize",
+    "sort",
+    "scan",
+    "search",
+    "find",
+    "copy",
+    "paste",
+    "click",
+    "double",
+}
+
+_CONFIRM_WORDS = {
+    "yes",
+    "y",
+    "yeah",
+    "yep",
+    "sure",
+    "ok",
+    "okay",
+    "do it",
+    "go ahead",
+    "proceed",
+    "run it",
 }
 
 
@@ -366,6 +431,8 @@ def _is_capability_query(text: str) -> bool:
         "what can you help me with",
         "what can you do",
         "capabilities",
+        "menu",
+        "show menu",
         "help",
     }
     if lowered in triggers:
@@ -380,10 +447,142 @@ def _is_mode_switch_request(text: str) -> bool:
     return lowered in {"mode", "modes", "switch modes", "change modes"}
 
 
+def _parse_mode_request(text: str) -> str | None:
+    lowered = text.lower().strip()
+    if "swarm" in lowered:
+        return "swarm"
+    if "team" in lowered:
+        return "team"
+    if "auto" in lowered:
+        return "auto"
+    if "plan" in lowered:
+        return "plan"
+    if "mail" in lowered:
+        return "mail"
+    if "research" in lowered:
+        return "research"
+    if "execute" in lowered or "exec" in lowered:
+        return "execute"
+    return None
+
+
+def _is_confirm(text: str) -> bool:
+    lowered = text.lower().strip()
+    if lowered in _CONFIRM_WORDS:
+        return True
+    return any(word in lowered for word in _CONFIRM_WORDS)
+
+
+def _looks_like_action_request(text: str) -> bool:
+    lowered = text.lower().strip()
+    if any(phrase in lowered for phrase in ("can you", "could you", "please", "i need you to", "i want you to")):
+        return True
+    tokens = set(re.findall(r"[a-z0-9']+", lowered))
+    if tokens & _ACTION_VERBS:
+        return True
+    exec_score = _score_intent(text, _EXEC_KEYWORDS, _EXEC_PHRASES)
+    return exec_score > 0
+
+
 def _run_capabilities() -> None:
     from agent.autonomous.help.capabilities import build_capabilities_response
 
     print(build_capabilities_response())
+
+
+def _run_chat(user_input: str, history: list[tuple[str, str]]) -> None:
+    from agent.context_loader import format_context_for_llm
+    from agent.llm import CodexCliAuthError, CodexCliClient, CodexCliNotFoundError
+    from agent.llm import schemas as llm_schemas
+
+    try:
+        llm = CodexCliClient.from_env()
+    except CodexCliNotFoundError as exc:
+        print(f"{RED}[ERROR]{RESET} {exc}")
+        return
+    except CodexCliAuthError as exc:
+        print(f"{RED}[ERROR]{RESET} {exc}")
+        return
+
+    def _render_history(items: list[tuple[str, str]], limit: int = 6) -> str:
+        lines = []
+        for role, text in items[-limit:]:
+            lines.append(f"{role}: {text}")
+        return "\n".join(lines)
+
+    context = format_context_for_llm()
+    convo = _render_history(history)
+    prompt = (
+        "You are Trey's Agent in chat-only mode.\n"
+        "Do NOT execute tools or run commands. Just talk.\n"
+        "If the user asks to do something, ask a clarifying question or suggest a mode\n"
+        "(Auto/Plan/Team/Mail) instead of executing.\n"
+        "If a playbook seems relevant, you may mention it and ask for confirmation,\n"
+        "but do not execute it.\n\n"
+        f"{context}\n\n"
+        "Conversation so far:\n"
+        f"{convo}\n\n"
+        f"User: {user_input}\n\n"
+        "Return JSON with fields: response (string) and action (type none).\n"
+        'Set action to {"type":"none","folder":null}.\n'
+    )
+
+    data = llm.reason_json(prompt, schema_path=llm_schemas.CHAT_RESPONSE)
+    if isinstance(data, dict):
+        response = (data.get("response") or "").strip()
+        if response:
+            print(response)
+            history.append(("assistant", response))
+            return
+    print(f"{YELLOW}[INFO]{RESET} I didn't get a response. Try again.")
+
+
+def _show_menu() -> None:
+    from agent.context_loader import build_context_summary
+    from agent.modes.execute import load_playbooks
+
+    ctx = build_context_summary()
+    manual_playbooks = load_playbooks()
+
+    print("\nMENU")
+    print("====")
+    print("Default behavior: chat-only (no tools).")
+    print("")
+    print("Modes (prefix to force):")
+    print("- Auto: run the tool-using agent loop")
+    print("- Swarm: run parallel sub-agents")
+    print("- Plan: plan first, then execute")
+    print("- Team: observe -> research -> plan -> execute -> verify -> reflect")
+    print("- Think: plan only (no tools)")
+    print("- Research: sources + summary")
+    print("- Mail: email workflows")
+    print("- Learn: record a playbook")
+    print("")
+    print("Quick commands:")
+    print("- help, menu, playbooks, creds, issues, unsafe on/off, exit")
+    print("")
+    print("Status:")
+    creds = ctx.get("credentials") or []
+    tools = ctx.get("tools") or []
+    learned = ctx.get("playbooks") or []
+    print(f"- Credentials saved: {len(creds)}")
+    if creds:
+        print("  " + ", ".join(creds[:8]) + ("..." if len(creds) > 8 else ""))
+    print(f"- Tools available: {len(tools)}")
+    if tools:
+        print("  " + ", ".join(tools))
+    print(f"- Playbooks (manual): {len(manual_playbooks)}")
+    if manual_playbooks:
+        names = [pb.get("name", k) for k, pb in list(manual_playbooks.items())[:8]]
+        print("  " + ", ".join(names) + ("..." if len(manual_playbooks) > 8 else ""))
+    print(f"- Playbooks (learned): {len(learned)}")
+    recent = ctx.get("recent_tasks") or []
+    if recent:
+        print("- Recent tasks:")
+        for task in recent[:3]:
+            name = task.get("name", "")
+            goal = task.get("goal", "")
+            print(f"  - {name}: {goal[:60]}")
 
 
 def _suggest_mode(text: str) -> tuple[str, str]:
@@ -776,6 +975,10 @@ def main() -> None:
     unsafe_mode = os.getenv("AGENT_UNSAFE_MODE", "").strip().lower() in {"1", "true", "yes", "y", "on"}
     _prompt_startup_credentials()
 
+    chat_history: list[tuple[str, str]] = []
+    pending_task: str | None = None
+    pending_mode: str | None = None
+
     while True:
         try:
             user_input = input(f"{CYAN}>{RESET} ").strip()
@@ -794,6 +997,80 @@ def main() -> None:
         if _is_capability_query(user_input):
             _run_capabilities()
             continue
+
+        if lower == "menu":
+            _show_menu()
+            continue
+
+        if lower == "grade":
+            from agent.modes.grade import grade_run
+
+            grade_run(None)
+            continue
+
+        if lower.startswith("grade:"):
+            from agent.modes.grade import grade_run
+
+            target = user_input.split(":", 1)[1].strip()
+            grade_run(target or None)
+            continue
+
+        if pending_task:
+            if lower in {"cancel", "never mind", "nevermind", "stop"}:
+                print(f"{YELLOW}[CANCELLED]{RESET} Ok, not running.")
+                pending_task = None
+                pending_mode = None
+                continue
+
+            requested_mode = _parse_mode_request(user_input)
+            if requested_mode:
+                if requested_mode == "team":
+                    run_team = None
+                    from agent.autonomous.supervisor.orchestrator import run_team as _run_team
+                    run_team = _run_team
+                    run_team(pending_task, unsafe_mode=unsafe_mode)
+                elif requested_mode == "swarm":
+                    from agent.modes.swarm import mode_swarm
+
+                    mode_swarm(pending_task, unsafe_mode=unsafe_mode)
+                elif requested_mode == "auto":
+                    mode_autonomous(pending_task, unsafe_mode=unsafe_mode)
+                elif requested_mode == "plan":
+                    from agent.modes.autonomous_enhanced import mode_plan_and_execute
+                    mode_plan_and_execute(pending_task)
+                elif requested_mode == "mail":
+                    _run_mail_guided(pending_task)
+                elif requested_mode == "research":
+                    mode_research(pending_task)
+                elif requested_mode == "execute":
+                    mode_execute(pending_task)
+                pending_task = None
+                pending_mode = None
+                continue
+
+            if _is_confirm(user_input):
+                chosen = pending_mode or "team"
+                if chosen == "team":
+                    from agent.autonomous.supervisor.orchestrator import run_team as _run_team
+                    _run_team(pending_task, unsafe_mode=unsafe_mode)
+                elif chosen == "swarm":
+                    from agent.modes.swarm import mode_swarm
+
+                    mode_swarm(pending_task, unsafe_mode=unsafe_mode)
+                elif chosen == "auto":
+                    mode_autonomous(pending_task, unsafe_mode=unsafe_mode)
+                elif chosen == "plan":
+                    from agent.modes.autonomous_enhanced import mode_plan_and_execute
+                    mode_plan_and_execute(pending_task)
+                elif chosen == "mail":
+                    _run_mail_guided(pending_task)
+                elif chosen == "research":
+                    mode_research(pending_task)
+                elif chosen == "execute":
+                    mode_execute(pending_task)
+                pending_task = None
+                pending_mode = None
+                continue
 
         if _is_mode_switch_request(user_input):
             print(
@@ -893,6 +1170,16 @@ def main() -> None:
             run_team(task, unsafe_mode=unsafe_mode)
             continue
 
+        if lower.startswith("swarm:"):
+            task = user_input.split(":", 1)[1].strip()
+            if not task:
+                print(f"{YELLOW}[INFO]{RESET} Provide a task after 'Swarm:'.")
+                continue
+            from agent.modes.swarm import mode_swarm
+
+            mode_swarm(task, unsafe_mode=unsafe_mode)
+            continue
+
         if lower.startswith("think:"):
             task = user_input.split(":", 1)[1].strip()
             if not task:
@@ -960,16 +1247,18 @@ def main() -> None:
             _handle_simple_question(user_input)
             continue
 
-        intent = _infer_intent(user_input)
-        if _maybe_route_mail(user_input, intent=intent):
+        if _looks_like_action_request(user_input):
+            pending_task = user_input
+            pending_mode = "team"
+            print(
+                f"{YELLOW}[READY]{RESET} I can do that. Reply with 'team', 'auto', or 'swarm' to run it, "
+                "or 'cancel' to stop."
+            )
             continue
 
-        if intent == "research":
-            mode_research(user_input)
-            continue
-
-        from agent.modes.collab import run_collab_session
-        run_collab_session(user_input)
+        # Default behavior: chat-only (no tools).
+        chat_history.append(("user", user_input))
+        _run_chat(user_input, chat_history)
         continue
 
 if __name__ == "__main__":

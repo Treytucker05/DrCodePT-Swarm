@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from .models import Observation, Plan, Reflection, Step, ToolResult
+from .pydantic_compat import model_dump, model_validate
 
 
 def _sha256_json(obj: Any) -> str:
@@ -20,6 +21,38 @@ class AgentState:
     current_plan: Optional[Plan] = None
     current_step_idx: int = 0
     last_action_signature: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "task": self.task,
+            "rolling_summary": self.rolling_summary,
+            "observations": [model_dump(o) for o in self.observations],
+            "current_plan": model_dump(self.current_plan) if self.current_plan else None,
+            "current_step_idx": self.current_step_idx,
+            "last_action_signature": self.last_action_signature,
+        }
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> "AgentState":
+        task = str(data.get("task") or "")
+        state = AgentState(task=task)
+        state.rolling_summary = str(data.get("rolling_summary") or "")
+        obs = data.get("observations") or []
+        if isinstance(obs, list):
+            for o in obs:
+                try:
+                    state.observations.append(model_validate(Observation, o))
+                except Exception:
+                    pass
+        plan = data.get("current_plan")
+        if isinstance(plan, dict):
+            try:
+                state.current_plan = model_validate(Plan, plan)
+            except Exception:
+                state.current_plan = None
+        state.current_step_idx = int(data.get("current_step_idx") or 0)
+        state.last_action_signature = data.get("last_action_signature")
+        return state
 
     def add_observation(self, obs: Observation) -> None:
         self.observations.append(obs)

@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from agent.llm.base import LLMClient
@@ -91,10 +91,19 @@ class AgentRunner:
     run_dir: Optional[Path] = None
     memory_store: Optional[SqliteMemoryStore] = None
 
-    def run(self, task: str) -> AgentRunResult:
-        run_id = f"{_utc_ts_id()}_{uuid4().hex[:8]}"
+    def run(self, task: str, *, resume_path: Optional[Path] = None) -> AgentRunResult:
+        resume = self._load_checkpoint(resume_path) if resume_path else None
+        if resume:
+            run_id = resume.get("run_id") or f"{_utc_ts_id()}_{uuid4().hex[:8]}"
+        else:
+            run_id = f"{_utc_ts_id()}_{uuid4().hex[:8]}"
         repo_root = Path(__file__).resolve().parents[2]
         run_dir = self.run_dir or (repo_root / "runs" / "autonomous" / run_id)
+        if resume and resume.get("run_dir"):
+            try:
+                run_dir = Path(resume.get("run_dir")).resolve()
+            except Exception:
+                pass
         run_dir.mkdir(parents=True, exist_ok=True)
         workspace_dir = run_dir / "workspace"
         workspace_dir.mkdir(parents=True, exist_ok=True)
@@ -127,24 +136,60 @@ class AgentRunner:
         planner = self._make_planner(tracked_llm, tools)
 
         state = AgentState(task=task)
-        loop_detector = LoopDetector(window=self.cfg.loop_window, repeat_threshold=self.cfg.loop_repeat_threshold)
-
-        obs0 = perceptor.text_to_observation("task", task)
-        state.add_observation(obs0)
-        tracer.log({"type": "observation", "observation": self._dump(obs0)})
-
-        start = time.monotonic()
         steps_executed = 0
         consecutive_no_progress = 0
         last_plan_hash: Optional[str] = None
-        last_state_fingerprint = state.state_fingerprint()
-        same_state_steps = 0
         exploration_nudge_next = False
         exploration_reason = ""
         loop_nudge_used = False
 
+        if resume:
+            try:
+                state = AgentState.from_dict(resume.get("state") or {"task": task})
+                if state.task:
+                    task = state.task
+                steps_executed = int(resume.get("steps_executed") or 0)
+                consecutive_no_progress = int(resume.get("consecutive_no_progress") or 0)
+                last_plan_hash = resume.get("last_plan_hash")
+                exploration_nudge_next = bool(resume.get("exploration_nudge_next") or False)
+                exploration_reason = str(resume.get("exploration_reason") or "")
+                planner_mode = resume.get("planner_mode")
+                if planner_mode in {"react", "plan_first"}:
+                    self.planner_cfg = PlannerConfig(
+                        mode=planner_mode,  # type: ignore[arg-type]
+                        num_candidates=self.planner_cfg.num_candidates,
+                        max_plan_steps=self.planner_cfg.max_plan_steps,
+                        use_dppm=self.planner_cfg.use_dppm,
+                        use_tot=self.planner_cfg.use_tot,
+                    )
+            except Exception:
+                pass
+
+        loop_detector = LoopDetector(window=self.cfg.loop_window, repeat_threshold=self.cfg.loop_repeat_threshold)
+
+        if not state.observations:
+            obs0 = perceptor.text_to_observation("task", task)
+            state.add_observation(obs0)
+            tracer.log({"type": "observation", "observation": self._dump(obs0)})
+
+        start = time.monotonic()
+        last_state_fingerprint = state.state_fingerprint()
+        same_state_steps = 0
+
         current_plan: Optional[Plan] = None
         step_snapshots_taken: set[str] = set()
+
+        self._save_checkpoint(
+            run_dir,
+            state=state,
+            task=task,
+            run_id=run_id,
+            steps_executed=steps_executed,
+            consecutive_no_progress=consecutive_no_progress,
+            last_plan_hash=last_plan_hash,
+            exploration_nudge_next=exploration_nudge_next,
+            exploration_reason=exploration_reason,
+        )
 
         try:
             while True:
@@ -199,7 +244,10 @@ class AgentRunner:
 
                 self._maybe_compact_state(state, tracked_llm, tracer)
 
-                memories = self._retrieve_memories(memory_store, task)
+                extra_queries: List[str] = []
+                if state.rolling_summary:
+                    extra_queries.append(state.rolling_summary[:400])
+                memories = self._retrieve_memories(memory_store, task, extra_queries=extra_queries)
 
                 if self.planner_cfg.mode == "react":
                     nudge_task = task
@@ -470,6 +518,17 @@ class AgentRunner:
 
                 obs = perceptor.tool_result_to_observation(step.tool_name, tool_result)
                 state.add_observation(obs)
+                self._save_checkpoint(
+                    run_dir,
+                    state=state,
+                    task=task,
+                    run_id=run_id,
+                    steps_executed=steps_executed,
+                    consecutive_no_progress=consecutive_no_progress,
+                    last_plan_hash=last_plan_hash,
+                    exploration_nudge_next=exploration_nudge_next,
+                    exploration_reason=exploration_reason,
+                )
 
                 if tool_result.metadata.get("approval_required") and "suggested_reflection" not in tool_result.metadata:
                     tool_result.metadata["suggested_reflection"] = "replan"
@@ -708,23 +767,94 @@ class AgentRunner:
         except Exception:
             return False
 
-    def _retrieve_memories(self, store: Optional[SqliteMemoryStore], task: str) -> List[dict]:
+    def _retrieve_memories(
+        self,
+        store: Optional[SqliteMemoryStore],
+        task: str,
+        *,
+        extra_queries: Optional[List[str]] = None,
+    ) -> List[dict]:
         if store is None:
             return []
         try:
-            results = store.search(task, limit=8)
-            return [
-                {
-                    "kind": r.kind,
-                    "key": r.key,
-                    "content": r.content[:2000],
-                    "metadata": r.metadata,
-                    "updated_at": r.updated_at,
-                }
-                for r in results
-            ]
+            queries = [task]
+            if extra_queries:
+                queries.extend([q for q in extra_queries if q])
+            seen: set[int] = set()
+            out: List[dict] = []
+            for q in queries:
+                results = store.search(q, limit=6)
+                for r in results:
+                    if r.id in seen:
+                        continue
+                    seen.add(r.id)
+                    out.append(
+                        {
+                            "kind": r.kind,
+                            "key": r.key,
+                            "content": r.content[:2000],
+                            "metadata": r.metadata,
+                            "updated_at": r.updated_at,
+                        }
+                    )
+                    if len(out) >= 12:
+                        break
+                if len(out) >= 12:
+                    break
+            return out
         except Exception:
             return []
+
+    @staticmethod
+    def _checkpoint_path(run_dir: Path) -> Path:
+        return run_dir / "checkpoint.json"
+
+    def _save_checkpoint(
+        self,
+        run_dir: Path,
+        *,
+        state: AgentState,
+        task: str,
+        run_id: str,
+        steps_executed: int,
+        consecutive_no_progress: int,
+        last_plan_hash: Optional[str],
+        exploration_nudge_next: bool,
+        exploration_reason: str,
+    ) -> None:
+        payload = {
+            "run_id": run_id,
+            "run_dir": str(run_dir),
+            "task": task,
+            "state": state.to_dict(),
+            "steps_executed": steps_executed,
+            "consecutive_no_progress": consecutive_no_progress,
+            "last_plan_hash": last_plan_hash,
+            "exploration_nudge_next": exploration_nudge_next,
+            "exploration_reason": exploration_reason,
+            "planner_mode": self.planner_cfg.mode,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            path = self._checkpoint_path(run_dir)
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _load_checkpoint(path: Optional[Path]) -> Optional[Dict[str, Any]]:
+        if path is None:
+            return None
+        try:
+            if path.is_dir():
+                path = path / "checkpoint.json"
+            if not path.is_file():
+                return None
+            raw = path.read_text(encoding="utf-8", errors="replace")
+            data = json.loads(raw)
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
 
     def _maybe_compact_state(self, state: AgentState, llm: LLMClient, tracer: JsonlTracer) -> None:
         # LLM-backed memory compaction (structured output); fallback to heuristic compaction on failure.

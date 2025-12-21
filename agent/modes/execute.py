@@ -34,6 +34,8 @@ PLAYBOOKS_DIR = BASE_DIR / "playbooks"
 PLAYBOOKS_INDEX = PLAYBOOKS_DIR / "index.json"
 RUNS_DIR = BASE_DIR / "runs" / "treys_agent"
 
+_OPEN_ALIAS_STOPWORDS = {"my", "the", "a", "an", "folder", "directory", "dir"}
+
 
 def _ensure_dirs() -> None:
     PLAYBOOKS_DIR.mkdir(parents=True, exist_ok=True)
@@ -155,6 +157,10 @@ def _is_unsafe_mode() -> bool:
     return os.getenv("AGENT_UNSAFE_MODE", "").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _allow_python_by_default() -> bool:
+    return os.getenv("EXEC_ALLOW_PYTHON", "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def _looks_destructive(playbook_data: dict) -> bool:
     if not isinstance(playbook_data, dict):
         return False
@@ -208,6 +214,110 @@ def _intent_mentions_destructive(command: str) -> bool:
         "clean",
     ]
     return any(n in text for n in needles)
+
+
+def _normalize_open_alias(text: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9\s]+", " ", (text or "").lower())
+    tokens = [t for t in cleaned.split() if t and t not in _OPEN_ALIAS_STOPWORDS]
+    return " ".join(tokens).strip()
+
+
+def _special_folders() -> Dict[str, Path]:
+    home = Path.home()
+    onedrive = os.getenv("OneDrive") or os.getenv("OneDriveCommercial") or ""
+    onedrive_path = Path(onedrive) if onedrive else (home / "OneDrive")
+    return {
+        "desktop": home / "Desktop",
+        "downloads": home / "Downloads",
+        "documents": home / "Documents",
+        "pictures": home / "Pictures",
+        "videos": home / "Videos",
+        "music": home / "Music",
+        "home": home,
+        "user": home,
+        "onedrive": onedrive_path,
+        "one drive": onedrive_path,
+    }
+
+
+def _extract_open_target(command: str) -> Optional[str]:
+    if not command:
+        return None
+    lowered = command.strip().lower()
+    if not lowered.startswith("open"):
+        return None
+
+    remainder = re.sub(
+        r"^open(\s+the)?(\s+(folder|directory|dir))?\s*",
+        "",
+        command,
+        flags=re.IGNORECASE,
+    ).strip()
+    if not remainder:
+        return None
+
+    quoted = re.search(r"['\"]([^'\"]+)['\"]", remainder)
+    if quoted:
+        return quoted.group(1).strip()
+    return remainder.strip()
+
+
+def _resolve_open_path(target: str) -> Optional[Path]:
+    if not target:
+        return None
+
+    alias = _normalize_open_alias(target)
+    if alias:
+        special = _special_folders().get(alias)
+        if special and special.exists():
+            return special
+
+    expanded = os.path.expandvars(target.strip().strip("\"'"))
+    candidate = Path(expanded)
+    if candidate.is_absolute():
+        return candidate if candidate.exists() else None
+
+    # If it looks like a path, try resolving relative to cwd and repo root.
+    looks_like_path = any(sep in expanded for sep in ("\\", "/")) or expanded.startswith(".")
+    if looks_like_path:
+        for base in (Path.cwd(), REPO_ROOT):
+            resolved = (base / candidate).resolve()
+            if resolved.exists():
+                return resolved
+    return None
+
+
+def _open_in_explorer(path: Path) -> bool:
+    try:
+        if path.is_file():
+            subprocess.Popen(["explorer.exe", f'/select,"{path}"'])
+        else:
+            subprocess.Popen(["explorer.exe", str(path)])
+        return True
+    except Exception as exc:
+        print(f"{RED}[ERROR]{RESET} Failed to open Explorer: {exc}")
+        return False
+
+
+def _maybe_open_folder(command: str) -> Optional[str]:
+    target = _extract_open_target(command)
+    if not target:
+        return None
+
+    path = _resolve_open_path(target)
+    if not path:
+        # If the user supplied an explicit-looking path, surface a helpful error.
+        looks_like_path = any(sep in target for sep in ("\\", "/")) or re.match(
+            r"^[a-zA-Z]:\\", target.strip()
+        )
+        if looks_like_path:
+            print(f"{YELLOW}[INFO]{RESET} Folder not found: {target}")
+            print("Try quoting the full path or use a known folder name (Desktop, Downloads, Documents).")
+            return "failed"
+        return None
+
+    print(f"{CYAN}[OPEN]{RESET} {path}")
+    return "success" if _open_in_explorer(path) else "failed"
 
 
 def _codex_command() -> list[str]:
@@ -355,6 +465,7 @@ def execute_playbook(playbook_id: str, playbook_data: dict, *, run_path: Optiona
     )
 
     pending_browser: List[Dict[str, Any]] = []
+    allow_python_runtime = _is_unsafe_mode() or _allow_python_by_default()
 
     def _emit_output(output: Optional[dict], *, indent: str = "    ") -> None:
         if not isinstance(output, dict):
@@ -472,9 +583,17 @@ def execute_playbook(playbook_id: str, playbook_data: dict, *, run_path: Optiona
                 return False
 
         if step_type in {"python", "python_inline", "python_file", "python_script"} and not _is_unsafe_mode():
-            if not bool(step.get("allow_python")):
-                print(f"{RED}    Failed:{RESET} Python step blocked (set allow_python=true or enable unsafe_mode).")
-                return False
+            if not bool(step.get("allow_python")) and not allow_python_runtime:
+                resp = input(
+                    f"{YELLOW}[CONFIRM]{RESET} Allow Python steps for this run? (y/n): "
+                ).strip().lower()
+                if resp in {"y", "yes"}:
+                    allow_python_runtime = True
+                else:
+                    print(
+                        f"{RED}    Failed:{RESET} Python step blocked (set allow_python=true, set EXEC_ALLOW_PYTHON=1, or enable unsafe_mode)."
+                    )
+                    return False
 
         if step_type == "browser":
             # Allow either direct browser actions or nested `browser_steps`.
@@ -613,6 +732,10 @@ def mode_execute(command: str) -> str:
     - If a playbook matches: run instantly (no questions, no LLM)
     - Else: use Codex once to generate a deterministic playbook, execute it, then offer to save it
     """
+    open_result = _maybe_open_folder(command)
+    if open_result:
+        return open_result
+
     playbooks = load_playbooks()
     pb_id, pb_data = find_matching_playbook(command, playbooks)
 

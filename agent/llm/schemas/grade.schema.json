@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["scores", "summary", "issues", "recommendations"],
+  "properties": {
+    "scores": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reasoning", "tool_usage", "efficiency", "overall"],
+      "properties": {
+        "reasoning": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "tool_usage": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "efficiency": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "overall": { "type": "integer", "minimum": 1, "maximum": 10 }
+      }
+    },
+    "summary": { "type": "string" },
+    "issues": { "type": "array", "items": { "type": "string" } },
+    "recommendations": { "type": "array", "items": { "type": "string" } }
+  }
+}
