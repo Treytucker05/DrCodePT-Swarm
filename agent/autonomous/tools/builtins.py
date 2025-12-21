@@ -814,6 +814,62 @@ def memory_search_factory(store: Optional[SqliteMemoryStore]):
     return memory_search
 
 
+class McpListArgs(BaseModel):
+    server: Optional[str] = None
+
+
+class McpCallArgs(BaseModel):
+    server: Optional[str] = None
+    tool: str
+    args: Dict[str, Any] = Field(default_factory=dict)
+
+
+def mcp_list_factory():
+    def mcp_list(ctx: RunContext, args: McpListArgs) -> ToolResult:
+        try:
+            from agent.mcp.client import MCPClient
+            from agent.mcp.registry import get_server
+            from agent.mcp.state import get_active_server
+        except Exception as exc:
+            return ToolResult(success=False, error=f"mcp unavailable: {exc}")
+
+        name = args.server or get_active_server()
+        if not name:
+            return ToolResult(success=False, error="mcp: no active server")
+        server = get_server(name)
+        if server is None:
+            return ToolResult(success=False, error=f"mcp: unknown server {name}")
+        resp = MCPClient(server).list_tools()
+        if resp.error:
+            return ToolResult(success=False, error=str(resp.error))
+        return ToolResult(success=True, output=resp.result or {})
+
+    return mcp_list
+
+
+def mcp_call_factory():
+    def mcp_call(ctx: RunContext, args: McpCallArgs) -> ToolResult:
+        try:
+            from agent.mcp.client import MCPClient
+            from agent.mcp.registry import get_server
+            from agent.mcp.state import get_active_server
+        except Exception as exc:
+            return ToolResult(success=False, error=f"mcp unavailable: {exc}")
+
+        name = args.server or get_active_server()
+        if not name:
+            return ToolResult(success=False, error="mcp: no active server")
+        server = get_server(name)
+        if server is None:
+            return ToolResult(success=False, error=f"mcp: unknown server {name}")
+        resp = MCPClient(server).call_tool(args.tool, args.args or {})
+        if resp.error:
+            return ToolResult(success=False, error=str(resp.error))
+        return ToolResult(success=True, output=resp.result or {})
+
+    return mcp_call
+
+
 class ShellExecArgs(BaseModel):
     command: str
     timeout_seconds: int = 30
