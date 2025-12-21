@@ -52,7 +52,7 @@ This enables web automation features.
 Open `.env` and customize:
 - `CODEX_TIMEOUT_SECONDS` - How long to wait for responses
 - `AUTO_MAX_STEPS` - Max steps in autonomous mode
-- `AUTO_FS_ALLOWED_ROOTS` - Which folders the agent can access
+- `AGENT_MEMORY_EMBED_MODEL` - Embedding model for long-term memory
 
 ### 4. Test Basic Functionality (10 minutes)
 ```powershell
@@ -136,7 +136,7 @@ I've created **4 comprehensive guides** for you:
    > Auto: organize my desktop files
    ```
 
-2. Review each action before approval
+2. Review outputs and adjust prompts as needed
 
 3. Use research mode:
    ```
@@ -149,17 +149,12 @@ I've created **4 comprehensive guides** for you:
 **Goal**: Let the agent work independently
 
 **Tasks**:
-1. Enable unsafe mode for trusted tasks:
-   ```
-   > unsafe on
-   ```
-
-2. Complex multi-step tasks:
+1. Complex multi-step tasks:
    ```
    > Auto: research async Python, create a web scraper, and document it
    ```
 
-3. Business automation:
+2. Business automation:
    ```
    > Auto: analyze my project structure and suggest improvements
    ```
@@ -232,31 +227,18 @@ CODEX_REASONING_EFFORT=medium      # Balance speed and quality
 # === AUTONOMOUS MODE ===
 AUTO_MAX_STEPS=30                  # Enough for complex tasks
 AUTO_TIMEOUT_SECONDS=600           # 10 minutes total
-AUTO_PLANNER_MODE=react            # Dynamic replanning
+AUTO_PLANNER_MODE=auto             # Dynamic replanning
 AUTO_ENABLE_WEB_GUI=1              # Enable browser automation
 AUTO_ENABLE_DESKTOP=1              # Enable desktop control
 AUTO_ALLOW_HUMAN_ASK=1             # Agent can ask questions
 
-# === SAFETY (Start Conservative) ===
-AGENT_UNSAFE_MODE=0                # Require approval initially
-AUTO_FS_ANYWHERE=0                 # Restrict to safe folders
-
-# === FILESYSTEM ACCESS ===
-# Add your work folders:
-AUTO_FS_ALLOWED_ROOTS=C:\Users\treyt\OneDrive\Desktop;C:\Projects;C:\Documents
+# === MEMORY ===
+AGENT_MEMORY_EMBED_MODEL=all-MiniLM-L6-v2
+AGENT_MEMORY_FAISS_DISABLE=0
 
 # === BEHAVIOR ===
 TREYS_AGENT_DEFAULT_MODE=execute   # Default to fast execution
 TREYS_AGENT_PROMPT_ON_AMBIGUOUS=0  # Don't ask, just execute
-```
-
-### After 2-3 Weeks (Once Comfortable)
-
-```env
-# Enable full autonomy
-AGENT_UNSAFE_MODE=1
-AUTO_FS_ANYWHERE=1
-AUTO_ALLOW_HUMAN_ASK=0
 ```
 
 ---
@@ -277,23 +259,8 @@ AUTO_ALLOW_HUMAN_ASK=0
 
 3. **Backup regularly** (encrypted)
 
-### Filesystem Safety
-1. **Start with restricted access**:
-   ```env
-   AUTO_FS_ANYWHERE=0
-   AUTO_FS_ALLOWED_ROOTS=C:\Projects;C:\Documents
-   ```
-
-2. **Expand as needed** after testing
-
-3. **Never enable full access** for untrusted tasks
-
-### Unsafe Mode
-1. **Start with safe mode** (requires approval)
-2. **Enable unsafe mode** only for:
-   - Trusted, repetitive tasks
-   - Tasks you've tested multiple times
-   - Non-destructive operations
+### Filesystem and Safety
+Filesystem access and tool execution are unrestricted in this build.
 
 ---
 
@@ -360,10 +327,7 @@ Make sure your ChatGPT Pro subscription is active.
 
 ### Issue: "Permission denied"
 **Solution**:
-Add the folder to `.env`:
-```env
-AUTO_FS_ALLOWED_ROOTS=C:\Projects;C:\Documents;C:\Code
-```
+Check file/folder permissions on the target path.
 
 ### Issue: "Browser automation failed"
 **Solution**:
@@ -421,8 +385,7 @@ agent/playbooks/index.json
 ### This Month
 1. ✅ Build a library of playbooks
 2. ✅ Use autonomous mode for complex tasks
-3. ✅ Enable unsafe mode for trusted tasks
-4. ✅ Integrate into daily workflow
+3. ✅ Integrate into daily workflow
 
 ---
 

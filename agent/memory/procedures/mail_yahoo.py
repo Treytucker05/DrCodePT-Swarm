@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
@@ -29,6 +29,9 @@ class MoveRule(BaseModel):
     max_messages: int = 50
     newer_than_days: Optional[int] = None
     unread_only: bool = False
+
+    # search scope (v0.1)
+    search_folders: List[str] = Field(default_factory=lambda: ["INBOX"])
 
 
 class MailProcedure(BaseModel):

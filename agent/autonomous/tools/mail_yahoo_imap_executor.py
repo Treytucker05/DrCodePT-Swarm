@@ -200,13 +200,19 @@ def main() -> int:
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Plan only (default)")
     mode.add_argument("--execute", action="store_true", help="Execute moves")
+    mode.add_argument(
+        "--scan-all-folders",
+        action="store_true",
+        help="Scan all folders for rule matches (no moves)",
+    )
     ap.add_argument("--max-per-rule", type=int, default=None)
     ap.add_argument("--host", default=DEFAULT_HOST)
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--source", default=DEFAULT_SOURCE)
     args = ap.parse_args()
 
-    execute = bool(args.execute)
+    scan_mode = bool(args.scan_all_folders)
+    execute = bool(args.execute) and not scan_mode
     dry_run = not execute
 
     proc = load_procedure()
@@ -214,12 +220,14 @@ def main() -> int:
     run_dir = _repo_root() / "runs" / run_id
     plan_path = run_dir / "mail_plan.json"
     report_path = run_dir / "mail_report.md"
+    scan_path = run_dir / "mail_scan.json"
 
     plan: Dict[str, object] = {
         "run_id": run_id,
         "time_utc": datetime.now(timezone.utc).isoformat(),
         "execute": execute,
         "dry_run": dry_run,
+        "scan_all_folders": scan_mode,
         "max_per_rule": args.max_per_rule,
         "procedure": proc.model_dump(),
         "source_folder": args.source,
@@ -234,6 +242,7 @@ def main() -> int:
         f"- run_id: {run_id}",
         f"- execute: {execute}",
         f"- dry_run: {dry_run}",
+        f"- scan_all_folders: {scan_mode}",
         f"- source: {args.source}",
         "",
     ]
@@ -257,6 +266,68 @@ def main() -> int:
         report_lines.append(f"## Folders ({len(folders)})")
         report_lines.extend([f"- {f}" for f in folders[:50]])
         report_lines.append("")
+
+        if scan_mode:
+            scan_results: Dict[str, Dict[str, int]] = {}
+            scan_totals: Dict[str, int] = {}
+            matches_total = 0
+
+            report_lines.append("## Rules")
+            for rule in proc.rules:
+                combos = build_search_tokens(rule)
+                rule_counts: Dict[str, int] = {}
+                rule_total = 0
+                for folder in folders:
+                    try:
+                        seen: Dict[str, bool] = {}
+                        for tokens in combos:
+                            uids = search_uids(imap, folder, tokens)
+                            for uid in uids:
+                                if uid not in seen:
+                                    seen[uid] = True
+                        count = len(seen)
+                    except Exception as exc:
+                        success = False
+                        print(f"[ERR] Rule '{rule.name}' scan failed in {folder}: {exc}")
+                        report_lines.append(
+                            f"- rule_scan_failed: {rule.name} folder={folder} error={exc}"
+                        )
+                        continue
+
+                    if count > 0:
+                        print(f"[SCAN] Rule '{rule.name}' folder '{folder}' matches={count}")
+                        rule_counts[folder] = count
+                        rule_total += count
+
+                scan_results[rule.name] = rule_counts
+                scan_totals[rule.name] = rule_total
+                matches_total += rule_total
+                report_lines.append(
+                    f"- rule: {rule.name} matched_total={rule_total} moved_total=0"
+                )
+
+            report_lines.append("")
+            report_lines.append("## Summary")
+            report_lines.append(f"- rules_total: {len(proc.rules)}")
+            report_lines.append(f"- matches_total: {matches_total}")
+            report_lines.append("- moved_total: 0")
+
+            scan_payload = {
+                "run_id": run_id,
+                "time_utc": datetime.now(timezone.utc).isoformat(),
+                "scan_all_folders": True,
+                "rules": scan_results,
+                "totals": {
+                    "rules_total": len(proc.rules),
+                    "matches_total": matches_total,
+                    "by_rule": scan_totals,
+                },
+            }
+            _write_json(scan_path, scan_payload)
+            _write_report(report_path, report_lines)
+            print(f"[OK] Wrote scan: {scan_path}")
+            print(f"[OK] Wrote report: {report_path}")
+            return 0 if success else 1
 
         protected = list(proc.protected_folders or [])
         plan["protected_folders"] = protected
@@ -348,10 +419,11 @@ def main() -> int:
             rule_entry["planned_uids"] = planned_uids
             rule_entry["status"] = "planned"
 
-            report_lines.append(f"- rule: {rule.name} matches={len(all_uids)} planned={len(planned_uids)}")
-
             if dry_run:
                 print(f"[DRY] Rule '{rule.name}' planned moves: {len(planned_uids)}")
+                report_lines.append(
+                    f"- rule: {rule.name} matched_total={len(all_uids)} planned={len(planned_uids)} moved_total=0"
+                )
                 plan["rules"].append(rule_entry)
                 continue
 
@@ -368,6 +440,9 @@ def main() -> int:
                     print(f"[ERR] Failed to move UID {uid}: {method}")
                     report_lines.append(f"- move_failed: rule={rule.name} uid={uid} error={method}")
 
+            report_lines.append(
+                f"- rule: {rule.name} matched_total={len(all_uids)} planned={len(planned_uids)} moved_total={moved}"
+            )
             rule_entry["moved"] = moved
             plan["rules"].append(rule_entry)
 

@@ -89,7 +89,7 @@ New folder name (or 'done' to finish): done
 1. **Start with Option 3** if you want to plan before scanning
 2. **Use Option 4** if you just want to find spam quickly
 3. **Enable MAIL_USE_COLLAB** if you want AI to help you think through your strategy
-4. The agent won't make changes without your approval - it's safe to explore!
+4. The agent can make changes immediately; review results in the output.
 
 ## Need Help?
 Type `help` in the agent to see all available commands.

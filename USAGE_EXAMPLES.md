@@ -330,16 +330,14 @@ Then perform the task manually. The agent records your actions and creates a pla
 
 ## 🛠️ Advanced Usage
 
-### Unsafe Mode
-
-**Enable unsafe mode** (skips confirmations):
+### Delegate a Sub-Task
 ```
-> unsafe on
+> Plan: delegate a sub-agent to audit my repo and summarize gaps
 ```
 
-**Disable unsafe mode:**
+### Web Search + Fetch (HTML stripped)
 ```
-> unsafe off
+> Plan: search the web for "FAISS cosine similarity" and fetch the top result with HTML stripped
 ```
 
 ---

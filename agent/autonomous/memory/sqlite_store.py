@@ -9,7 +9,15 @@ import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
+
+try:  # optional
+    import faiss  # type: ignore
+
+    _FAISS_AVAILABLE = True
+except Exception:  # pragma: no cover - optional dependency
+    faiss = None  # type: ignore[assignment]
+    _FAISS_AVAILABLE = False
 
 
 MemoryKind = Literal["experience", "procedure", "knowledge", "user_info"]
@@ -18,6 +26,7 @@ _FALLBACK_EMBED_DIM = 256
 _DEFAULT_EMBED_MODEL = "all-MiniLM-L6-v2"
 _EMBED_ENV_VAR = "AGENT_MEMORY_EMBED_MODEL"
 _EMBED_BACKEND_ENV_VAR = "AGENT_MEMORY_EMBED_BACKEND"
+_FAISS_DISABLE_ENV_VAR = "AGENT_MEMORY_FAISS_DISABLE"
 
 _ST_MODEL = None
 _ST_MODEL_NAME = None
@@ -106,7 +115,11 @@ class SqliteMemoryStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.path))
         self._conn.row_factory = sqlite3.Row
+        self._faiss_index = None
+        self._faiss_dim: Optional[int] = None
+        self._faiss_model: Optional[str] = None
         self._init_schema()
+        self._init_faiss_index()
 
     def close(self) -> None:
         try:
@@ -153,6 +166,74 @@ class SqliteMemoryStore:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_memory_key ON memory_records(key);")
         self._conn.commit()
 
+    def _init_faiss_index(self) -> None:
+        if not _FAISS_AVAILABLE:
+            return
+        if os.getenv(_FAISS_DISABLE_ENV_VAR, "").strip().lower() in {"1", "true", "yes", "y"}:
+            return
+        try:
+            _, _, model_name, dim = _embed(" ")
+        except Exception:
+            return
+        try:
+            index = faiss.IndexFlatIP(dim)  # type: ignore[attr-defined]
+            self._faiss_index = faiss.IndexIDMap2(index)  # type: ignore[attr-defined]
+            self._faiss_dim = dim
+            self._faiss_model = model_name
+            cur = self._conn.cursor()
+            rows = cur.execute(
+                "SELECT record_id, vector_json, norm, dim, model FROM memory_embeddings WHERE dim=?",
+                (dim,),
+            ).fetchall()
+            ids: List[int] = []
+            vecs: List[List[float]] = []
+            for r in rows:
+                if not r["vector_json"]:
+                    continue
+                if r["model"] and r["model"] != model_name:
+                    continue
+                try:
+                    vec = json.loads(r["vector_json"])
+                    norm = float(r["norm"]) if r["norm"] else None
+                except Exception:
+                    continue
+                if not vec or not norm:
+                    continue
+                if norm != 0.0:
+                    vec = [v / norm for v in vec]
+                ids.append(int(r["record_id"]))
+                vecs.append(vec)
+            if ids:
+                import numpy as np
+
+                vec_arr = np.array(vecs, dtype="float32")
+                id_arr = np.array(ids, dtype="int64")
+                self._faiss_index.add_with_ids(vec_arr, id_arr)
+        except Exception:
+            self._faiss_index = None
+            self._faiss_dim = None
+            self._faiss_model = None
+
+    def _update_faiss(self, record_id: int, vec: List[float], norm: float, model_name: str, dim: int) -> None:
+        if self._faiss_index is None:
+            return
+        if self._faiss_dim != dim or self._faiss_model != model_name:
+            return
+        try:
+            if norm != 0.0:
+                vec = [v / norm for v in vec]
+            import numpy as np
+
+            vec_arr = np.array([vec], dtype="float32")
+            id_arr = np.array([int(record_id)], dtype="int64")
+            try:
+                self._faiss_index.remove_ids(id_arr)
+            except Exception:
+                pass
+            self._faiss_index.add_with_ids(vec_arr, id_arr)
+        except Exception:
+            pass
+
     def _upsert_embedding(self, record_id: int, content: str, *, now: Optional[float] = None) -> None:
         now = now or time.time()
         vec, norm, model_name, dim = _embed(content)
@@ -185,6 +266,10 @@ class SqliteMemoryStore:
                 (record_id, dim, json.dumps(vec), float(norm), now),
             )
         self._conn.commit()
+        try:
+            self._update_faiss(record_id, vec, norm, model_name, dim)
+        except Exception:
+            pass
 
     def upsert(
         self,
@@ -243,6 +328,56 @@ class SqliteMemoryStore:
         candidate_limit = max(limit * 25, 50)
         params: List[Any] = [*kinds, candidate_limit]
         cur = self._conn.cursor()
+        q_vec, q_norm, q_model, q_dim = _embed(q)
+        now = time.time()
+
+        if self._faiss_index is not None and q_dim == self._faiss_dim and q_model == self._faiss_model:
+            try:
+                import numpy as np
+
+                qv = [v / q_norm for v in q_vec] if q_norm else q_vec
+                k = max(limit * 5, limit)
+                sims, ids = self._faiss_index.search(np.array([qv], dtype="float32"), k)
+                id_list = [int(i) for i in ids[0] if int(i) >= 0]
+                if id_list:
+                    id_placeholders = ",".join("?" for _ in id_list)
+                    rows = cur.execute(
+                        f"""
+                        SELECT id, kind, key, content, metadata_json, created_at, updated_at
+                        FROM memory_records
+                        WHERE id IN ({id_placeholders})
+                        """,
+                        id_list,
+                    ).fetchall()
+                    row_map = {int(r["id"]): r for r in rows}
+                    scored: List[tuple[float, sqlite3.Row]] = []
+                    for rank, rec_id in enumerate(id_list):
+                        r = row_map.get(rec_id)
+                        if r is None:
+                            continue
+                        sim = float(sims[0][rank])
+                        age = max(0.0, now - float(r["updated_at"]))
+                        recency = 1.0 / (1.0 + (age / 86400.0))
+                        score = (0.85 * sim) + (0.15 * recency)
+                        scored.append((score, r))
+                    scored.sort(key=lambda x: x[0], reverse=True)
+                    out: List[MemoryRecord] = []
+                    for _, r in scored[: max(1, limit)]:
+                        out.append(
+                            MemoryRecord(
+                                kind=r["kind"],
+                                id=int(r["id"]),
+                                key=r["key"],
+                                content=r["content"],
+                                metadata=json.loads(r["metadata_json"] or "{}"),
+                                created_at=float(r["created_at"]),
+                                updated_at=float(r["updated_at"]),
+                            )
+                        )
+                    return out
+            except Exception:
+                pass
+
         cur.execute(
             f"""
             SELECT r.id, r.kind, r.key, r.content, r.metadata_json, r.created_at, r.updated_at,
@@ -256,8 +391,6 @@ class SqliteMemoryStore:
             params,
         )
         rows = cur.fetchall()
-        q_vec, q_norm, q_model, q_dim = _embed(q)
-        now = time.time()
         scored: List[tuple[float, sqlite3.Row]] = []
         for r in rows:
             try:

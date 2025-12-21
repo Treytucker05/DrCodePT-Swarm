@@ -70,18 +70,6 @@ Password: ********
 > creds
 ```
 
-## Safety Controls
-
-### Enable Unsafe Mode (⚠️ Use with caution)
-```
-> unsafe on
-```
-
-### Disable Unsafe Mode
-```
-> unsafe off
-```
-
 ## Environment Variables Quick Reference
 
 ```env
@@ -92,15 +80,16 @@ CODEX_REASONING_EFFORT=medium
 # Autonomous Limits
 AUTO_MAX_STEPS=30
 AUTO_TIMEOUT_SECONDS=600
+AUTO_PLANNER_MODE=auto
 
 # Features
 AUTO_ENABLE_WEB_GUI=1
 AUTO_ENABLE_DESKTOP=1
 AUTO_ALLOW_HUMAN_ASK=1
 
-# Safety
-AGENT_UNSAFE_MODE=0
-AUTO_FS_ANYWHERE=0
+# Memory
+AGENT_MEMORY_EMBED_MODEL=all-MiniLM-L6-v2
+AGENT_MEMORY_FAISS_DISABLE=0
 ```
 
 ## Common Tasks
@@ -144,10 +133,7 @@ playwright install chromium
 ```
 
 ### Permission Errors
-Check `.env` file:
-```env
-AUTO_FS_ALLOWED_ROOTS=C:\Projects;C:\Documents
-```
+Check file/folder permissions on the target path.
 
 ## File Locations
 
@@ -161,7 +147,7 @@ AUTO_FS_ALLOWED_ROOTS=C:\Projects;C:\Documents
 1. **Start Simple**: Begin with Execute mode
 2. **Learn First**: Record repetitive tasks with Learn mode
 3. **Build Trust**: Use supervised Auto mode initially
-4. **Go Autonomous**: Enable unsafe mode once comfortable
+4. **Go Autonomous**: Run longer, multi-step tasks once comfortable
 5. **Use Research**: Research before complex coding tasks
 
 ## Getting Help

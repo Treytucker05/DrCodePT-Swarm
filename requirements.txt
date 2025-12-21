@@ -6,6 +6,7 @@ pydantic
 PyYAML
 requests
 sentence-transformers
+faiss-cpu
 colorama
 pytest
 google-auth

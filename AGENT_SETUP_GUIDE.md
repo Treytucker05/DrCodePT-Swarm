@@ -101,7 +101,7 @@ CODEX_REASONING_EFFORT=medium
 # === AUTONOMOUS MODE SETTINGS ===
 AUTO_MAX_STEPS=30
 AUTO_TIMEOUT_SECONDS=600
-AUTO_PLANNER_MODE=react
+AUTO_PLANNER_MODE=auto
 AUTO_ENABLE_WEB_GUI=1
 AUTO_ENABLE_DESKTOP=1
 AUTO_ALLOW_HUMAN_ASK=1
@@ -110,9 +110,9 @@ AUTO_ALLOW_HUMAN_ASK=1
 TREYS_AGENT_DEFAULT_MODE=execute
 TREYS_AGENT_PROMPT_ON_AMBIGUOUS=0
 
-# === SAFETY SETTINGS ===
-AGENT_UNSAFE_MODE=0
-AUTO_FS_ANYWHERE=0
+# === MEMORY SETTINGS ===
+AGENT_MEMORY_EMBED_MODEL=all-MiniLM-L6-v2
+AGENT_MEMORY_FAISS_DISABLE=0
 
 # === OPTIONAL: Credential Prompts ===
 TREYS_AGENT_CRED_PROMPT_SITES=yahoo,gmail,github
@@ -135,6 +135,8 @@ pip install -r requirements.txt
 - `pydantic` - Data validation
 - `PyYAML` - YAML parsing
 - `requests` - HTTP requests
+- `sentence-transformers` - Embeddings
+- `faiss-cpu` - Fast vector search
 - `colorama` - Terminal colors
 - `pytest` - Testing
 
@@ -196,7 +198,6 @@ The agent will:
 - Can use web browsing
 - Can write code
 - Can execute system commands
-- Asks for approval on risky actions (unless unsafe mode is on)
 
 ### 4. **Research Mode** 🔍
 
@@ -223,7 +224,7 @@ The agent will:
 1. Ask clarifying questions
 2. Discuss options with you
 3. Create a detailed plan
-4. Execute with your approval
+4. Execute end-to-end
 
 ### 6. **Mail Mode** 📧
 
@@ -269,49 +270,19 @@ Password: ********
 | `CODEX_REASONING_EFFORT` | medium | low/medium/high |
 | `AUTO_MAX_STEPS` | 30 | Max steps in autonomous mode |
 | `AUTO_TIMEOUT_SECONDS` | 600 | Autonomous mode timeout |
-| `AUTO_PLANNER_MODE` | react | react/plan_first |
+| `AUTO_PLANNER_MODE` | react | react/plan_first/auto |
 | `AUTO_ENABLE_WEB_GUI` | 1 | Enable browser automation |
 | `AUTO_ENABLE_DESKTOP` | 1 | Enable desktop control |
 | `AUTO_ALLOW_HUMAN_ASK` | 1 | Agent can ask for help |
-| `AUTO_FS_ANYWHERE` | 0 | Allow file access anywhere |
-| `AGENT_UNSAFE_MODE` | 0 | Skip safety confirmations |
+| `AGENT_MEMORY_EMBED_MODEL` | all-MiniLM-L6-v2 | SentenceTransformer model name |
+| `AGENT_MEMORY_EMBED_BACKEND` |  | Set to `hash` to force fallback embeddings |
+| `AGENT_MEMORY_FAISS_DISABLE` | 0 | Disable FAISS acceleration |
 | `TREYS_AGENT_DEFAULT_MODE` | execute | execute/research/collab |
 | `TREYS_AGENT_PROMPT_ON_AMBIGUOUS` | 0 | Ask when intent unclear |
 
-### Filesystem Safety
+### Filesystem and Safety
 
-By default, the agent can only access:
-- Your Desktop
-- OneDrive Desktop
-- The agent's repository folder
-
-**To allow access to specific folders:**
-```env
-AUTO_FS_ALLOWED_ROOTS=C:\Projects;C:\Documents;C:\Code
-```
-
-**To allow access anywhere (⚠️ use with caution):**
-```env
-AUTO_FS_ANYWHERE=1
-```
-
-### Unsafe Mode
-
-By default, the agent asks for confirmation before:
-- Deleting files
-- Running system commands
-- Making network requests
-- Installing software
-
-**To enable unsafe mode (⚠️ use with caution):**
-```
-> unsafe on
-```
-
-Or set in `.env`:
-```env
-AGENT_UNSAFE_MODE=1
-```
+Filesystem access and tool execution are unrestricted in this build.
 
 ---
 
@@ -372,8 +343,7 @@ playwright install chromium
 
 **Solution:**
 1. Run as Administrator (if needed)
-2. Check `AUTO_FS_ALLOWED_ROOTS` in `.env`
-3. Or enable `AUTO_FS_ANYWHERE=1` (⚠️ use with caution)
+2. Check file/folder permissions on the target path
 
 ### Issue: Agent is too slow
 
@@ -433,23 +403,16 @@ TREYS_AGENT_DEFAULT_MODE=execute
    > Auto: create a Python script to organize my files
    ```
 
-2. **Review and approve** each action
-
-3. **Build trust** as the agent learns your preferences
+2. **Build trust** as the agent learns your preferences
 
 ### Phase 3: Full Autonomy (Week 6+)
 
-1. **Enable unsafe mode** for trusted tasks:
-   ```
-   > unsafe on
-   ```
-
-2. **Use Research mode** for autonomous research:
+1. **Use Research mode** for autonomous research:
    ```
    > Research: latest AI agent architectures
    ```
 
-3. **Complex multi-step tasks**:
+2. **Complex multi-step tasks**:
    ```
    > Auto: analyze my project structure and suggest improvements
    ```
@@ -555,7 +518,6 @@ agent/memory/
 - Use specific, clear instructions
 
 ### ❌ DON'T:
-- Enable unsafe mode without understanding risks
 - Share credential files
 - Allow filesystem access everywhere
 - Run untrusted playbooks

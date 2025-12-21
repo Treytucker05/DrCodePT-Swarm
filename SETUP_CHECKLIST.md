@@ -125,10 +125,9 @@ launchers\TREYS_AGENT.bat
 - [ ] `AUTO_ENABLE_DESKTOP` - Enable desktop control (default: 1)
 - [ ] `AUTO_ALLOW_HUMAN_ASK` - Agent can ask questions (default: 1)
 
-#### Safety Settings
-- [ ] `AGENT_UNSAFE_MODE` - Skip confirmations (default: 0)
-- [ ] `AUTO_FS_ANYWHERE` - Allow filesystem access anywhere (default: 0)
-- [ ] `AUTO_FS_ALLOWED_ROOTS` - Specific allowed folders (optional)
+#### Memory Settings
+- [ ] `AGENT_MEMORY_EMBED_MODEL` - SentenceTransformer model (default: all-MiniLM-L6-v2)
+- [ ] `AGENT_MEMORY_FAISS_DISABLE` - Disable FAISS (default: 0)
 
 #### Behavior Settings
 - [ ] `TREYS_AGENT_DEFAULT_MODE` - execute/research/collab (default: execute)
@@ -159,9 +158,7 @@ launchers\TREYS_AGENT.bat
 - [ ] Verify Playwright is in `requirements.txt`
 
 ### Issue: Permission denied errors
-- [ ] Check `AUTO_FS_ALLOWED_ROOTS` in `.env`
-- [ ] Add specific folders to allowed roots
-- [ ] Or enable `AUTO_FS_ANYWHERE=1` (⚠️ use with caution)
+- [ ] Check file/folder permissions on the target path
 
 ### Issue: Agent is too slow
 - [ ] Reduce `CODEX_TIMEOUT_SECONDS`
@@ -182,15 +179,8 @@ launchers\TREYS_AGENT.bat
 - [ ] Don't commit these files to version control
 - [ ] Backup credential files securely
 
-### Filesystem Safety
-- [ ] Review `AUTO_FS_ALLOWED_ROOTS` settings
-- [ ] Don't enable `AUTO_FS_ANYWHERE` unless necessary
-- [ ] Test with safe directories first
-
-### Unsafe Mode
-- [ ] Understand risks before enabling
-- [ ] Only enable for trusted tasks
-- [ ] Monitor agent actions initially
+### Filesystem
+- [ ] Confirm expected paths are accessible by the user account
 
 ### Environment File
 - [ ] Keep `.env` file secure
@@ -210,12 +200,10 @@ launchers\TREYS_AGENT.bat
 
 ### Week 2: Supervised Autonomy
 - [ ] Use Auto mode: `> Auto: organize my desktop files`
-- [ ] Review each action
 - [ ] Learn more complex tasks
 - [ ] Build trust with the agent
 
 ### Week 3+: Full Autonomy
-- [ ] Enable unsafe mode for trusted tasks
 - [ ] Use autonomous research
 - [ ] Complex multi-step tasks
 - [ ] Integrate into daily workflow
@@ -240,7 +228,7 @@ launchers\TREYS_AGENT.bat
 - [ ] Update Codex CLI
 - [ ] Add new playbooks
 - [ ] Adjust configuration based on usage
-- [ ] Review security settings
+- [ ] Review configuration settings
 
 ---
 

@@ -243,17 +243,8 @@ items = yahoo_mail.list_messages(limit=10, folder='INBOX')
 **Symptoms**: "Access denied", "Permission denied"
 
 **Solutions**:
-1. Add folder to allowed roots in `.env`:
-   ```env
-   AUTO_FS_ALLOWED_ROOTS=C:\Projects;C:\Documents;C:\Code
-   ```
-
-2. Or enable full access (⚠️ use with caution):
-   ```env
-   AUTO_FS_ANYWHERE=1
-   ```
-
-3. Run as Administrator (if needed)
+1. Check file/folder permissions on the target path
+2. Run as Administrator (if needed)
 
 ---
 
@@ -345,10 +336,7 @@ Edit `agent/playbooks/index.json` to fix the playbook.
    TREYS_AGENT_DEFAULT_MODE=execute
    ```
 
-3. Enable unsafe mode (⚠️ use with caution):
-   ```
-   > unsafe on
-   ```
+3. Reduce prompt friction by keeping tasks specific and bounded
 
 ---
 
@@ -410,11 +398,10 @@ AUTO_ENABLE_DESKTOP=1
 AUTO_ALLOW_HUMAN_ASK=1
 ```
 
-### Safety Settings
+### Memory Settings
 ```env
-AGENT_UNSAFE_MODE=0
-AUTO_FS_ANYWHERE=0
-AUTO_FS_ALLOWED_ROOTS=C:\Projects;C:\Documents
+AGENT_MEMORY_EMBED_MODEL=all-MiniLM-L6-v2
+AGENT_MEMORY_FAISS_DISABLE=0
 ```
 
 ### Behavior Settings

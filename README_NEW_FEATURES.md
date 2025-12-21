@@ -9,7 +9,8 @@ I've transformed your agent into a **self-healing, planning, learning system** t
 ✅ **Learn from past mistakes** and apply solutions to future problems  
 ✅ **Integrate with Google APIs** (Tasks, Gmail, Calendar) via OAuth2  
 ✅ **Track all issues** and solutions for continuous improvement  
-✅ **Pause for you** when 2FA or confirmations are needed  
+✅ **Delegate sub-tasks** to sub-agents via `delegate_task`  
+✅ **Pause for you** when 2FA is needed  
 
 ---
 
@@ -183,7 +184,6 @@ pip install -r requirements.txt
 Agent pauses for:
 - 2FA challenges
 - OAuth2 authorization
-- Destructive confirmations
 
 ---
 

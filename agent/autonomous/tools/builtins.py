@@ -13,6 +13,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 from urllib.parse import parse_qs, unquote, urlparse
 
 import requests
@@ -156,6 +157,41 @@ def web_search(ctx: RunContext, args: WebSearchArgs) -> ToolResult:
             "source": "duckduckgo_html",
         },
     )
+
+
+def _choose_planner_mode(task: str) -> str:
+    text = (task or "").strip().lower()
+    if not text:
+        return "react"
+    words = [w for w in re.split(r"\s+", text) if w]
+    word_count = len(words)
+    conjunctions = (" and ", " then ", " after ", " before ", " also ", " plus ")
+    plan_keywords = (
+        "plan",
+        "steps",
+        "roadmap",
+        "multi-step",
+        "implement",
+        "build",
+        "create",
+        "setup",
+        "configure",
+        "migrate",
+        "refactor",
+        "research",
+        "compare",
+        "analyze",
+        "summarize",
+    )
+    if word_count >= 12:
+        return "plan_first"
+    if any(k in text for k in conjunctions):
+        return "plan_first"
+    if text.count(",") >= 2 or ":" in text or ";" in text:
+        return "plan_first"
+    if any(k in text for k in plan_keywords):
+        return "plan_first"
+    return "react"
 
 
 class FileReadArgs(BaseModel):
@@ -640,6 +676,76 @@ class FinishArgs(BaseModel):
 def finish(ctx: RunContext, args: FinishArgs) -> ToolResult:
     _close_web_session(ctx)
     return ToolResult(success=True, output={"summary": args.summary})
+
+
+class DelegateTaskArgs(BaseModel):
+    task: str
+    max_steps: int = 20
+    timeout_seconds: int = 600
+    planner_mode: str = "auto"  # react | plan_first | auto
+    num_candidates: int = 1
+    max_plan_steps: int = 6
+    use_dppm: bool = True
+    use_tot: bool = True
+
+
+def delegate_task_factory(agent_cfg: AgentConfig, memory_store: Optional[SqliteMemoryStore]):
+    def delegate_task(ctx: RunContext, args: DelegateTaskArgs) -> ToolResult:
+        task = (args.task or "").strip()
+        if not task:
+            return ToolResult(success=False, error="delegate_task requires task")
+        try:
+            from agent.autonomous.config import PlannerConfig, RunnerConfig
+            from agent.autonomous.runner import AgentRunner
+            from agent.llm import CodexCliAuthError, CodexCliClient, CodexCliNotFoundError
+        except Exception as exc:
+            return ToolResult(success=False, error=f"delegate_task import failed: {exc}")
+
+        mode = (args.planner_mode or "react").strip().lower()
+        if mode == "auto":
+            mode = _choose_planner_mode(task)
+        if mode not in {"react", "plan_first"}:
+            mode = "react"
+
+        try:
+            llm = CodexCliClient.from_env()
+        except (CodexCliNotFoundError, CodexCliAuthError) as exc:
+            return ToolResult(success=False, error=str(exc))
+        except Exception as exc:
+            return ToolResult(success=False, error=f"delegate_task llm error: {exc}")
+
+        run_id = f"delegate_{int(time.time())}_{uuid4().hex[:8]}"
+        run_dir = ctx.run_dir / "delegates" / run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        runner = AgentRunner(
+            cfg=RunnerConfig(max_steps=max(1, int(args.max_steps)), timeout_seconds=max(30, int(args.timeout_seconds))),
+            agent_cfg=agent_cfg,
+            planner_cfg=PlannerConfig(
+                mode=mode,  # type: ignore[arg-type]
+                num_candidates=max(1, int(args.num_candidates)),
+                max_plan_steps=max(1, int(args.max_plan_steps)),
+                use_dppm=bool(args.use_dppm),
+                use_tot=bool(args.use_tot),
+            ),
+            llm=llm,
+            run_dir=run_dir,
+            memory_store=memory_store,
+        )
+        result = runner.run(task)
+        return ToolResult(
+            success=result.success,
+            output={
+                "task": task,
+                "run_id": result.run_id,
+                "trace_path": result.trace_path,
+                "stop_reason": result.stop_reason,
+                "steps_executed": result.steps_executed,
+                "planner_mode": mode,
+            },
+            error=None if result.success else f"delegate_task stopped: {result.stop_reason}",
+        )
+
+    return delegate_task
 
 
 class MemoryStoreArgs(BaseModel):
@@ -1380,6 +1486,14 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
             args_model=MemorySearchArgs,
             fn=memory_search_factory(memory_store),
             description="Search long-term memory (keyword + recency)",
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="delegate_task",
+            args_model=DelegateTaskArgs,
+            fn=delegate_task_factory(cfg, memory_store),
+            description="Run a sub-agent on a delegated task",
         )
     )
     reg.register(ToolSpec(name="finish", args_model=FinishArgs, fn=finish, description="Stop successfully"))

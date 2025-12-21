@@ -38,6 +38,6 @@
 
 ## 8) Safety Hardening
 - [ ] Approval required for delete/move outside workspace
-- [ ] Shell allowlist + approval
-- [ ] Credential entry approval gate
+- [x] Shell allowlist + approval (removed; shell runs unrestricted)
+- [x] Credential entry approval gate (removed; human_ask prompts directly)
 - [ ] Global kill switch
