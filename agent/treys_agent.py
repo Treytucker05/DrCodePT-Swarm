@@ -340,6 +340,25 @@ def _is_simple_question(text: str) -> bool:
     return False
 
 
+def _is_capability_query(text: str) -> bool:
+    lowered = text.strip().lower()
+    triggers = {
+        "what can you help me with",
+        "what can you do",
+        "capabilities",
+        "help",
+    }
+    if lowered in triggers:
+        return True
+    return any(trigger in lowered for trigger in triggers if len(trigger.split()) > 1)
+
+
+def _run_capabilities() -> None:
+    from agent.autonomous.help.capabilities import build_capabilities_response
+
+    print(build_capabilities_response())
+
+
 def _handle_simple_question(text: str) -> None:
     lowered = text.lower().strip()
 
@@ -687,8 +706,8 @@ def main() -> None:
             print("Goodbye!")
             return
 
-        if lower == "help":
-            show_help()
+        if _is_capability_query(user_input):
+            _run_capabilities()
             continue
 
         if lower == "playbooks":

@@ -25,3 +25,8 @@
 ## Q&A Gating
 - Never proceed past ASK_USER without answers.
 - Summarize captured answers before resuming PLAN.
+
+## User Interaction Model
+- Speak naturally; you don’t need tool names.
+- I will ask before running actions and confirm when something is destructive.
+- Use Team for execution, Think for planning, Mail for email workflows, Research for sources.
