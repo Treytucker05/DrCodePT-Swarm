@@ -73,6 +73,7 @@ def _extract_bullets(text: str, *, limit: int = 5) -> list[str]:
 
 
 _URL_RE = re.compile(r"https?://[^\s)>\"]+")
+_CODEX_UNSUPPORTED_FLAGS: set[str] = set()
 
 
 def _short_label(text: str, *, max_words: int = 6, max_chars: int = 40) -> str:
@@ -125,15 +126,25 @@ def _log_event(log: list[str], kind: str, message: str) -> None:
 
 
 def _select_research_profile() -> dict:
+    def _normalize_choice(raw: str) -> str:
+        tokens = re.findall(r"[a-z0-9]+", (raw or "").lower())
+        if not tokens:
+            return ""
+        for key in ("1", "2", "3", "4", "light", "balanced", "moderate", "deep", "checklist", "l", "b", "m", "d", "c"):
+            if key in tokens:
+                return key
+        return tokens[0]
+
     profiles = {
         "1": {
             "name": "light",
-            "max_gap_passes": 1,
+            "max_gap_passes": 0,
             "min_subtopics": 3,
+            "max_subtopics": 3,
             "checklist": False,
             "review_passes": 0,
             "max_review_questions": 0,
-            "min_sources_per_subtopic": 2,
+            "min_sources_per_subtopic": 1,
         },
         "2": {
             "name": "balanced",
@@ -174,7 +185,7 @@ def _select_research_profile() -> dict:
         "c": "4",
     }
 
-    env_choice = (os.getenv("TREYS_AGENT_RESEARCH_MODE") or "").strip().lower()
+    env_choice = _normalize_choice(os.getenv("TREYS_AGENT_RESEARCH_MODE"))
     if env_choice:
         choice_key = aliases.get(env_choice, env_choice)
         profile = profiles.get(choice_key)
@@ -184,12 +195,12 @@ def _select_research_profile() -> dict:
 
     print(
         f"{YELLOW}[DEPTH]{RESET} Choose research depth:\n"
-        "  1) Light     (1 self-check pass)\n"
+        "  1) Light     (0 self-check passes)\n"
         "  2) Balanced  (1-2 self-check passes)\n"
         "  3) Deep      (up to 5 self-check passes)\n"
         "  4) Checklist (>=5 subtopics + coverage checklist)\n"
     )
-    choice = input(f"{GREEN}Select 1-4 (default 2):{RESET} ").strip().lower()
+    choice = _normalize_choice(input(f"{GREEN}Select 1-4 (default 2):{RESET} "))
     if not choice:
         choice = "2"
     choice_key = aliases.get(choice, choice)
@@ -260,6 +271,7 @@ def _call_codex(
     context: str | None = None,
     timeout_seconds: int | None = None,
     show_progress: bool | None = None,
+    retry_on_unknown_feature: bool = True,
 ) -> str:
     show_progress = _bool_env("TREYS_AGENT_PROGRESS", True) if show_progress is None else show_progress
     use_json_events = _bool_env("TREYS_AGENT_JSON_EVENTS", True) if show_progress else False
@@ -274,7 +286,9 @@ def _call_codex(
     if use_json_events:
         cmd += ["--json"]
     if not allow_tools:
-        cmd += ["--disable", "shell_tool", "--disable", "rmcp_client"]
+        cmd += ["--disable", "shell_tool"]
+        if "rmcp_client" not in _CODEX_UNSUPPORTED_FLAGS:
+            cmd += ["--disable", "rmcp_client"]
 
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
@@ -312,6 +326,20 @@ def _call_codex(
 
         if proc.returncode != 0:
             error = proc.stderr.strip() if proc.stderr else "Unknown error"
+            if (
+                retry_on_unknown_feature
+                and "Unknown feature flag: rmcp_client" in error
+            ):
+                _CODEX_UNSUPPORTED_FLAGS.add("rmcp_client")
+                return _call_codex(
+                    prompt,
+                    allow_tools=allow_tools,
+                    label=label,
+                    context=context,
+                    timeout_seconds=timeout_seconds,
+                    show_progress=show_progress,
+                    retry_on_unknown_feature=False,
+                )
             return f"[CODEX ERROR] {error}"
 
         return proc.stdout.strip() if proc.stdout else ""
@@ -448,6 +476,20 @@ def _call_codex(
 
     if proc.returncode != 0:
         err = "".join(stderr_lines).strip() or "Unknown error"
+        if (
+            retry_on_unknown_feature
+            and "Unknown feature flag: rmcp_client" in err
+        ):
+            _CODEX_UNSUPPORTED_FLAGS.add("rmcp_client")
+            return _call_codex(
+                prompt,
+                allow_tools=allow_tools,
+                label=label,
+                context=context,
+                timeout_seconds=timeout_seconds,
+                show_progress=show_progress,
+                retry_on_unknown_feature=False,
+            )
         return f"[CODEX ERROR] {err}"
 
     if use_json_events:
@@ -461,6 +503,9 @@ def _call_codex(
 
 def _research_staged(topic: str, answers: str, profile: dict, log: list[str]) -> str:
     min_subtopics = int(profile.get("min_subtopics") or 3)
+    max_subtopics = int(profile.get("max_subtopics") or max(min_subtopics, 5))
+    if max_subtopics < min_subtopics:
+        max_subtopics = min_subtopics
     max_gap_passes = int(profile.get("max_gap_passes") or 1)
     checklist_mode = bool(profile.get("checklist"))
     review_passes = int(profile.get("review_passes") or 0)
@@ -479,7 +524,7 @@ def _research_staged(topic: str, answers: str, profile: dict, log: list[str]) ->
     plan_prompt = f"""User wants to research: {topic}
 User clarifications: {answers}
 
-Return {min_subtopics}-5 focused subtopics as bullet points. Output only bullets."""
+Return {min_subtopics}-{max_subtopics} focused subtopics as bullet points. Output only bullets."""
     if checklist_mode:
         plan_prompt += "\nEnsure coverage of: " + "; ".join(checklist_items)
     _log_event(log, "PLAN", f"Generating subtopics (min {min_subtopics})")
@@ -488,7 +533,7 @@ Return {min_subtopics}-5 focused subtopics as bullet points. Output only bullets
         _log_event(log, "ERROR", plan_text)
         return plan_text
 
-    subtopics = _extract_bullets(plan_text, limit=8)
+    subtopics = _extract_bullets(plan_text, limit=max_subtopics)
     if len(subtopics) < min_subtopics:
         expand_prompt = f"""We need at least {min_subtopics} unique subtopics.
 Current list:
@@ -497,9 +542,11 @@ Current list:
 Add more unique subtopics to reach {min_subtopics}. Output bullets only."""
         extra = _call_codex(expand_prompt, allow_tools=False, label="PLAN", context=topic)
         if not extra.startswith("[CODEX ERROR]"):
-            subtopics.extend(_extract_bullets(extra, limit=8))
+            subtopics.extend(_extract_bullets(extra, limit=max_subtopics))
         seen = set()
         subtopics = [s for s in subtopics if not (s.lower() in seen or seen.add(s.lower()))]
+    if len(subtopics) > max_subtopics:
+        subtopics = subtopics[:max_subtopics]
     if not subtopics:
         subtopics = [topic]
     _log_event(log, "PLAN", f"Subtopics: {', '.join(subtopics[:10])}")

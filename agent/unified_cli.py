@@ -42,6 +42,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 CODEX_TIMEOUT_SECONDS = int(os.getenv("CODEX_TIMEOUT_SECONDS", "120"))
 CODEX_REASONING_EFFORT = os.getenv("CODEX_REASONING_EFFORT", "medium")
+_CODEX_UNSUPPORTED_FLAGS: set[str] = set()
 
 TEMP_PLAN = BASE_DIR / "temp_plan.yaml"
 LOG_DIR = BASE_DIR / "logs"
@@ -123,9 +124,9 @@ def call_codex(prompt: str, save_to: Optional[Path] = None) -> str:
         f'model_reasoning_effort="{CODEX_REASONING_EFFORT}"',
         "--disable",
         "shell_tool",
-        "--disable",
-        "rmcp_client",
     ]
+    if "rmcp_client" not in _CODEX_UNSUPPORTED_FLAGS:
+        cmd += ["--disable", "rmcp_client"]
     if save_to:
         cmd.extend(["--output-last-message", str(save_to)])
 
@@ -154,6 +155,9 @@ def call_codex(prompt: str, save_to: Optional[Path] = None) -> str:
 
     if proc.returncode != 0:
         error = proc.stderr.strip() if proc.stderr else "Unknown error"
+        if "Unknown feature flag: rmcp_client" in error:
+            _CODEX_UNSUPPORTED_FLAGS.add("rmcp_client")
+            return call_codex(prompt, save_to=save_to)
         return f"[CODEX ERROR] {error}"
 
     return proc.stdout.strip() if proc.stdout else ""
