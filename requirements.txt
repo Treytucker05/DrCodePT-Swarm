@@ -1,6 +1,7 @@
 cryptography
 playwright
 pyautogui
+Pillow
 python-dotenv
 pydantic
 PyYAML

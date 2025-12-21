@@ -39,7 +39,9 @@ def _render_list(label: str, items: List[str]) -> None:
 def _generate_plan(llm: CodexCliClient, task: str, notes: List[str], memories: List[dict]) -> dict:
     prompt = (
         "You are helping a user collaborate on organizing thoughts into an actionable plan.\n"
-        "Return STRICT JSON that matches the schema. No prose.\n\n"
+        "Return STRICT JSON that matches the schema. No prose.\n"
+        "Write next_actions as concrete steps the agent can execute itself.\n"
+        "Do not refer to external runners or ask the user to perform the work.\n\n"
         f"Task:\n{task}\n\n"
         f"Notes:\n{json.dumps(notes, ensure_ascii=False)}\n\n"
         f"Memory (recent):\n{json.dumps(memories, ensure_ascii=False)}\n"

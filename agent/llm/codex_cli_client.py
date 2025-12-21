@@ -304,8 +304,8 @@ class CodexCliClient(LLMClient):
             raise CodexCliExecutionError(f"Failed to load schema: {schema_path}") from exc
 
         # Build reasoning prompt that enforces JSON-only output
-        reasoning_prompt = f"""You are producing JSON for an external runner. Do NOT execute commands yourself; just output JSON.
-It is OK to propose tool actions inside the JSON.
+        reasoning_prompt = f"""You are producing JSON for the agent's internal executor. Do NOT execute commands yourself; just output JSON.
+It is OK to propose tool actions inside the JSON. Do not refer to an "external runner" in outputs.
 
 Return ONLY valid JSON matching this exact schema:
 
