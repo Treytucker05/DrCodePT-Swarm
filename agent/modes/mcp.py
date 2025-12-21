@@ -13,7 +13,7 @@ def connect(server_name: str) -> None:
         print(f"[MCP] Unknown server: {server_name}")
         available = ", ".join(list_servers().keys())
         if available:
-            print(f"[MCP] उपलब्ध servers: {available}")
+            print(f"[MCP] Available servers: {available}")
         return
     set_active_server(server_name)
     print(f"[MCP] Active server set to: {server_name}")

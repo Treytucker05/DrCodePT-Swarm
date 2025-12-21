@@ -176,7 +176,7 @@ class AgentRunner:
         last_state_fingerprint = state.state_fingerprint()
         same_state_steps = 0
 
-        current_plan: Optional[Plan] = None
+        current_plan: Optional[Plan] = state.current_plan
         step_snapshots_taken: set[str] = set()
 
         self._save_checkpoint(
