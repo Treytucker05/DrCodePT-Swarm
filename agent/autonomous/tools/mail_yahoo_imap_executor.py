@@ -207,7 +207,7 @@ def main() -> int:
     )
     ap.add_argument("--max-per-rule", type=int, default=None)
     ap.add_argument("--host", default=DEFAULT_HOST)
-    ap.add_argument("--port", type=int, default=DEFAULT_PORT)
+    ap.add_argument("--port", default=DEFAULT_PORT)
     ap.add_argument("--source", default=DEFAULT_SOURCE)
     args = ap.parse_args()
 
@@ -376,6 +376,7 @@ def main() -> int:
                 "unread_only": rule.unread_only,
                 "newer_than_days": rule.newer_than_days,
                 "queries": [],
+                "planned_moves": [],
             }
 
             if _is_protected(rule.to_folder, protected):
@@ -385,63 +386,80 @@ def main() -> int:
                 plan["rules"].append(rule_entry)
                 continue
 
-            if _is_protected(args.source, protected):
-                print(f"[SKIP] Source folder is protected: {args.source}")
-                report_lines.append(f"- rule_skip_protected_source: {rule.name} source={args.source}")
-                rule_entry["status"] = "skip_protected_source"
-                plan["rules"].append(rule_entry)
-                continue
-
             combos = build_search_tokens(rule)
             rule_entry["queries"] = combos
 
-            all_uids: List[str] = []
-            seen: Dict[str, bool] = {}
-            try:
-                for tokens in combos:
-                    print(f"[OK] Rule '{rule.name}' search: {tokens or ['ALL']}")
-                    uids = search_uids(imap, args.source, tokens)
-                    for uid in uids:
-                        if uid not in seen:
-                            seen[uid] = True
-                            all_uids.append(uid)
-            except Exception as exc:
-                success = False
-                print(f"[ERR] Rule '{rule.name}' search failed: {exc}")
-                report_lines.append(f"- rule_search_failed: {rule.name} error={exc}")
-                rule_entry["status"] = "search_failed"
-                plan["rules"].append(rule_entry)
-                continue
+            planned_moves: List[Dict[str, str]] = []
+            seen_pairs: Dict[Tuple[str, str], bool] = {}
+            match_count = 0
+            folders_to_search = getattr(rule, "search_folders", None) or [args.source]
+            searched_folders: List[str] = []
+            for folder in folders_to_search:
+                if folder == rule.to_folder:
+                    print(f"[SKIP] Rule '{rule.name}' source == destination: {folder}")
+                    continue
+                if _is_protected(folder, protected):
+                    print(f"[SKIP] Rule '{rule.name}' source folder protected: {folder}")
+                    report_lines.append(f"- rule_skip_protected_source: {rule.name} source={folder}")
+                    continue
+                searched_folders.append(folder)
+                try:
+                    for tokens in combos:
+                        print(f"[OK] Rule '{rule.name}' search in {folder}: {tokens or ['ALL']}")
+                        uids = search_uids(imap, folder, tokens)
+                        for uid in uids:
+                            pair = (folder, uid)
+                            if pair in seen_pairs:
+                                continue
+                            seen_pairs[pair] = True
+                            match_count += 1
+                            if len(planned_moves) < max_to_move:
+                                planned_moves.append({"source_folder": folder, "uid": uid})
+                except Exception as exc:
+                    success = False
+                    print(f"[ERR] Rule '{rule.name}' search failed in {folder}: {exc}")
+                    report_lines.append(f"- rule_search_failed: {rule.name} folder={folder} error={exc}")
+                    continue
+                if len(planned_moves) >= max_to_move:
+                    break
 
-            matches_total += len(all_uids)
-            planned_uids = all_uids[: max(0, max_to_move)]
-            rule_entry["match_count"] = len(all_uids)
-            rule_entry["planned_uids"] = planned_uids
+            matches_total += match_count
+            rule_entry["match_count"] = match_count
+            rule_entry["planned_uids"] = [m["uid"] for m in planned_moves]
+            rule_entry["planned_moves"] = planned_moves
             rule_entry["status"] = "planned"
 
             if dry_run:
-                print(f"[DRY] Rule '{rule.name}' planned moves: {len(planned_uids)}")
+                print(
+                    f"[DRY] Rule '{rule.name}' planned moves: {len(planned_moves)} (searched: {', '.join(searched_folders)})"
+                )
                 report_lines.append(
-                    f"- rule: {rule.name} matched_total={len(all_uids)} planned={len(planned_uids)} moved_total=0"
+                    f"- rule: {rule.name} matched_total={match_count} planned={len(planned_moves)} moved_total=0"
                 )
                 plan["rules"].append(rule_entry)
                 continue
 
             moved = 0
-            for uid in planned_uids:
-                ok, method = move_uid(imap, args.source, uid, rule.to_folder)
+            for move in planned_moves:
+                ok, method = move_uid(imap, move["source_folder"], move["uid"], rule.to_folder)
                 if ok:
                     moved += 1
                     moved_total += 1
-                    print(f"[OK] Moved UID {uid} -> {rule.to_folder} via {method}")
-                    report_lines.append(f"- moved: rule={rule.name} uid={uid} method={method}")
+                    print(
+                        f"[OK] Moved UID {move['uid']} from {move['source_folder']} -> {rule.to_folder} via {method}"
+                    )
+                    report_lines.append(
+                        f"- moved: rule={rule.name} source={move['source_folder']} uid={move['uid']} method={method}"
+                    )
                 else:
                     success = False
-                    print(f"[ERR] Failed to move UID {uid}: {method}")
-                    report_lines.append(f"- move_failed: rule={rule.name} uid={uid} error={method}")
+                    print(f"[ERR] Failed to move UID {move['uid']}: {method}")
+                    report_lines.append(
+                        f"- move_failed: rule={rule.name} source={move['source_folder']} uid={move['uid']} error={method}"
+                    )
 
             report_lines.append(
-                f"- rule: {rule.name} matched_total={len(all_uids)} planned={len(planned_uids)} moved_total={moved}"
+                f"- rule: {rule.name} matched_total={match_count} planned={len(planned_moves)} moved_total={moved}"
             )
             rule_entry["moved"] = moved
             plan["rules"].append(rule_entry)

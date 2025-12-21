@@ -284,6 +284,55 @@ def _append_chat_log(
             handle.write("\n")
 
 
+
+
+def _objective_implies_moves(objective: str) -> bool:
+    low = objective.lower()
+    if "move" in low:
+        return True
+    for token in ("1", "one", "single", "at least one"):
+        if token in low:
+            return True
+    return False
+
+
+def _load_json_file(path: Path) -> Optional[Dict[str, Any]]:
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return None
+
+
+def _planned_moves_count(plan: Dict[str, Any]) -> int:
+    total = 0
+    for rule in plan.get("rules") or []:
+        moves = rule.get("planned_moves")
+        if isinstance(moves, list):
+            total += len(moves)
+        else:
+            planned = rule.get("planned_uids") or []
+            total += len(planned) if isinstance(planned, list) else 0
+    return total
+
+
+def _rules_with_zero_moves(plan: Dict[str, Any]) -> List[str]:
+    names: List[str] = []
+    for rule in plan.get("rules") or []:
+        name = rule.get("name")
+        moves = rule.get("planned_moves")
+        planned = rule.get("planned_uids")
+        count = 0
+        if isinstance(moves, list):
+            count = len(moves)
+        elif isinstance(planned, list):
+            count = len(planned)
+        if name and count == 0:
+            names.append(name)
+    return names
+
+
 def _run_executor(args: List[str]) -> subprocess.CompletedProcess[str]:
     cmd = [sys.executable, "-m", "agent.autonomous.tools.mail_yahoo_imap_executor", *args]
     return subprocess.run(cmd, text=True, capture_output=True, encoding="utf-8", errors="ignore")
@@ -368,6 +417,71 @@ def run_mail_guided() -> None:
             report_path=report_path,
             stage="dry-run",
         )
+
+    # Auto-recover if objective implies moves but planned_moves == 0
+    plan_data = _load_json_file(latest_run / "mail_plan.json") if latest_run else None
+    if plan_data and _objective_implies_moves(objective):
+        zero_rules = _rules_with_zero_moves(plan_data)
+        if zero_rules:
+            print("[MAIL GUIDED] No planned moves; running scan-all-folders...")
+            scan_proc = _run_executor(["--scan-all-folders"])
+            _print_process_output(scan_proc)
+
+            latest_run = _newest_run_dir()
+            scan_data = _load_json_file(latest_run / "mail_scan.json") if latest_run else None
+            if scan_data:
+                rules_scan = scan_data.get("rules") or {}
+                if isinstance(rules_scan, dict):
+                    proc_update = load_procedure()
+                    updated = False
+                    for rule_name in zero_rules:
+                        folders_map = rules_scan.get(rule_name) or {}
+                        if not isinstance(folders_map, dict) or not folders_map:
+                            continue
+                        folders_list = [
+                            f"{folder}({count})"
+                            for folder, count in folders_map.items()
+                            if isinstance(count, int) and count > 0
+                        ]
+                        if not folders_list:
+                            continue
+                        prompt = (
+                            f"I found matches in these folders: {', '.join(folders_list)}. "
+                            f"Choose folders to search for rule {rule_name} (comma-separated), "
+                            "or press Enter to keep current: "
+                        )
+                        choice = input(prompt).strip()
+                        if choice:
+                            new_folders = [c.strip() for c in choice.split(",") if c.strip()]
+                            for rule in proc_update.rules:
+                                if rule.name == rule_name:
+                                    rule.search_folders = new_folders
+                                    updated = True
+                    if updated:
+                        save_procedure(proc_update)
+
+            print("[MAIL GUIDED] Re-running IMAP dry-run after scan...")
+            dry_proc = _run_executor(["--dry-run"])
+            _print_process_output(dry_proc)
+
+            latest_run = _newest_run_dir()
+            if latest_run is not None:
+                report_path = latest_run / "mail_report.md"
+                _append_chat_log(
+                    run_dir=latest_run,
+                    objective=objective,
+                    qa_pairs=qa_pairs,
+                    diff_summary=diff_summary,
+                    report_path=report_path,
+                    stage="dry-run-retry",
+                )
+
+            plan_data = _load_json_file(latest_run / "mail_plan.json") if latest_run else None
+
+    if plan_data and _objective_implies_moves(objective):
+        if _planned_moves_count(plan_data) == 0:
+            print("[MAIL GUIDED] Planned moves still 0; stopping before execute.")
+            return
 
     confirm = input("Type EXECUTE to run the move (exactly): ").strip()
     if confirm != "EXECUTE":
