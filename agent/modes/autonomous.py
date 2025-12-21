@@ -3,6 +3,7 @@ from __future__ import annotations
 """Autonomous mode - runs the true closed-loop agent runner."""
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -55,6 +56,41 @@ def _split_paths(raw: str) -> list[Path]:
     return [Path(p) for p in parts]
 
 
+def _choose_planner_mode(task: str) -> str:
+    text = (task or "").strip().lower()
+    if not text:
+        return "react"
+    words = [w for w in re.split(r"\s+", text) if w]
+    word_count = len(words)
+    conjunctions = (" and ", " then ", " after ", " before ", " also ", " plus ")
+    plan_keywords = (
+        "plan",
+        "steps",
+        "roadmap",
+        "multi-step",
+        "implement",
+        "build",
+        "create",
+        "setup",
+        "configure",
+        "migrate",
+        "refactor",
+        "research",
+        "compare",
+        "analyze",
+        "summarize",
+    )
+    if word_count >= 12:
+        return "plan_first"
+    if any(k in text for k in conjunctions):
+        return "plan_first"
+    if text.count(",") >= 2 or ":" in text or ";" in text:
+        return "plan_first"
+    if any(k in text for k in plan_keywords):
+        return "plan_first"
+    return "react"
+
+
 def mode_autonomous(task: str, *, unsafe_mode: bool = False) -> None:
     """
     Run the true agent loop (dynamic replanning) for the given task.
@@ -71,6 +107,10 @@ def mode_autonomous(task: str, *, unsafe_mode: bool = False) -> None:
     from agent.llm import CodexCliAuthError, CodexCliClient, CodexCliNotFoundError
 
     planner_mode = (os.getenv("AUTO_PLANNER_MODE") or "react").strip().lower()
+    auto_selected = False
+    if planner_mode == "auto":
+        planner_mode = _choose_planner_mode(task)
+        auto_selected = True
     if planner_mode not in {"react", "plan_first"}:
         planner_mode = "react"
 
@@ -116,8 +156,9 @@ def mode_autonomous(task: str, *, unsafe_mode: bool = False) -> None:
         return
 
     print(f"\n{CYAN}[AUTO MODE]{RESET} {task}")
+    planner_label = planner_mode + (" (auto)" if auto_selected else "")
     print(
-        f"{YELLOW}[INFO]{RESET} Running closed-loop agent (planner={planner_mode}, unsafe_mode={agent_cfg.unsafe_mode})."
+        f"{YELLOW}[INFO]{RESET} Running closed-loop agent (planner={planner_label}, unsafe_mode={agent_cfg.unsafe_mode})."
     )
 
     # Ensure imports resolve and relative paths behave.

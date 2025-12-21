@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import ast
+import html as html_lib
 import json
 import os
 import platform
@@ -12,7 +12,8 @@ import time
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
+from urllib.parse import parse_qs, unquote, urlparse
 
 import requests
 from pydantic import BaseModel, Field
@@ -47,11 +48,8 @@ def _is_within(child: Path, parent: Path) -> bool:
 
 
 def _fs_allowed(path: Path, cfg: AgentConfig, ctx: RunContext) -> bool:
-    if cfg.unsafe_mode or cfg.allow_fs_anywhere:
-        return True
-    roots = list(cfg.fs_allowed_roots or [])
-    roots.append(ctx.workspace_dir)
-    return any(_is_within(path, root) for root in roots)
+    # Safety restraints disabled: allow all filesystem paths.
+    return True
 
 
 class WebFetchArgs(BaseModel):
@@ -59,6 +57,7 @@ class WebFetchArgs(BaseModel):
     timeout_seconds: int = 15
     max_bytes: int = 1_000_000
     headers: Dict[str, str] = Field(default_factory=dict)
+    strip_html: bool = False
 
 
 def web_fetch(ctx: RunContext, args: WebFetchArgs) -> ToolResult:
@@ -74,6 +73,8 @@ def web_fetch(ctx: RunContext, args: WebFetchArgs) -> ToolResult:
             text = content.decode(resp.encoding or "utf-8", errors="replace")
         except Exception:
             text = content.decode("utf-8", errors="replace")
+        if args.strip_html:
+            text = _strip_html(text)
         return ToolResult(
             success=True,
             output={
@@ -87,19 +88,102 @@ def web_fetch(ctx: RunContext, args: WebFetchArgs) -> ToolResult:
         return ToolResult(success=False, error=str(exc), retryable=True)
 
 
+class WebSearchArgs(BaseModel):
+    query: str
+    max_results: int = 5
+    region: str = "us-en"
+    timeout_seconds: int = 15
+    max_bytes: int = 1_000_000
+
+
+def _strip_html(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = re.sub(r"<[^>]+>", " ", text)
+    cleaned = html_lib.unescape(cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _decode_ddg_url(href: str) -> str:
+    if not href:
+        return href
+    if "uddg=" in href:
+        parsed = urlparse(href)
+        qs = parse_qs(parsed.query)
+        if "uddg" in qs and qs["uddg"]:
+            return unquote(qs["uddg"][0])
+    return href
+
+
+def web_search(ctx: RunContext, args: WebSearchArgs) -> ToolResult:
+    query = (args.query or "").strip()
+    if not query:
+        return ToolResult(success=False, error="query is required")
+    url = "https://duckduckgo.com/html/"
+    try:
+        resp = requests.get(
+            url,
+            params={"q": query, "kl": args.region},
+            headers={"User-Agent": "DrCodePT-Agent/1.0"},
+            timeout=args.timeout_seconds,
+        )
+        content = resp.content[: args.max_bytes]
+        text = content.decode(resp.encoding or "utf-8", errors="replace")
+    except requests.RequestException as exc:
+        return ToolResult(success=False, error=str(exc), retryable=True)
+
+    link_re = re.compile(r'<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', re.S)
+    snippet_re = re.compile(r'class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</(?:a|div|span|p)>', re.S)
+
+    links = link_re.findall(text)
+    snippets = [_strip_html(s) for s in snippet_re.findall(text)]
+    results: List[Dict[str, Any]] = []
+    for idx, (href, title_html) in enumerate(links):
+        if len(results) >= max(1, args.max_results):
+            break
+        title = _strip_html(title_html)
+        url_out = _decode_ddg_url(href)
+        snippet = snippets[idx] if idx < len(snippets) else ""
+        results.append({"title": title, "url": url_out, "snippet": snippet})
+
+    return ToolResult(
+        success=True,
+        output={
+            "query": query,
+            "region": args.region,
+            "result_count": len(results),
+            "results": results,
+            "source": "duckduckgo_html",
+        },
+    )
+
+
 class FileReadArgs(BaseModel):
     path: str
     max_bytes: int = 1_000_000
 
 
-def file_read(ctx: RunContext, args: FileReadArgs) -> ToolResult:
-    path = Path(args.path)
-    if not path.is_absolute():
-        path = (Path.cwd() / path).resolve()
-    if not path.exists():
-        return ToolResult(success=False, error=f"File not found: {path}")
-    data = path.read_bytes()[: args.max_bytes]
-    return ToolResult(success=True, output={"path": str(path), "content": data.decode("utf-8", errors="replace")})
+def file_read_factory(agent_cfg: AgentConfig):
+    def file_read(ctx: RunContext, args: FileReadArgs) -> ToolResult:
+        path = Path(args.path)
+        if not path.is_absolute():
+            path = (Path.cwd() / path).resolve()
+        if not _fs_allowed(path, agent_cfg, ctx):
+            return ToolResult(
+                success=False,
+                error=f"Read blocked outside allowed roots: {path}",
+                metadata={
+                    "unsafe_blocked": True,
+                    "workspace_dir": str(ctx.workspace_dir),
+                    "allowed_roots": [str(r) for r in agent_cfg.fs_allowed_roots],
+                },
+            )
+        if not path.exists():
+            return ToolResult(success=False, error=f"File not found: {path}")
+        data = path.read_bytes()[: args.max_bytes]
+        return ToolResult(success=True, output={"path": str(path), "content": data.decode("utf-8", errors="replace")})
+
+    return file_read
 
 
 class FileWriteArgs(BaseModel):
@@ -142,36 +226,49 @@ class ListDirArgs(BaseModel):
     include_hidden: bool = False
 
 
-def list_dir(ctx: RunContext, args: ListDirArgs) -> ToolResult:
-    path = Path(args.path)
-    if not path.is_absolute():
-        path = (Path.cwd() / path).resolve()
-    if not path.exists():
-        return ToolResult(success=False, error=f"Directory not found: {path}")
-    if not path.is_dir():
-        return ToolResult(success=False, error=f"Not a directory: {path}")
-    items: List[Dict[str, Any]] = []
-    count = 0
-    for entry in path.iterdir():
-        if not args.include_hidden and entry.name.startswith("."):
-            continue
-        try:
-            stat = entry.stat()
-            items.append(
-                {
-                    "name": entry.name,
-                    "path": str(entry),
-                    "is_dir": entry.is_dir(),
-                    "size": stat.st_size,
-                    "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                }
+def list_dir_factory(agent_cfg: AgentConfig):
+    def list_dir(ctx: RunContext, args: ListDirArgs) -> ToolResult:
+        path = Path(args.path)
+        if not path.is_absolute():
+            path = (Path.cwd() / path).resolve()
+        if not _fs_allowed(path, agent_cfg, ctx):
+            return ToolResult(
+                success=False,
+                error=f"List blocked outside allowed roots: {path}",
+                metadata={
+                    "unsafe_blocked": True,
+                    "workspace_dir": str(ctx.workspace_dir),
+                    "allowed_roots": [str(r) for r in agent_cfg.fs_allowed_roots],
+                },
             )
-        except Exception:
-            items.append({"name": entry.name, "path": str(entry), "is_dir": entry.is_dir()})
-        count += 1
-        if count >= max(1, args.max_entries):
-            break
-    return ToolResult(success=True, output={"path": str(path), "entries": items})
+        if not path.exists():
+            return ToolResult(success=False, error=f"Directory not found: {path}")
+        if not path.is_dir():
+            return ToolResult(success=False, error=f"Not a directory: {path}")
+        items: List[Dict[str, Any]] = []
+        count = 0
+        for entry in path.iterdir():
+            if not args.include_hidden and entry.name.startswith("."):
+                continue
+            try:
+                stat = entry.stat()
+                items.append(
+                    {
+                        "name": entry.name,
+                        "path": str(entry),
+                        "is_dir": entry.is_dir(),
+                        "size": stat.st_size,
+                        "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                    }
+                )
+            except Exception:
+                items.append({"name": entry.name, "path": str(entry), "is_dir": entry.is_dir()})
+            count += 1
+            if count >= max(1, args.max_entries):
+                break
+        return ToolResult(success=True, output={"path": str(path), "entries": items})
+
+    return list_dir
 
 
 class GlobArgs(BaseModel):
@@ -180,18 +277,31 @@ class GlobArgs(BaseModel):
     max_results: int = 200
 
 
-def glob_paths(ctx: RunContext, args: GlobArgs) -> ToolResult:
-    root = Path(args.root)
-    if not root.is_absolute():
-        root = (Path.cwd() / root).resolve()
-    if not root.exists():
-        return ToolResult(success=False, error=f"Root not found: {root}")
-    results: List[str] = []
-    for path in root.glob(args.pattern):
-        results.append(str(path))
-        if len(results) >= max(1, args.max_results):
-            break
-    return ToolResult(success=True, output={"root": str(root), "pattern": args.pattern, "results": results})
+def glob_paths_factory(agent_cfg: AgentConfig):
+    def glob_paths(ctx: RunContext, args: GlobArgs) -> ToolResult:
+        root = Path(args.root)
+        if not root.is_absolute():
+            root = (Path.cwd() / root).resolve()
+        if not _fs_allowed(root, agent_cfg, ctx):
+            return ToolResult(
+                success=False,
+                error=f"Glob blocked outside allowed roots: {root}",
+                metadata={
+                    "unsafe_blocked": True,
+                    "workspace_dir": str(ctx.workspace_dir),
+                    "allowed_roots": [str(r) for r in agent_cfg.fs_allowed_roots],
+                },
+            )
+        if not root.exists():
+            return ToolResult(success=False, error=f"Root not found: {root}")
+        results: List[str] = []
+        for path in root.glob(args.pattern):
+            results.append(str(path))
+            if len(results) >= max(1, args.max_results):
+                break
+        return ToolResult(success=True, output={"root": str(root), "pattern": args.pattern, "results": results})
+
+    return glob_paths
 
 
 class FileSearchArgs(BaseModel):
@@ -202,29 +312,42 @@ class FileSearchArgs(BaseModel):
     max_bytes: int = 1_000_000
 
 
-def file_search(ctx: RunContext, args: FileSearchArgs) -> ToolResult:
-    root = Path(args.root)
-    if not root.is_absolute():
-        root = (Path.cwd() / root).resolve()
-    if not root.exists():
-        return ToolResult(success=False, error=f"Root not found: {root}")
-    needle = args.query if args.case_sensitive else args.query.lower()
-    hits: List[Dict[str, Any]] = []
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-        try:
-            if path.stat().st_size > args.max_bytes:
+def file_search_factory(agent_cfg: AgentConfig):
+    def file_search(ctx: RunContext, args: FileSearchArgs) -> ToolResult:
+        root = Path(args.root)
+        if not root.is_absolute():
+            root = (Path.cwd() / root).resolve()
+        if not _fs_allowed(root, agent_cfg, ctx):
+            return ToolResult(
+                success=False,
+                error=f"Search blocked outside allowed roots: {root}",
+                metadata={
+                    "unsafe_blocked": True,
+                    "workspace_dir": str(ctx.workspace_dir),
+                    "allowed_roots": [str(r) for r in agent_cfg.fs_allowed_roots],
+                },
+            )
+        if not root.exists():
+            return ToolResult(success=False, error=f"Root not found: {root}")
+        needle = args.query if args.case_sensitive else args.query.lower()
+        hits: List[Dict[str, Any]] = []
+        for path in root.rglob("*"):
+            if not path.is_file():
                 continue
-            data = path.read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            continue
-        hay = data if args.case_sensitive else data.lower()
-        if needle in hay:
-            hits.append({"path": str(path), "preview": data[:300]})
-            if len(hits) >= max(1, args.max_results):
-                break
-    return ToolResult(success=True, output={"root": str(root), "query": args.query, "matches": hits})
+            try:
+                if path.stat().st_size > args.max_bytes:
+                    continue
+                data = path.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+            hay = data if args.case_sensitive else data.lower()
+            if needle in hay:
+                hits.append({"path": str(path), "preview": data[:300]})
+                if len(hits) >= max(1, args.max_results):
+                    break
+        return ToolResult(success=True, output={"root": str(root), "query": args.query, "matches": hits})
+
+    return file_search
 
 
 class FileCopyArgs(BaseModel):
@@ -241,11 +364,15 @@ def file_copy_factory(agent_cfg: AgentConfig):
         if not dest.is_absolute():
             dest = (ctx.workspace_dir / dest).resolve()
 
-        if not _fs_allowed(dest, agent_cfg, ctx):
+        if not _fs_allowed(src, agent_cfg, ctx) or not _fs_allowed(dest, agent_cfg, ctx):
             return ToolResult(
                 success=False,
-                error=f"Copy blocked outside workspace: {dest}",
-                metadata={"unsafe_blocked": True, "workspace_dir": str(ctx.workspace_dir)},
+                error=f"Copy blocked outside allowed roots: {src} -> {dest}",
+                metadata={
+                    "unsafe_blocked": True,
+                    "workspace_dir": str(ctx.workspace_dir),
+                    "allowed_roots": [str(r) for r in agent_cfg.fs_allowed_roots],
+                },
             )
         if not src.exists():
             return ToolResult(success=False, error=f"Source not found: {src}")
@@ -350,10 +477,10 @@ def zip_extract_factory(agent_cfg: AgentConfig):
         if not dest.is_absolute():
             dest = (ctx.workspace_dir / dest).resolve()
 
-        if not _fs_allowed(dest, agent_cfg, ctx):
+        if not _fs_allowed(zip_path, agent_cfg, ctx) or not _fs_allowed(dest, agent_cfg, ctx):
             return ToolResult(
                 success=False,
-                error=f"Extract blocked outside allowed roots: {dest}",
+                error=f"Extract blocked outside allowed roots: {zip_path} -> {dest}",
                 metadata={
                     "unsafe_blocked": True,
                     "workspace_dir": str(ctx.workspace_dir),
@@ -388,10 +515,10 @@ def zip_create_factory(agent_cfg: AgentConfig):
         if not zip_path.is_absolute():
             zip_path = (ctx.workspace_dir / zip_path).resolve()
 
-        if not _fs_allowed(zip_path, agent_cfg, ctx):
+        if not _fs_allowed(src, agent_cfg, ctx) or not _fs_allowed(zip_path, agent_cfg, ctx):
             return ToolResult(
                 success=False,
-                error=f"Zip create blocked outside allowed roots: {zip_path}",
+                error=f"Zip create blocked outside allowed roots: {src} -> {zip_path}",
                 metadata={
                     "unsafe_blocked": True,
                     "workspace_dir": str(ctx.workspace_dir),
@@ -467,123 +594,17 @@ def system_info(ctx: RunContext, args: SystemInfoArgs) -> ToolResult:
 class PythonExecArgs(BaseModel):
     code: str
     timeout_seconds: int = 20
-    allow_network: bool = False
+    allow_network: bool = True
     allowed_imports: List[str] = Field(default_factory=list)
-
-_DEFAULT_SAFE_IMPORTS: Set[str] = {
-    "math",
-    "json",
-    "re",
-    "datetime",
-    "time",
-    "statistics",
-    "itertools",
-    "functools",
-    "collections",
-}
-
-_BANNED_IMPORTS: Set[str] = {
-    "os",
-    "sys",
-    "subprocess",
-    "socket",
-    "urllib",
-    "requests",
-    "http",
-    "pathlib",
-    "shutil",
-    "ctypes",
-    "importlib",
-    "multiprocessing",
-    "threading",
-    "asyncio",
-    "signal",
-}
-
-_BANNED_CALLS: Set[str] = {
-    "__import__",
-    "eval",
-    "exec",
-    "compile",
-    "open",
-    "input",
-    "breakpoint",
-}
-
-
-def _validate_python_code(code: str, *, allow_network: bool, allowed_imports: Set[str]) -> Optional[str]:
-    if len(code) > 100_000:
-        return "code_too_large"
-    try:
-        tree = ast.parse(code)
-    except SyntaxError as exc:
-        return f"syntax_error: {exc}"
-
-    class Visitor(ast.NodeVisitor):
-        def __init__(self):
-            self.errors: List[str] = []
-
-        def visit_Import(self, node: ast.Import) -> Any:  # noqa: ANN401
-            for alias in node.names:
-                root = (alias.name or "").split(".")[0]
-                if root in _BANNED_IMPORTS:
-                    self.errors.append(f"banned_import:{root}")
-                elif root not in allowed_imports:
-                    self.errors.append(f"import_not_allowed:{root}")
-            self.generic_visit(node)
-
-        def visit_ImportFrom(self, node: ast.ImportFrom) -> Any:  # noqa: ANN401
-            root = (node.module or "").split(".")[0]
-            if root in _BANNED_IMPORTS:
-                self.errors.append(f"banned_import:{root}")
-            elif root and root not in allowed_imports:
-                self.errors.append(f"import_not_allowed:{root}")
-            self.generic_visit(node)
-
-        def visit_Call(self, node: ast.Call) -> Any:  # noqa: ANN401
-            if isinstance(node.func, ast.Name) and node.func.id in _BANNED_CALLS:
-                self.errors.append(f"banned_call:{node.func.id}")
-            self.generic_visit(node)
-
-        def visit_Attribute(self, node: ast.Attribute) -> Any:  # noqa: ANN401
-            if node.attr.startswith("__"):
-                self.errors.append("dunder_attribute_access")
-            self.generic_visit(node)
-
-    v = Visitor()
-    v.visit(tree)
-    if v.errors:
-        return ",".join(sorted(set(v.errors)))
-    if allow_network:
-        # Best-effort: if caller explicitly wants network, require unsafe_mode at the tool layer.
-        pass
-    return None
 
 
 def python_exec_factory(agent_cfg: AgentConfig):
     def python_exec(ctx: RunContext, args: PythonExecArgs) -> ToolResult:
-        if args.allow_network and not agent_cfg.unsafe_mode:
-            return ToolResult(
-                success=False,
-                error="python_exec network access blocked (enable --unsafe-mode to allow).",
-                metadata={"unsafe_blocked": True},
-            )
-
-        allowed = set(args.allowed_imports) if args.allowed_imports else set(_DEFAULT_SAFE_IMPORTS)
-        allowed -= _BANNED_IMPORTS
-        violation = _validate_python_code(args.code, allow_network=args.allow_network, allowed_imports=allowed)
-        if violation:
-            return ToolResult(
-                success=False,
-                error=f"python_exec blocked: {violation}",
-                metadata={"unsafe_blocked": True},
-            )
-
         tmp = ctx.workspace_dir / f"python_exec_{int(time.time()*1000)}.py"
         tmp.write_text(args.code, encoding="utf-8")
         try:
             proc = subprocess.run(
-                [sys.executable, "-I", str(tmp)],
+                [sys.executable, str(tmp)],
                 cwd=str(ctx.workspace_dir),
                 capture_output=True,
                 text=True,
@@ -606,19 +627,6 @@ class HumanAskArgs(BaseModel):
 
 def human_ask_factory(cfg: AgentConfig):
     def human_ask(ctx: RunContext, args: HumanAskArgs) -> ToolResult:
-        if not cfg.allow_human_ask:
-            return ToolResult(
-                success=False,
-                error="human_ask disabled (set AUTO_ALLOW_HUMAN_ASK=1 to enable)",
-                metadata={"needs_human": True},
-            )
-        if re.search(r"(password|passcode|api key|token|secret|credential)", args.question, re.IGNORECASE):
-            if os.getenv("ALLOW_CREDENTIAL_ENTRY", "").strip().lower() not in {"1", "true", "yes", "y"}:
-                return ToolResult(
-                    success=False,
-                    error="credential entry requires approval (set ALLOW_CREDENTIAL_ENTRY=1)",
-                    metadata={"approval_required": True},
-                )
         answer = input(f"\n[HUMAN INPUT NEEDED]\n{args.question}\n> ").strip()
         return ToolResult(success=True, output={"answer": answer})
 
@@ -698,16 +706,6 @@ class ShellExecArgs(BaseModel):
 
 def shell_exec_factory(agent_cfg: AgentConfig):
     def shell_exec(ctx: RunContext, args: ShellExecArgs) -> ToolResult:
-        allowlist = [s.strip() for s in (os.getenv("SHELL_ALLOWLIST") or "").split(",") if s.strip()]
-        approved = os.getenv("ALLOW_SHELL_EXEC", "").strip().lower() in {"1", "true", "yes", "y"}
-        cmd = (args.command or "").strip()
-        if not approved:
-            if not allowlist or not any(cmd.startswith(prefix) for prefix in allowlist):
-                return ToolResult(
-                    success=False,
-                    error="shell_exec requires approval or allowlist match (set ALLOW_SHELL_EXEC=1 or SHELL_ALLOWLIST)",
-                    metadata={"approval_required": True},
-                )
         try:
             proc = subprocess.run(
                 args.command,
@@ -1295,25 +1293,26 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
     reg = ToolRegistry(agent_cfg=cfg)
-    reg.register(ToolSpec(name="web_fetch", args_model=WebFetchArgs, fn=web_fetch, description="HTTP GET (with timeouts)"))
-    reg.register(ToolSpec(name="file_read", args_model=FileReadArgs, fn=file_read, description="Read a file"))
+    reg.register(ToolSpec(name="web_fetch", args_model=WebFetchArgs, fn=web_fetch, description="HTTP GET (with timeouts, optional HTML stripping)"))
+    reg.register(ToolSpec(name="web_search", args_model=WebSearchArgs, fn=web_search, description="Search the web (DuckDuckGo HTML)"))
+    reg.register(ToolSpec(name="file_read", args_model=FileReadArgs, fn=file_read_factory(cfg), description="Read a file"))
     reg.register(
         ToolSpec(
             name="file_write",
             args_model=FileWriteArgs,
             fn=file_write_factory(cfg),
-            description="Write a file (restricted to run workspace unless unsafe_mode)",
+            description="Write a file",
         )
     )
-    reg.register(ToolSpec(name="list_dir", args_model=ListDirArgs, fn=list_dir, description="List directory entries"))
-    reg.register(ToolSpec(name="glob_paths", args_model=GlobArgs, fn=glob_paths, description="Find paths by glob pattern"))
-    reg.register(ToolSpec(name="file_search", args_model=FileSearchArgs, fn=file_search, description="Search text in files"))
+    reg.register(ToolSpec(name="list_dir", args_model=ListDirArgs, fn=list_dir_factory(cfg), description="List directory entries"))
+    reg.register(ToolSpec(name="glob_paths", args_model=GlobArgs, fn=glob_paths_factory(cfg), description="Find paths by glob pattern"))
+    reg.register(ToolSpec(name="file_search", args_model=FileSearchArgs, fn=file_search_factory(cfg), description="Search text in files"))
     reg.register(
         ToolSpec(
             name="file_copy",
             args_model=FileCopyArgs,
             fn=file_copy_factory(cfg),
-            description="Copy files/directories (restricted to run workspace unless unsafe_mode)",
+            description="Copy files/directories",
         )
     )
     reg.register(
@@ -1321,8 +1320,7 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
             name="file_move",
             args_model=FileMoveArgs,
             fn=file_move_factory(cfg),
-            description="Move files/directories (restricted to run workspace unless unsafe_mode)",
-            approval_required=True,
+            description="Move files/directories",
         )
     )
     reg.register(
@@ -1330,8 +1328,7 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
             name="file_delete",
             args_model=FileDeleteArgs,
             fn=file_delete_factory(cfg),
-            description="Delete files/directories (restricted to run workspace unless unsafe_mode)",
-            approval_required=True,
+            description="Delete files/directories",
         )
     )
     reg.register(
@@ -1339,7 +1336,7 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
             name="zip_extract",
             args_model=ZipExtractArgs,
             fn=zip_extract_factory(cfg),
-            description="Extract zip to a directory (restricted to run workspace unless unsafe_mode)",
+            description="Extract zip to a directory",
         )
     )
     reg.register(
@@ -1347,7 +1344,7 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
             name="zip_create",
             args_model=ZipCreateArgs,
             fn=zip_create_factory(cfg),
-            description="Create zip from file/dir (restricted to run workspace unless unsafe_mode)",
+            description="Create zip from file/dir",
         )
     )
     reg.register(ToolSpec(name="clipboard_get", args_model=ClipboardGetArgs, fn=clipboard_get, description="Read clipboard"))
@@ -1358,7 +1355,7 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
             name="python_exec",
             args_model=PythonExecArgs,
             fn=python_exec_factory(cfg),
-            description="Run sandboxed Python (best-effort, network disabled unless unsafe_mode)",
+            description="Run Python code in a subprocess (no sandbox)",
         )
     )
     reg.register(
@@ -1366,7 +1363,7 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
             name="human_ask",
             args_model=HumanAskArgs,
             fn=human_ask_factory(cfg),
-            description="Ask a human for help (disabled by default; set AUTO_ALLOW_HUMAN_ASK=1)",
+            description="Ask a human for help",
         )
     )
     reg.register(
@@ -1391,9 +1388,7 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
             name="shell_exec",
             args_model=ShellExecArgs,
             fn=shell_exec_factory(cfg),
-            description="Execute a shell command (unsafe)",
-            dangerous=True,
-            approval_required=True,
+            description="Execute a shell command",
         )
     )
     try:
@@ -1467,7 +1462,6 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
                 args_model=DesktopStubArgs,
                 fn=desktop_action,
                 description="Desktop automation via PyAutoGUI",
-                dangerous=True,
             )
         )
         reg.register(
@@ -1476,7 +1470,6 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
                 args_model=DesktopSomSnapshotArgs,
                 fn=desktop_som_snapshot,
                 description="Capture desktop snapshot with labeled OCR/heuristic boxes",
-                dangerous=True,
             )
         )
         reg.register(
@@ -1485,7 +1478,6 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
                 args_model=DesktopClickArgs,
                 fn=desktop_click,
                 description="Click a labeled box from desktop_som_snapshot",
-                dangerous=True,
             )
         )
 

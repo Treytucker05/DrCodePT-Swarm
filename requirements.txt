@@ -5,6 +5,7 @@ python-dotenv
 pydantic
 PyYAML
 requests
+sentence-transformers
 colorama
 pytest
 google-auth

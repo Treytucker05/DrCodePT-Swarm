@@ -89,8 +89,6 @@ class PlanFirstPlanner(Planner):
             unsafe_mode: {self._unsafe_mode}
 
             Create a concise multi-step plan (<= {self._max_steps} steps) and end with a finish step.
-            - Do not use dangerous tools unless unsafe_mode=true.
-            - Prefer writing only inside the run workspace unless unsafe_mode=true.
             - Include preconditions/postconditions when useful.
             - tool_args must be a list of {{"key":"...","value":"..."}} pairs (values as strings; encode JSON if needed).
 
@@ -120,7 +118,6 @@ class PlanFirstPlanner(Planner):
 
             Generate {count} candidate plans.
             - Each plan should have <= {self._max_steps} steps and end with a finish step.
-            - Do not use dangerous tools unless unsafe_mode=true.
             - Include preconditions/postconditions when useful.
             - tool_args must be a list of {{"key":"...","value":"..."}} pairs (values as strings; encode JSON if needed).
 

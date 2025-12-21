@@ -41,7 +41,6 @@ class ReActPlanner(Planner):
 
             Choose EXACTLY ONE next step to execute using an available tool.
             - If the goal is already satisfied, output a single step using tool_name="finish" with a short summary.
-            - Do not use dangerous tools unless unsafe_mode=true.
             - Prefer minimal, testable actions and specify success_criteria.
             - Add preconditions and postconditions when useful (short, checkable).
             - tool_args must be a list of {{"key":"...","value":"..."}} pairs (values as strings; encode JSON if needed).

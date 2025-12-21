@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import sqlite3
 import time
@@ -13,14 +14,22 @@ from typing import Any, Dict, Iterable, List, Literal, Optional
 
 MemoryKind = Literal["experience", "procedure", "knowledge", "user_info"]
 
-_EMBED_DIM = 256
+_FALLBACK_EMBED_DIM = 256
+_DEFAULT_EMBED_MODEL = "all-MiniLM-L6-v2"
+_EMBED_ENV_VAR = "AGENT_MEMORY_EMBED_MODEL"
+_EMBED_BACKEND_ENV_VAR = "AGENT_MEMORY_EMBED_BACKEND"
+
+_ST_MODEL = None
+_ST_MODEL_NAME = None
+_ST_MODEL_DIM = None
+_ST_LOAD_ERROR = None
 
 
 def _tokenize(text: str) -> List[str]:
     return re.findall(r"[a-z0-9]+", (text or "").lower())
 
 
-def _embed(text: str, dim: int = _EMBED_DIM) -> tuple[List[float], float]:
+def _hash_embed(text: str, dim: int = _FALLBACK_EMBED_DIM) -> tuple[List[float], float]:
     vec = [0.0] * dim
     for tok in _tokenize(text):
         h = int(hashlib.md5(tok.encode("utf-8", errors="replace")).hexdigest(), 16)
@@ -28,6 +37,52 @@ def _embed(text: str, dim: int = _EMBED_DIM) -> tuple[List[float], float]:
         vec[idx] += 1.0
     norm = math.sqrt(sum(v * v for v in vec)) or 1.0
     return vec, norm
+
+
+def _load_sentence_transformer():
+    global _ST_MODEL, _ST_MODEL_NAME, _ST_MODEL_DIM, _ST_LOAD_ERROR
+    if _ST_LOAD_ERROR is not None:
+        return None
+    if _ST_MODEL is not None:
+        return _ST_MODEL
+    try:
+        from sentence_transformers import SentenceTransformer
+    except Exception as exc:  # pragma: no cover - optional dependency
+        _ST_LOAD_ERROR = exc
+        return None
+    model_name = (os.getenv(_EMBED_ENV_VAR) or _DEFAULT_EMBED_MODEL).strip()
+    if not model_name:
+        model_name = _DEFAULT_EMBED_MODEL
+    try:
+        _ST_MODEL = SentenceTransformer(model_name)
+        _ST_MODEL_NAME = model_name
+        try:
+            _ST_MODEL_DIM = int(_ST_MODEL.get_sentence_embedding_dimension())
+        except Exception:
+            _ST_MODEL_DIM = None
+    except Exception as exc:  # pragma: no cover - model download/load failure
+        _ST_LOAD_ERROR = exc
+        _ST_MODEL = None
+    return _ST_MODEL
+
+
+def _embed(text: str) -> tuple[List[float], float, str, int]:
+    backend = (os.getenv(_EMBED_BACKEND_ENV_VAR) or "").strip().lower()
+    use_hash_only = backend in {"hash", "fallback", "simple"}
+    if not use_hash_only:
+        model = _load_sentence_transformer()
+        if model is not None:
+            vec = model.encode([text], normalize_embeddings=False)
+            try:
+                vec_list = vec[0].tolist()
+            except Exception:
+                vec_list = list(vec[0])
+            dim = len(vec_list)
+            norm = math.sqrt(sum(v * v for v in vec_list)) or 1.0
+            model_name = _ST_MODEL_NAME or _DEFAULT_EMBED_MODEL
+            return vec_list, norm, model_name, dim
+    vec, norm = _hash_embed(text)
+    return vec, norm, f"hash{_FALLBACK_EMBED_DIM}", _FALLBACK_EMBED_DIM
 
 
 @dataclass(frozen=True)
@@ -88,25 +143,47 @@ class SqliteMemoryStore:
             );
             """
         )
+        try:
+            cols = {row[1] for row in cur.execute("PRAGMA table_info(memory_embeddings);").fetchall()}
+            if "model" not in cols:
+                cur.execute("ALTER TABLE memory_embeddings ADD COLUMN model TEXT;")
+        except Exception:
+            pass
         cur.execute("CREATE INDEX IF NOT EXISTS idx_memory_kind_updated ON memory_records(kind, updated_at DESC);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_memory_key ON memory_records(key);")
         self._conn.commit()
 
     def _upsert_embedding(self, record_id: int, content: str, *, now: Optional[float] = None) -> None:
         now = now or time.time()
-        vec, norm = _embed(content)
+        vec, norm, model_name, dim = _embed(content)
         cur = self._conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO memory_embeddings(record_id, dim, vector_json, norm, updated_at)
-            VALUES(?, ?, ?, ?, ?)
-            ON CONFLICT(record_id) DO UPDATE SET
-              vector_json=excluded.vector_json,
-              norm=excluded.norm,
-              updated_at=excluded.updated_at;
-            """,
-            (record_id, _EMBED_DIM, json.dumps(vec), float(norm), now),
-        )
+        try:
+            cur.execute(
+                """
+                INSERT INTO memory_embeddings(record_id, dim, vector_json, norm, updated_at, model)
+                VALUES(?, ?, ?, ?, ?, ?)
+                ON CONFLICT(record_id) DO UPDATE SET
+                  vector_json=excluded.vector_json,
+                  norm=excluded.norm,
+                  updated_at=excluded.updated_at,
+                  dim=excluded.dim,
+                  model=excluded.model;
+                """,
+                (record_id, dim, json.dumps(vec), float(norm), now, model_name),
+            )
+        except sqlite3.OperationalError:
+            cur.execute(
+                """
+                INSERT INTO memory_embeddings(record_id, dim, vector_json, norm, updated_at)
+                VALUES(?, ?, ?, ?, ?)
+                ON CONFLICT(record_id) DO UPDATE SET
+                  vector_json=excluded.vector_json,
+                  norm=excluded.norm,
+                  updated_at=excluded.updated_at,
+                  dim=excluded.dim;
+                """,
+                (record_id, dim, json.dumps(vec), float(norm), now),
+            )
         self._conn.commit()
 
     def upsert(
@@ -169,7 +246,7 @@ class SqliteMemoryStore:
         cur.execute(
             f"""
             SELECT r.id, r.kind, r.key, r.content, r.metadata_json, r.created_at, r.updated_at,
-                   e.vector_json, e.norm
+                   e.vector_json, e.norm, e.dim, e.model
             FROM memory_records r
             LEFT JOIN memory_embeddings e ON r.id = e.record_id
             WHERE r.kind IN ({placeholders})
@@ -179,7 +256,7 @@ class SqliteMemoryStore:
             params,
         )
         rows = cur.fetchall()
-        q_vec, q_norm = _embed(q)
+        q_vec, q_norm, q_model, q_dim = _embed(q)
         now = time.time()
         scored: List[tuple[float, sqlite3.Row]] = []
         for r in rows:
@@ -189,9 +266,25 @@ class SqliteMemoryStore:
             except Exception:
                 vec = None
                 norm = None
+            try:
+                row_dim = int(r["dim"]) if r["dim"] else 0
+            except Exception:
+                row_dim = 0
+            try:
+                row_model = r["model"] if "model" in r.keys() else None
+            except Exception:
+                row_model = None
+            dim_mismatch = row_dim and row_dim != q_dim
+            model_mismatch = (row_model is not None and row_model != q_model)
             if not vec or not norm:
                 try:
-                    vec, norm = _embed(r["content"])
+                    vec, norm, row_model, row_dim = _embed(r["content"])
+                    self._upsert_embedding(int(r["id"]), r["content"], now=now)
+                except Exception:
+                    vec, norm = None, None
+            elif dim_mismatch or model_mismatch:
+                try:
+                    vec, norm, row_model, row_dim = _embed(r["content"])
                     self._upsert_embedding(int(r["id"]), r["content"], now=now)
                 except Exception:
                     vec, norm = None, None
