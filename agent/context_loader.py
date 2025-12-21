@@ -91,6 +91,7 @@ def get_available_tools() -> List[str]:
         "notify",
         "code_review",
         "research",
+        "mcp",
     ]
     return tools
 

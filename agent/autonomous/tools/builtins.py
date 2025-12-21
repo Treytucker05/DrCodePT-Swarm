@@ -1556,6 +1556,22 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
     )
     reg.register(
         ToolSpec(
+            name="mcp_list_tools",
+            args_model=McpListArgs,
+            fn=mcp_list_factory(),
+            description="List tools from active MCP server",
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="mcp_call",
+            args_model=McpCallArgs,
+            fn=mcp_call_factory(),
+            description="Call a tool on the active MCP server",
+        )
+    )
+    reg.register(
+        ToolSpec(
             name="delegate_task",
             args_model=DelegateTaskArgs,
             fn=delegate_task_factory(cfg, memory_store),

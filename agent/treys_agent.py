@@ -141,6 +141,10 @@ def show_help() -> None:
 {GREEN}Other:{RESET}
   menu       - Show full capability menu
   grade      - Grade the last run (trace evaluation)
+  connect    - Connect to an MCP server (e.g., Connect: github)
+  mcp list   - List tools from the active MCP server
+  resume     - Resume the most recent run
+  maintenance - Summarize recent runs and update memory
   playbooks  - List saved playbooks
   help       - Show this help
   exit       - Quit
@@ -560,6 +564,7 @@ def _show_menu() -> None:
     print("")
     print("Quick commands:")
     print("- help, menu, playbooks, creds, issues, unsafe on/off, exit")
+    print("- connect: <server>, mcp list, resume")
     print("")
     print("Status:")
     creds = ctx.get("credentials") or []
@@ -1013,6 +1018,52 @@ def main() -> None:
 
             target = user_input.split(":", 1)[1].strip()
             grade_run(target or None)
+            continue
+
+        if lower.startswith("connect:"):
+            from agent.modes.mcp import connect
+
+            server = user_input.split(":", 1)[1].strip()
+            if not server:
+                print(f"{YELLOW}[INFO]{RESET} Usage: Connect: <server_name>")
+            else:
+                connect(server)
+            continue
+
+        if lower in {"mcp list", "mcp tools", "mcp"}:
+            from agent.modes.mcp import mcp_list
+
+            mcp_list()
+            continue
+
+        if lower == "resume":
+            from agent.modes.resume import resume_run
+
+            resume_run(None)
+            continue
+
+        if lower.startswith("resume:"):
+            from agent.modes.resume import resume_run
+
+            target = user_input.split(":", 1)[1].strip()
+            resume_run(target or None)
+            continue
+
+        if lower in {"maintenance", "maintain"}:
+            from agent.modes.maintenance import maintenance_report
+
+            maintenance_report()
+            continue
+
+        if lower.startswith("maintenance:"):
+            from agent.modes.maintenance import maintenance_report
+
+            arg = user_input.split(":", 1)[1].strip()
+            try:
+                days = int(arg)
+            except Exception:
+                days = 7
+            maintenance_report(days=days)
             continue
 
         if pending_task:
