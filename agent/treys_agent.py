@@ -564,7 +564,7 @@ def _show_menu() -> None:
     print("")
     print("Quick commands:")
     print("- help, menu, playbooks, creds, issues, unsafe on/off, exit")
-    print("- connect: <server>, mcp list, resume")
+    print("- connect: <server>, mcp list, resume, maintenance")
     print("")
     print("Status:")
     creds = ctx.get("credentials") or []
