@@ -1,0 +1,15 @@
+{
+  "version": "0.1",
+  "provider": "yahoo",
+  "account_label": "default",
+  "target_folders": [],
+  "rules": [],
+  "protected_folders": [
+    "Inbox",
+    "Sent",
+    "Trash",
+    "Drafts",
+    "Spam"
+  ],
+  "last_updated_utc": "2025-12-21T01:25:04.194766+00:00"
+}
