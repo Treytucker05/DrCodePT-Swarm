@@ -211,6 +211,8 @@ class SupervisorOrchestrator:
             answers[qid] = answer
             state.qa_pairs.append({"question": text, "answer": answer})
         _write_json(self.answers_path, {"answers": answers})
+        if any("abort" in (a or "").lower() or "stop" in (a or "").lower() for a in answers.values()):
+            state.phase = Phase.ABORT
 
     def _execute_step(self, step: Dict[str, Any]) -> ToolResult:
         tool = step.get("tool") or ""
@@ -286,7 +288,13 @@ class SupervisorOrchestrator:
                         unknowns=None,
                     )
 
-                state.last_research = _with_heartbeat(_do_research, heartbeat_seconds=self.config.heartbeat_seconds)
+                try:
+                    state.last_research = _with_heartbeat(
+                        _do_research, heartbeat_seconds=self.config.heartbeat_seconds
+                    )
+                except Exception as exc:
+                    state.last_error = f"research_error: {exc}"
+                    state.last_research = ResearcherOutput()
                 research_md = "\n".join(state.last_research.findings or [])
                 self.research_path.write_text(research_md, encoding="utf-8")
                 state.phase = Phase.PLAN
@@ -331,8 +339,21 @@ class SupervisorOrchestrator:
                                 elapsed = now - start
                                 print(f"[TEAM MODE] Still working... elapsed={elapsed:.1f}s")
                                 last_beat = now
-                        state.last_plan = future_plan.result()
-                        state.last_research = future_research.result()
+                        try:
+                            state.last_plan = future_plan.result()
+                        except Exception as exc:
+                            state.last_error = f"planner_error: {exc}"
+                            state.last_plan = PlannerOutput(
+                                next_steps=[],
+                                questions=[
+                                    "Planner failed to load. What should I do next? (e.g., 'retry', 'abort', or describe the next step)"
+                                ],
+                            )
+                        try:
+                            state.last_research = future_research.result()
+                        except Exception as exc:
+                            state.last_error = state.last_error or f"research_error: {exc}"
+                            state.last_research = ResearcherOutput()
                         if state.last_research and state.last_research.findings:
                             state.context = state.context + "\n" + "\n".join(state.last_research.findings)
                             state.context_fingerprint = _hash_context(state.context)
@@ -340,7 +361,18 @@ class SupervisorOrchestrator:
                                 "\n".join(state.last_research.findings), encoding="utf-8"
                             )
                 else:
-                    state.last_plan = _with_heartbeat(_do_plan, heartbeat_seconds=self.config.heartbeat_seconds)
+                    try:
+                        state.last_plan = _with_heartbeat(
+                            _do_plan, heartbeat_seconds=self.config.heartbeat_seconds
+                        )
+                    except Exception as exc:
+                        state.last_error = f"planner_error: {exc}"
+                        state.last_plan = PlannerOutput(
+                            next_steps=[],
+                            questions=[
+                                "Planner failed to load. What should I do next? (e.g., 'retry', 'abort', or describe the next step)"
+                            ],
+                        )
                 _write_json(self.plan_path, state.last_plan.model_dump())
 
                 if state.last_plan.questions:
@@ -402,13 +434,22 @@ class SupervisorOrchestrator:
 
             if state.phase == Phase.REFLECT:
                 self._record_reflexion(state)
-                critic = self.critic_fn(
-                    self.llm,
-                    objective=self.objective,
-                    context=state.context,
-                    error=state.last_error,
-                    last_step=state.last_plan.next_steps[0].model_dump() if state.last_plan and state.last_plan.next_steps else None,
-                )
+                try:
+                    critic = self.critic_fn(
+                        self.llm,
+                        objective=self.objective,
+                        context=state.context,
+                        error=state.last_error,
+                        last_step=state.last_plan.next_steps[0].model_dump()
+                        if state.last_plan and state.last_plan.next_steps
+                        else None,
+                    )
+                except Exception as exc:
+                    critic = CriticOutput(
+                        decision="ask_user",
+                        rationale=f"critic_error: {exc}",
+                        suggested_changes=[],
+                    )
                 decision = critic.decision
                 if decision == "retry":
                     step_id = (
@@ -464,7 +505,11 @@ def run_team(
         allow_human_ask=True,
     )
     run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-    root = _repo_root() / "runs" / "team"
+    base_folder = "team"
+    lowered = (objective or "").lower()
+    if "team_smoke" in lowered or "smoke test" in lowered:
+        base_folder = "team_smoke"
+    root = _repo_root() / "runs" / base_folder
     run_dir = run_dir or (root / run_id)
     orchestrator = SupervisorOrchestrator(
         objective=objective,
