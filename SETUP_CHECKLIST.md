@@ -130,7 +130,7 @@ launchers\TREYS_AGENT.bat
 - [ ] `AGENT_MEMORY_FAISS_DISABLE` - Disable FAISS (default: 0)
 
 #### Behavior Settings
-- [ ] `TREYS_AGENT_DEFAULT_MODE` - execute/research/collab (default: execute)
+- [ ] `TREYS_AGENT_DEFAULT_MODE` - default action mode on confirmation (execute/team/auto/swarm/plan/collab/think/mail/research)
 - [ ] `TREYS_AGENT_PROMPT_ON_AMBIGUOUS` - Ask when unclear (default: 0)
 
 ---

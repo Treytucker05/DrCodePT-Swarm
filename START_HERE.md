@@ -16,8 +16,10 @@ launchers\TREYS_AGENT.bat
 ### 3. Try It Out
 ```
 > help
-> setup google apis
+> menu
+> Execute: open my PT School folder
 ```
+Tip: Default is chat-only. Use Execute/Team/Auto/Swarm/Plan when you want action.
 
 ---
 
@@ -135,6 +137,12 @@ Record your actions as reusable playbooks.
 
 ## 🎓 Key Commands
 
+### Execute (Quick actions)
+```
+> Execute: open my PT School folder
+```
+Run a quick action or playbook.
+
 ### Planning (NEW!)
 ```
 > Plan: [complex task]
@@ -147,11 +155,29 @@ Breaks down task, executes with error recovery.
 ```
 Runs task with dynamic replanning.
 
+### Team
+```
+> Team: [task]
+```
+Runs observe -> research -> plan -> execute -> verify -> reflect.
+
+### Swarm
+```
+> Swarm: [task]
+```
+Runs parallel sub-agents for comparisons or synthesis.
+
 ### Research
 ```
 > Research: [topic]
 ```
 Deep research with sources.
+
+### Think
+```
+> Think: [task]
+```
+Planning only (no tools).
 
 ### Learn
 ```

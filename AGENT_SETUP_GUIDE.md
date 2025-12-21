@@ -107,6 +107,7 @@ AUTO_ENABLE_DESKTOP=1
 AUTO_ALLOW_HUMAN_ASK=1
 
 # === AGENT BEHAVIOR ===
+# Default action mode when you approve a task (chat-only remains default)
 TREYS_AGENT_DEFAULT_MODE=execute
 TREYS_AGENT_PROMPT_ON_AMBIGUOUS=0
 
@@ -277,7 +278,7 @@ Password: ********
 | `AGENT_MEMORY_EMBED_MODEL` | all-MiniLM-L6-v2 | SentenceTransformer model name |
 | `AGENT_MEMORY_EMBED_BACKEND` |  | Set to `hash` to force fallback embeddings |
 | `AGENT_MEMORY_FAISS_DISABLE` | 0 | Disable FAISS acceleration |
-| `TREYS_AGENT_DEFAULT_MODE` | execute | execute/research/collab |
+| `TREYS_AGENT_DEFAULT_MODE` | execute | default action mode on confirmation (execute/team/auto/swarm/plan/collab/think/mail/research) |
 | `TREYS_AGENT_PROMPT_ON_AMBIGUOUS` | 0 | Ask when intent unclear |
 
 ### Filesystem and Safety
@@ -366,7 +367,7 @@ AUTO_MAX_STEPS=15
 # Disable ambiguity prompts
 TREYS_AGENT_PROMPT_ON_AMBIGUOUS=0
 
-# Set default mode
+# Set default action mode on confirmation
 TREYS_AGENT_DEFAULT_MODE=execute
 ```
 

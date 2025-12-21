@@ -1,10 +1,7 @@
-"""2
+"""
 Trey's Agent - Fast, Learning, Research-Capable Personal Assistant
-
-Three modes:
-- EXECUTE (default): Instant playbook execution (no LLM) or Codex playbook generation for new tasks
-- LEARN: Record user actions as new playbooks
-- RESEARCH: Iterative deep research with refinement
+Default behavior: chat-only (no tool execution).
+Modes: Execute, Learn, Research, Auto, Plan, Team, Swarm, Think, Mail.
 """
 
 from __future__ import annotations
@@ -50,15 +47,20 @@ def show_help() -> None:
 {GREEN}Chat mode (default):{RESET}
   Just type what you want to say.
   The agent will respond conversationally without running tools.
-  To run tools, use Auto:, Plan:, Team:, Swarm:, Mail:, or Learn: prefixes.
-  Or ask for a task and then reply "team", "auto", or "swarm" to proceed.
+  To run tools, use Execute:, Auto:, Plan:, Team:, Swarm:, Mail:, or Learn: prefixes.
+  Or ask for a task and then reply "execute", "team", "auto", or "swarm" to proceed.
   Examples:
     - clean my yahoo spam
     - download school files
     - create a python calculator
 
+{GREEN}Execute mode (quick actions):{RESET}
+  Execute: [task]  - Runs quick actions/playbooks without long loops
+  Example:
+    - Execute: open my PT School folder
+
 {GREEN}Autonomous loop (explicit):{RESET}
-  Auto: [task]  (same as default, just explicit)
+  Auto: [task]  - Runs the tool loop with replanning
   Example:
     - Auto: research autonomous AI agents
 
@@ -135,7 +137,8 @@ def show_help() -> None:
   Set TREYS_AGENT_CRED_PROMPT_SITES="site1,site2" to control which sites to ask for.
 
 {GREEN}Routing defaults:{RESET}
-  - If ambiguous, defaults to Execute (change with TREYS_AGENT_DEFAULT_MODE=collab|research|execute).
+  - Chat-only is default; nothing runs unless you approve it.
+  - When you approve a task with "yes", the agent uses TREYS_AGENT_DEFAULT_MODE (default: execute).
   - Set TREYS_AGENT_PROMPT_ON_AMBIGUOUS=1 to show a mode picker.
 
 {GREEN}Other:{RESET}
@@ -435,9 +438,9 @@ def _is_capability_query(text: str) -> bool:
         "what can you help me with",
         "what can you do",
         "capabilities",
-        "menu",
-        "show menu",
-        "help",
+        "tools",
+        "show tools",
+        "what tools do you have",
     }
     if lowered in triggers:
         return True
@@ -553,6 +556,7 @@ def _show_menu() -> None:
     print("Default behavior: chat-only (no tools).")
     print("")
     print("Modes (prefix to force):")
+    print("- Execute: run quick actions/playbooks")
     print("- Auto: run the tool-using agent loop")
     print("- Swarm: run parallel sub-agents")
     print("- Plan: plan first, then execute")
@@ -978,6 +982,9 @@ def main() -> None:
     print("Type 'help' for commands.\n")
 
     unsafe_mode = os.getenv("AGENT_UNSAFE_MODE", "").strip().lower() in {"1", "true", "yes", "y", "on"}
+    default_action_mode = os.getenv("TREYS_AGENT_DEFAULT_MODE", "execute").strip().lower()
+    if default_action_mode not in {"execute", "team", "auto", "swarm", "plan", "mail", "research", "collab", "think"}:
+        default_action_mode = "execute"
     _prompt_startup_credentials()
 
     chat_history: list[tuple[str, str]] = []
@@ -999,12 +1006,16 @@ def main() -> None:
             print("Goodbye!")
             return
 
-        if _is_capability_query(user_input):
-            _run_capabilities()
+        if lower in {"help", "?", "show help"}:
+            show_help()
             continue
 
-        if lower == "menu":
+        if lower in {"menu", "show menu"}:
             _show_menu()
+            continue
+
+        if _is_capability_query(user_input):
+            _run_capabilities()
             continue
 
         if lower == "grade":
@@ -1100,7 +1111,7 @@ def main() -> None:
                 continue
 
             if _is_confirm(user_input):
-                chosen = pending_mode or "team"
+                chosen = pending_mode or "execute"
                 if chosen == "team":
                     from agent.autonomous.supervisor.orchestrator import run_team as _run_team
                     _run_team(pending_task, unsafe_mode=unsafe_mode)
@@ -1281,6 +1292,14 @@ def main() -> None:
             mode_autonomous(task, unsafe_mode=unsafe_mode)
             continue
 
+        if lower.startswith("execute:") or lower.startswith("exec:"):
+            task = user_input.split(":", 1)[1].strip()
+            if not task:
+                print(f"{YELLOW}[INFO]{RESET} Provide a task after 'Execute:'.")
+                continue
+            mode_execute(task)
+            continue
+
         if _maybe_route_mail(user_input):
             continue
 
@@ -1300,10 +1319,10 @@ def main() -> None:
 
         if _looks_like_action_request(user_input):
             pending_task = user_input
-            pending_mode = "team"
+            pending_mode = default_action_mode
             print(
-                f"{YELLOW}[READY]{RESET} I can do that. Reply with 'team', 'auto', or 'swarm' to run it, "
-                "or 'cancel' to stop."
+                f"{YELLOW}[READY]{RESET} I can do that. Reply with 'execute', 'team', 'auto', or 'swarm' to run it, "
+                f"or 'cancel' to stop. (default: {pending_mode})"
             )
             continue
 

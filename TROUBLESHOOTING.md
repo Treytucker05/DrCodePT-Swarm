@@ -331,7 +331,7 @@ Edit `agent/playbooks/index.json` to fix the playbook.
    TREYS_AGENT_PROMPT_ON_AMBIGUOUS=0
    ```
 
-2. Set default mode:
+2. Set default action mode on confirmation:
    ```env
    TREYS_AGENT_DEFAULT_MODE=execute
    ```
@@ -406,6 +406,7 @@ AGENT_MEMORY_FAISS_DISABLE=0
 
 ### Behavior Settings
 ```env
+# Default action mode when you confirm a task
 TREYS_AGENT_DEFAULT_MODE=execute
 TREYS_AGENT_PROMPT_ON_AMBIGUOUS=0
 ```

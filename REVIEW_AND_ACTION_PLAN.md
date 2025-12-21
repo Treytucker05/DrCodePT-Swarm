@@ -237,7 +237,7 @@ AGENT_MEMORY_EMBED_MODEL=all-MiniLM-L6-v2
 AGENT_MEMORY_FAISS_DISABLE=0
 
 # === BEHAVIOR ===
-TREYS_AGENT_DEFAULT_MODE=execute   # Default to fast execution
+TREYS_AGENT_DEFAULT_MODE=execute   # Default action mode on confirmation
 TREYS_AGENT_PROMPT_ON_AMBIGUOUS=0  # Don't ask, just execute
 ```
 

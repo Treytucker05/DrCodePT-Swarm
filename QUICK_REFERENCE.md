@@ -6,55 +6,90 @@ launchers\TREYS_AGENT.bat
 ```
 
 ## Core Commands
-
 | Command | Description | Example |
 |---------|-------------|---------|
-| `help` | Show all commands | `> help` |
+| `help` | Show command help | `> help` |
+| `menu` | Show capability menu | `> menu` |
 | `playbooks` | List saved tasks | `> playbooks` |
-| `exit` / `quit` | Exit agent | `> exit` |
 | `creds` | List saved credentials | `> creds` |
+| `cred: <site>` | Save credentials | `> Cred: yahoo` |
+| `issues` | List tracked issues | `> issues open` |
+| `grade` | Grade the last run | `> grade` |
+| `connect: <server>` | Connect to MCP server | `> Connect: github` |
+| `mcp list` | List MCP tools | `> mcp list` |
+| `resume` | Resume the most recent run | `> resume` |
+| `maintenance` | Summarize recent runs | `> maintenance` |
+| `exit` / `quit` | Exit agent | `> exit` |
 
 ## Operation Modes
+### 1. Chat-only (Default)
+Just type what you want; the agent will talk without running tools.
+If you want action, use Execute:/Auto:/Team:/Swarm:/Plan: or reply "execute" when prompted.
 
-### 1. Execute Mode (Default)
-Just type what you want:
+### 2. Execute Mode (Quick actions)
+Run a quick action or playbook:
 ```
-> create a python calculator
-> organize my desktop
+> Execute: open my PT School folder
+> Execute: organize my desktop
 ```
 
-### 2. Learn Mode 🧠
+### 3. Learn Mode
 Record a task for instant replay:
 ```
 > Learn: login to school portal
 > Learn: download assignments
 ```
 
-### 3. Autonomous Mode 🤖
+### 4. Auto Mode
 Fully autonomous with replanning:
 ```
 > Auto: research AI agents and create summary
 > Loop: build a REST API for user management
 ```
 
-### 4. Research Mode 🔍
+### 5. Plan Mode
+Plan first, then execute:
+```
+> Plan: setup Google Tasks API and test it
+```
+
+### 6. Team Mode
+Supervisor loop with checkpoints:
+```
+> Team: audit my project and propose fixes
+```
+
+### 7. Swarm Mode
+Parallel sub-agents:
+```
+> Swarm: compare 3 CRMs and summarize pros/cons
+```
+
+### 8. Research Mode
 Deep research with sources:
 ```
 > Research: Python async best practices
 ```
 Then choose depth: `light` / `balanced` / `deep`
 
-### 5. Collab Mode 💬
+### 9. Think Mode
+Planning only (no tools):
+```
+> Think: design a rollout plan for the repo
+```
+
+### 10. Collab Mode
 Interactive planning:
 ```
 > Collab: reorganize my project structure
 ```
 
-### 6. Mail Mode 📧
+### 11. Mail Mode
 Email management:
 ```
 > Mail: review Yahoo inbox and suggest rules
 ```
+
 
 ## Credential Management
 
@@ -90,6 +125,11 @@ AUTO_ALLOW_HUMAN_ASK=1
 # Memory
 AGENT_MEMORY_EMBED_MODEL=all-MiniLM-L6-v2
 AGENT_MEMORY_FAISS_DISABLE=0
+
+# Agent Behavior
+TREYS_AGENT_DEFAULT_MODE=execute
+TREYS_AGENT_CRED_PROMPT_SITES=yahoo,gmail,github
+EXEC_ALLOW_PYTHON=0
 ```
 
 ## Common Tasks
@@ -144,7 +184,7 @@ Check file/folder permissions on the target path.
 
 ## Tips
 
-1. **Start Simple**: Begin with Execute mode
+1. **Start Simple**: Chat first, then use Execute mode for actions
 2. **Learn First**: Record repetitive tasks with Learn mode
 3. **Build Trust**: Use supervised Auto mode initially
 4. **Go Autonomous**: Run longer, multi-step tasks once comfortable
