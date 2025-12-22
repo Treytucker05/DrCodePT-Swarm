@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html as html_lib
+import logging
 import json
 import os
 import platform
@@ -26,6 +27,8 @@ from ..memory.sqlite_store import MemoryKind, SqliteMemoryStore
 from ..models import ToolResult
 from ..retry_utils import WEB_RETRY_CONFIG, retry_with_backoff
 from .registry import ToolRegistry, ToolSpec
+
+logger = logging.getLogger(__name__)
 
 # Lightweight in-memory sessions for GUI tools (keyed by run_id).
 _WEB_SESSIONS: Dict[str, Dict[str, Any]] = {}
@@ -285,6 +288,76 @@ def web_search(ctx: RunContext, args: WebSearchArgs) -> ToolResult:
         },
         metadata={"untrusted": True},
     )
+
+
+class RepoScanArgs(BaseModel):
+    repo_root: Optional[str] = None
+
+
+def scan_repo(repo_root: Optional[str] = None) -> Dict[str, Any]:
+    """Scan repository and produce repo_map.json.
+
+    This tool scans the repository structure and identifies key files
+    without reading everything. It produces:
+    - repo_index.json: All files with metadata
+    - repo_map.json: Key files only
+
+    Args:
+        repo_root: Root directory to scan (default: current directory)
+
+    Returns:
+        Dict with scan results
+    """
+    from agent.autonomous.tools.repo_scanner import RepoScanner
+
+    if repo_root is None:
+        repo_root = os.getcwd()
+
+    repo_root = Path(repo_root)
+
+    try:
+        scanner = RepoScanner(repo_root, max_files=500, max_bytes=10_000_000)
+        index, map_obj = scanner.scan()
+
+        return {
+            "success": True,
+            "index": {
+                "total_files": index.total_files,
+                "total_bytes": index.total_bytes,
+                "files": [
+                    {
+                        "path": f.path,
+                        "size_bytes": f.size_bytes,
+                        "file_type": f.file_type,
+                    }
+                    for f in index.files[:20]
+                ],
+            },
+            "map": {
+                "key_files": [
+                    {
+                        "path": f.path,
+                        "reason": f.reason,
+                    }
+                    for f in map_obj.key_files
+                ],
+                "structure": map_obj.structure_summary,
+            },
+        }
+
+    except Exception as exc:
+        logger.error(f"Error scanning repository: {exc}", exc_info=True)
+        return {
+            "success": False,
+            "error": str(exc),
+        }
+
+
+def scan_repo_tool(ctx: RunContext, args: RepoScanArgs) -> ToolResult:
+    payload = scan_repo(args.repo_root)
+    if payload.get("success"):
+        return ToolResult(success=True, output=payload)
+    return ToolResult(success=False, error=payload.get("error") or "scan_failed", output=payload)
 
 
 def _choose_planner_mode(task: str) -> str:
@@ -1656,7 +1729,7 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
     workspace_dir = run_dir / "workspace"
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
-    reg = ToolRegistry(agent_cfg=cfg)
+    reg = ToolRegistry(agent_cfg=cfg, allow_interactive_tools=cfg.allow_interactive_tools)
     reg.register(ToolSpec(name="web_fetch", args_model=WebFetchArgs, fn=web_fetch, description="HTTP GET (with timeouts, optional HTML stripping)"))
     reg.register(ToolSpec(name="web_search", args_model=WebSearchArgs, fn=web_search, description="Search the web (DuckDuckGo HTML)"))
     reg.register(ToolSpec(name="file_read", args_model=FileReadArgs, fn=file_read_factory(cfg), description="Read a file"))
@@ -1728,6 +1801,15 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
             args_model=HumanAskArgs,
             fn=human_ask_factory(cfg),
             description="Ask a human for help",
+            dangerous=True,
+        )
+    )
+    reg.register(
+        ToolSpec(
+            name="scan_repo",
+            args_model=RepoScanArgs,
+            fn=scan_repo_tool,
+            description="Scan repository structure and identify key files",
         )
     )
     reg.register(

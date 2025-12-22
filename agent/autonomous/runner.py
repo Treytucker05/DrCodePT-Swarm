@@ -406,7 +406,7 @@ class AgentRunner:
             except Exception:
                 pass
 
-        loop_detector = LoopDetector(max_repeats=3)
+        loop_detector = LoopDetector(max_repeats=self.cfg.loop_repeat_threshold)
 
         if not state.observations:
             obs0 = perceptor.text_to_observation("task", task)
@@ -1021,13 +1021,15 @@ class AgentRunner:
                     state.observations = state.observations[-1000:]
 
                 args_hash = _hash_text(_json_dumps(step.tool_args))
-                output_hash = _hash_tool_result(tool_result)
+                output_text = _summarize_output(tool_result.output, limit=2000)
+                output_hash = _hash_text(output_text)
                 signature = {
                     "tool_name": step.tool_name,
                     "args_hash": args_hash,
                     "output_hash": output_hash,
                 }
-                if loop_detector.update(step.tool_name, args_hash, output_hash):
+                is_loop, _message = loop_detector.check(step.tool_name, step.tool_args, output_text)
+                if is_loop:
                     if self.planner_cfg.mode == "react" and not loop_nudge_used:
                         exploration_nudge_next = True
                         exploration_reason = "loop_detected"
