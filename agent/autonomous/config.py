@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Optional, Tuple
 
+from agent.config.profile import ProfileConfig, RunUsage, resolve_profile
+
 
 @dataclass(frozen=True)
 class AgentConfig:
@@ -16,6 +18,7 @@ class AgentConfig:
     allow_human_ask: bool = False
     allow_fs_anywhere: bool = False
     fs_allowed_roots: Tuple[Path, ...] = field(default_factory=tuple)
+    profile: ProfileConfig = field(default_factory=resolve_profile)
 
 
 @dataclass(frozen=True)
@@ -49,3 +52,5 @@ class RunContext:
     run_id: str
     run_dir: Path
     workspace_dir: Path
+    profile: Optional[ProfileConfig] = None
+    usage: Optional[RunUsage] = None
