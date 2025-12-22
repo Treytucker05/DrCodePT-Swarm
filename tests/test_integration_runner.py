@@ -192,7 +192,13 @@ class TestAgentRunnerIntegration:
             {"status": "success", "explanation_short": "reported", "next_hint": ""},
         ])
 
-        result = self._run_agent(tmp_path, llm, "Read missing.txt")
+        agent_cfg = AgentConfig(
+            enable_web_gui=False,
+            enable_desktop=False,
+            memory_db_path=tmp_path / "memory.sqlite3",
+            allow_fs_anywhere=True,
+        )
+        result = self._run_agent(tmp_path, llm, "Read missing.txt", agent_cfg=agent_cfg)
 
         assert result.success  # Finished gracefully
         assert result.steps_executed == 2

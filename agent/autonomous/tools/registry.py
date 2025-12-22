@@ -70,7 +70,7 @@ class ToolRegistry:
                 error="interaction_required",
                 output={
                     "ok": False,
-                    "error_type": "interaction_required",
+                    "status": "interaction_required",
                     "questions": questions,
                 },
                 metadata={"interaction_required": True},

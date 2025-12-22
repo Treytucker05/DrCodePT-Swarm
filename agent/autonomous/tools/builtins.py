@@ -50,8 +50,21 @@ def _is_within(child: Path, parent: Path) -> bool:
 
 
 def _fs_allowed(path: Path, cfg: AgentConfig, ctx: RunContext) -> bool:
-    # Safety restraints disabled: allow all filesystem paths.
-    return True
+    if cfg.allow_fs_anywhere:
+        return True
+    allowed: List[Path] = []
+    allowed.extend(cfg.fs_allowed_roots or [])
+    if ctx.workspace_dir:
+        allowed.append(ctx.workspace_dir)
+    if ctx.run_dir:
+        allowed.append(ctx.run_dir)
+    for root in allowed:
+        try:
+            if _is_within(path, root):
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def _get_profile(ctx: RunContext) -> Optional[ProfileConfig]:
@@ -154,17 +167,25 @@ def web_search(ctx: RunContext, args: WebSearchArgs) -> ToolResult:
     if not query:
         return ToolResult(success=False, error="query is required")
     url = "https://duckduckgo.com/html/"
-    try:
-        resp = requests.get(
-            url,
-            params={"q": query, "kl": args.region},
-            headers={"User-Agent": "DrCodePT-Agent/1.0"},
-            timeout=args.timeout_seconds,
-        )
-        content = resp.content[: args.max_bytes]
-        text = content.decode(resp.encoding or "utf-8", errors="replace")
-    except requests.RequestException as exc:
-        return ToolResult(success=False, error=str(exc), retryable=True)
+    last_error: Optional[str] = None
+    text = ""
+    for attempt in range(3):
+        try:
+            resp = requests.get(
+                url,
+                params={"q": query, "kl": args.region},
+                headers={"User-Agent": "DrCodePT-Agent/1.0"},
+                timeout=args.timeout_seconds,
+            )
+            content = resp.content[: args.max_bytes]
+            text = content.decode(resp.encoding or "utf-8", errors="replace")
+            last_error = None
+            break
+        except requests.RequestException as exc:
+            last_error = str(exc)
+            time.sleep(0.5 * (attempt + 1))
+    if last_error:
+        return ToolResult(success=False, error=last_error, retryable=True)
 
     link_re = re.compile(r'<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', re.S)
     snippet_re = re.compile(r'class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</(?:a|div|span|p)>', re.S)
@@ -180,8 +201,26 @@ def web_search(ctx: RunContext, args: WebSearchArgs) -> ToolResult:
         snippet = snippets[idx] if idx < len(snippets) else ""
         results.append({"title": title, "url": url_out, "snippet": snippet})
 
+    warning = None
+    if not results:
+        warning = "no_results"
+    elif len(results) < max(1, args.max_results // 2):
+        warning = "weak_results"
     if usage:
         usage.consume_web()
+    if warning == "no_results":
+        return ToolResult(
+            success=False,
+            error="no_results",
+            output={
+                "query": query,
+                "region": args.region,
+                "result_count": len(results),
+                "results": results,
+                "source": "duckduckgo_html",
+                "warning": "no_results",
+            },
+        )
     return ToolResult(
         success=True,
         output={
@@ -190,6 +229,7 @@ def web_search(ctx: RunContext, args: WebSearchArgs) -> ToolResult:
             "result_count": len(results),
             "results": results,
             "source": "duckduckgo_html",
+            "warning": warning,
         },
     )
 

@@ -24,6 +24,7 @@ from .perception import Perceptor
 from .planning.plan_first import PlanFirstPlanner
 from .planning.react import ReActPlanner
 from .reflection import Reflector
+from .logging_config import configure_logging
 from .state import AgentState
 from .tools.builtins import build_default_tool_registry
 from .tools.registry import ToolRegistry
@@ -125,6 +126,7 @@ class AgentRunner:
             except Exception:
                 pass
         run_dir.mkdir(parents=True, exist_ok=True)
+        configure_logging(run_dir)
         workspace_dir = run_dir / "workspace"
         workspace_dir.mkdir(parents=True, exist_ok=True)
         profile = self.agent_cfg.profile
@@ -661,6 +663,11 @@ class AgentRunner:
                     tool_result = preempted_tool_result
 
                 if tool_result.metadata.get("interaction_required") or tool_result.error == "interaction_required":
+                    questions = []
+                    if isinstance(tool_result.output, dict):
+                        raw_questions = tool_result.output.get("questions")
+                        if isinstance(raw_questions, list):
+                            questions = [str(q) for q in raw_questions]
                     tracer.log(
                         {
                             "type": "stop",
@@ -683,6 +690,7 @@ class AgentRunner:
                         run_dir=run_dir,
                         started_at=started_at,
                         started_monotonic=start,
+                        error_data={"questions": questions, "tool_name": step.tool_name},
                     )
 
                 # Capture UI snapshot for web/desktop steps or on failure (once per step).
@@ -838,25 +846,26 @@ class AgentRunner:
                 output_hash = _hash_tool_result(tool_result)
                 action_signature = f"{step.tool_name}:{_json_dumps(step.tool_args)}:{output_hash}"
                 if loop_detector.update(action_signature, state.state_fingerprint()):
-                    if self.planner_cfg.mode == "react" and not loop_nudge_used:
-                        exploration_nudge_next = True
-                        exploration_reason = "loop_detected"
-                        loop_nudge_used = True
-                    else:
-                        return self._stop(
-                            tracer=tracer,
-                            memory_store=memory_store,
-                            success=False,
-                            reason="loop_detected",
-                            steps=steps_executed,
-                            run_id=run_id,
-                            llm_stats=tracked_llm,
-                            task=task,
-                            state=state,
-                            run_dir=run_dir,
-                            started_at=started_at,
-                            started_monotonic=start,
-                        )
+                        if self.planner_cfg.mode == "react" and not loop_nudge_used:
+                            exploration_nudge_next = True
+                            exploration_reason = "loop_detected"
+                            loop_nudge_used = True
+                        else:
+                            return self._stop(
+                                tracer=tracer,
+                                memory_store=memory_store,
+                                success=False,
+                                reason="loop_detected",
+                                steps=steps_executed,
+                                run_id=run_id,
+                                llm_stats=tracked_llm,
+                                task=task,
+                                state=state,
+                                run_dir=run_dir,
+                                started_at=started_at,
+                                started_monotonic=start,
+                                error_data={"signature": action_signature},
+                            )
 
                 if step.tool_name == "finish" and tool_result.success:
                     return self._stop(
@@ -1517,6 +1526,7 @@ class AgentRunner:
         run_dir: Optional[Path] = None,
         started_at: Optional[str] = None,
         started_monotonic: Optional[float] = None,
+        error_data: Optional[Dict[str, Any]] = None,
     ) -> AgentRunResult:
         tracer.log(
             {
@@ -1568,7 +1578,7 @@ class AgentRunner:
                     duration_s = time.monotonic() - started_monotonic
                 error_obj = None
                 if not success:
-                    error_obj = {"message": reason, "type": "stop_reason", "traceback": None}
+                    error_obj = {"message": reason, "type": "stop_reason", "traceback": None, "data": error_data}
                 result = {
                     "ok": success,
                     "mode": self.mode_name,

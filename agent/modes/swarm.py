@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
+import traceback
 
 from agent.autonomous.config import AgentConfig, PlannerConfig, RunnerConfig
 from agent.config.profile import resolve_profile
@@ -212,6 +213,15 @@ def _read_result(run_dir: Path) -> Dict[str, Any]:
         return {}
 
 
+def _write_result(run_dir: Path, payload: Dict[str, Any]) -> None:
+    try:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        path = run_dir / "result.json"
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def _run_subagent(
     subtask: Subtask,
     *,
@@ -296,9 +306,10 @@ def mode_swarm(objective: str, *, unsafe_mode: bool = False, profile: str | None
             ready = list(remaining.values())
 
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            future_map = {}
+            future_map: Dict[Any, tuple[Subtask, Path]] = {}
             for s in ready:
                 sub_dir = run_root / f"{s.id}_{uuid4().hex[:6]}"
+                sub_dir.mkdir(parents=True, exist_ok=True)
                 future = executor.submit(
                     _run_subagent,
                     s,
@@ -308,10 +319,30 @@ def mode_swarm(objective: str, *, unsafe_mode: bool = False, profile: str | None
                     runner_cfg=runner_cfg,
                     unsafe_mode=unsafe_mode,
                 )
-                future_map[future] = s
+                future_map[future] = (s, sub_dir)
 
             for future in as_completed(future_map):
-                subtask, status, stop_reason, sub_run_dir = future.result()
+                subtask, fallback_dir = future_map[future]
+                try:
+                    subtask, status, stop_reason, sub_run_dir = future.result()
+                except Exception as exc:
+                    sub_run_dir = fallback_dir
+                    _write_result(
+                        sub_run_dir,
+                        {
+                            "ok": False,
+                            "mode": "swarm_subagent",
+                            "agent_id": subtask.id,
+                            "run_id": subtask.id,
+                            "error": {
+                                "type": type(exc).__name__,
+                                "message": str(exc),
+                                "traceback": traceback.format_exc(),
+                            },
+                        },
+                    )
+                    status = "failed"
+                    stop_reason = f"exception:{type(exc).__name__}"
                 results.append((subtask, status, stop_reason, sub_run_dir))
                 completed.add(subtask.id)
                 if subtask.id in remaining:
@@ -327,6 +358,9 @@ def mode_swarm(objective: str, *, unsafe_mode: bool = False, profile: str | None
         if isinstance(result_data.get("error"), dict):
             err = result_data["error"]
             stop_reason = err.get("message") or err.get("type") or stop_reason
+            data = err.get("data") if isinstance(err, dict) else None
+            if isinstance(data, dict) and data.get("questions"):
+                stop_reason = f"{stop_reason} | questions: {data.get('questions')}"
         line = f"- {subtask.id}: {status}"
         if stop_reason:
             line += f" | {stop_reason}"
@@ -345,6 +379,9 @@ def mode_swarm(objective: str, *, unsafe_mode: bool = False, profile: str | None
             if isinstance(result_data.get("error"), dict):
                 err = result_data["error"]
                 stop_reason = err.get("message") or err.get("type") or stop_reason
+                data = err.get("data") if isinstance(err, dict) else None
+                if isinstance(data, dict) and data.get("questions"):
+                    stop_reason = f"{stop_reason} | questions: {data.get('questions')}"
             trace_path = sub_run_dir / "trace.jsonl"
             if trace_path.is_file():
                 tails.append(

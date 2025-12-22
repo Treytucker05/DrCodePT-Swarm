@@ -67,29 +67,66 @@ def build_repo_index(
     max_results: int,
 ) -> List[RepoFile]:
     results: List[RepoFile] = []
-    count = 0
-    for path in repo_root.rglob("*"):
-        if count >= max_results:
-            break
+    seen: set[str] = set()
+    root_entries = []
+    try:
+        root_entries = [p.name for p in repo_root.iterdir()]
+    except Exception:
+        root_entries = []
+
+    patterns = [
+        "README*",
+        "ARCHITECTURE*",
+        "agent/**/*.py",
+        "agent/**/README*",
+        "configs/**/*",
+        "config/**/*",
+    ]
+
+    def _add_path(path: Path) -> None:
+        if len(results) >= max_results:
+            return
         if _is_skipped(path):
-            continue
+            return
         if not path.is_file():
-            continue
+            return
+        key = str(path)
+        if key in seen:
+            return
         try:
             stat = path.stat()
         except Exception:
-            continue
+            return
         results.append(
             RepoFile(
-                path=str(path),
+                path=key,
                 size=int(stat.st_size),
                 mtime=float(stat.st_mtime),
             )
         )
-        count += 1
+        seen.add(key)
+
+    for pattern in patterns:
+        for path in repo_root.glob(pattern):
+            _add_path(path)
+            if len(results) >= max_results:
+                break
+        if len(results) >= max_results:
+            break
+
+    if len(results) < max_results:
+        for path in repo_root.rglob("*"):
+            if len(results) >= max_results:
+                break
+            _add_path(path)
     _write_json(
         run_dir / "repo_index.json",
-        {"root": str(repo_root), "count": len(results), "files": [r.__dict__ for r in results]},
+        {
+            "root": str(repo_root),
+            "root_entries": root_entries,
+            "count": len(results),
+            "files": [r.__dict__ for r in results],
+        },
     )
     return results
 
