@@ -24,6 +24,8 @@ from .exceptions import AgentException, LLMError, ToolExecutionError
 from .manifest import write_run_manifest
 from agent.autonomous.checkpointing import CheckpointManager
 from agent.autonomous.profiles import get_profile
+from agent.autonomous.qa.qa_agent import QAAgent
+from agent.autonomous.qa.artifact_validator import ArtifactValidator
 from .memory.sqlite_store import SqliteMemoryStore
 from .models import AgentRunResult, Observation, Plan, Reflection, Step, ToolResult
 from .perception import Perceptor
@@ -229,6 +231,18 @@ class AgentRunner:
                 if checkpoint_manager is not None:
                     manifest["checkpoints"] = checkpoint_manager.list_checkpoints()
                 manifest_path.write_text(json.dumps(manifest, indent=2))
+            # Run QA validation
+            if result_status == "success":
+                result_payload = (
+                    result.model_dump()
+                    if hasattr(result, "model_dump")
+                    else dict(result)  # type: ignore[arg-type]
+                )
+                result_payload.setdefault("status", result_status)
+                result_payload.setdefault("task_id", run_id)
+                result_payload.setdefault("output", getattr(result, "stop_reason", None))
+                qa_report = self.run_qa_validation(result_payload, run_dir)
+                logger.info(f"QA validation complete: {qa_report['qa_summary']}")
             return result
         except Exception as exc:
             run_dir.mkdir(parents=True, exist_ok=True)
@@ -311,6 +325,32 @@ class AgentRunner:
                 self.memory_store.close()
         except Exception as exc:
             logger.error(f"Error closing memory store: {exc}")
+
+    def run_qa_validation(self, result: Dict[str, Any], run_dir: Path) -> Dict[str, Any]:
+        """Run QA validation on result.
+        
+        Args:
+            result: Task result
+            run_dir: Run directory
+        
+        Returns:
+            QA report
+        """
+        qa = QAAgent()
+        validator = ArtifactValidator()
+        
+        qa_report = {
+            "result_validation": qa.validate_result(result),
+            "artifact_validation": validator.validate_artifacts_dir(run_dir / "artifacts"),
+            "qa_summary": qa.get_summary(),
+        }
+        
+        # Save QA report
+        qa_report_path = run_dir / "qa_report.json"
+        qa_report_path.write_text(json.dumps(qa_report, indent=2))
+        logger.info(f"Saved QA report: {qa_report_path}")
+        
+        return qa_report
 
     def _run_impl(
         self,
