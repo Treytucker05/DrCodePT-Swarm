@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from dataclasses import dataclass, replace
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -12,6 +13,13 @@ from uuid import uuid4
 import traceback
 
 from agent.autonomous.config import AgentConfig, PlannerConfig, RunnerConfig
+from agent.autonomous.isolation import (
+    WorktreeInfo,
+    copy_repo_to_workspace,
+    create_worktree,
+    remove_worktree,
+    sanitize_branch_name,
+)
 from agent.autonomous.manifest import write_run_manifest
 from agent.autonomous.repo_scan import is_repo_review_task
 from agent.config.profile import resolve_profile
@@ -204,6 +212,31 @@ def _ensure_repo_scan_subtask(subtasks: List[Subtask], *, objective: str, max_it
         a_task.goal = f"{repo_goal}\n\n{a_task.goal}".strip()
 
 
+def _select_isolation_mode(profile_name: str, explicit: str | None) -> str:
+    raw = (explicit or os.getenv("SWARM_ISOLATION") or "").strip().lower()
+    if raw in {"none", "sandbox", "worktree"}:
+        return raw
+    if profile_name in {"deep", "audit"}:
+        return "sandbox"
+    return "none"
+
+
+def _workspace_note(goal: str, workspace: Path) -> str:
+    note = (
+        "Use the isolated workspace at:\n"
+        f"{workspace}\n"
+        "All file operations should stay inside this workspace."
+    )
+    return f"{note}\n\n{goal}".strip()
+
+
+def _build_isolated_agent_cfg(agent_cfg: AgentConfig, *, repo_root: Path, workspace: Path) -> AgentConfig:
+    roots = [r for r in agent_cfg.fs_allowed_roots if r != repo_root]
+    if workspace not in roots:
+        roots.append(workspace)
+    return replace(agent_cfg, fs_allowed_roots=tuple(roots))
+
+
 def _expected_artifacts_for(subtask: Subtask) -> List[str]:
     expected = ["result.json", "trace.jsonl"]
     goal = subtask.goal.lower()
@@ -308,6 +341,7 @@ def _run_subagent(
     agent_cfg: AgentConfig,
     runner_cfg: RunnerConfig,
     unsafe_mode: bool,
+    workdir: Optional[Path] = None,
 ) -> tuple[Subtask, str, str, Path]:
     # Threaded swarm runs must never mutate process-global state (e.g., os.chdir).
     planner_mode = _planner_mode_for(subtask.goal)
@@ -317,7 +351,7 @@ def _run_subagent(
         max_plan_steps=_int_env("SWARM_MAX_PLAN_STEPS", _int_env("AUTO_MAX_PLAN_STEPS", 6)),
     )
     try:
-        llm = CodexCliClient.from_env(workdir=repo_root, log_dir=run_dir)
+        llm = CodexCliClient.from_env(workdir=workdir or repo_root, log_dir=run_dir)
     except (CodexCliNotFoundError, CodexCliAuthError) as exc:
         return subtask, "failed", f"llm_error: {exc}", ""
 
@@ -335,7 +369,14 @@ def _run_subagent(
     return subtask, status, result.stop_reason or "", run_dir
 
 
-def mode_swarm(objective: str, *, unsafe_mode: bool = False, profile: str | None = None) -> None:
+def mode_swarm(
+    objective: str,
+    *,
+    unsafe_mode: bool = False,
+    profile: str | None = None,
+    isolation: str | None = None,
+    cleanup_worktrees: bool | None = None,
+) -> None:
     _load_dotenv()
     try:
         llm = CodexCliClient.from_env()
@@ -353,6 +394,12 @@ def mode_swarm(objective: str, *, unsafe_mode: bool = False, profile: str | None
     max_subtasks = max(1, _int_env("SWARM_MAX_SUBTASKS", 3))
     profile_cfg = resolve_profile(profile, env_keys=("SWARM_PROFILE", "AUTO_PROFILE", "AGENT_PROFILE"))
     workers = max(1, _int_env("SWARM_MAX_WORKERS", profile_cfg.workers))
+    isolation_mode = _select_isolation_mode(profile_cfg.name, isolation)
+    cleanup_worktrees = (
+        bool(cleanup_worktrees)
+        if cleanup_worktrees is not None
+        else _bool_env("SWARM_CLEANUP_WORKTREES", False)
+    )
 
     llm = llm.with_context(workdir=repo_root, log_dir=run_root)
     subtasks = _decompose(llm, objective, max_items=max_subtasks)
@@ -390,6 +437,7 @@ def mode_swarm(objective: str, *, unsafe_mode: bool = False, profile: str | None
     run_dirs_by_id: Dict[str, Path] = {}
     status_by_id: Dict[str, str] = {}
     subtasks_by_id: Dict[str, Subtask] = {s.id: s for s in subtasks}
+    worktrees_by_id: Dict[str, WorktreeInfo] = {}
 
     while remaining:
         ready = [s for s in remaining.values() if all(d in completed for d in s.depends_on)]
@@ -412,14 +460,34 @@ def mode_swarm(objective: str, *, unsafe_mode: bool = False, profile: str | None
                     subtask = Subtask(id=s.id, goal=reduced_goal, depends_on=s.depends_on, notes=s.notes)
                 sub_dir = run_root / f"{s.id}_{uuid4().hex[:6]}"
                 sub_dir.mkdir(parents=True, exist_ok=True)
+                workdir = repo_root
+                sub_agent_cfg = agent_cfg
+                if isolation_mode != "none":
+                    workspace_dir = sub_dir / "workspace"
+                    workspace_dir.mkdir(parents=True, exist_ok=True)
+                    if isolation_mode == "sandbox":
+                        copy_repo_to_workspace(repo_root, workspace_dir)
+                    elif isolation_mode == "worktree":
+                        branch = sanitize_branch_name(f"swarm/{run_root.name}/{s.id}-{uuid4().hex[:6]}")
+                        info = create_worktree(repo_root, workspace_dir, branch)
+                        worktrees_by_id[s.id] = info
+                    workdir = workspace_dir
+                    sub_agent_cfg = _build_isolated_agent_cfg(agent_cfg, repo_root=repo_root, workspace=workspace_dir)
+                    subtask = Subtask(
+                        id=subtask.id,
+                        goal=_workspace_note(subtask.goal, workspace_dir),
+                        depends_on=subtask.depends_on,
+                        notes=subtask.notes,
+                    )
                 future = executor.submit(
                     _run_subagent,
                     subtask,
                     repo_root=repo_root,
                     run_dir=sub_dir,
-                    agent_cfg=agent_cfg,
+                    agent_cfg=sub_agent_cfg,
                     runner_cfg=runner_cfg,
                     unsafe_mode=unsafe_mode,
+                    workdir=workdir,
                 )
                 future_map[future] = (s, sub_dir)
 
@@ -452,6 +520,8 @@ def mode_swarm(objective: str, *, unsafe_mode: bool = False, profile: str | None
                 completed.add(subtask.id)
                 if subtask.id in remaining:
                     del remaining[subtask.id]
+                if cleanup_worktrees and subtask.id in worktrees_by_id:
+                    remove_worktree(repo_root, worktrees_by_id[subtask.id])
 
     print("\n[SWARM] Results:")
     for subtask, status, stop_reason, sub_run_dir in results:
@@ -515,3 +585,28 @@ def mode_swarm(objective: str, *, unsafe_mode: bool = False, profile: str | None
 
 
 __all__ = ["mode_swarm"]
+
+
+def main(argv: list[str] | None = None) -> int:
+    import argparse
+
+    p = argparse.ArgumentParser(prog="python -m agent.modes.swarm")
+    p.add_argument("--objective", required=True, help="Objective for the swarm run.")
+    p.add_argument("--profile", choices=["fast", "deep", "audit"], default=None)
+    p.add_argument("--isolation", choices=["none", "sandbox", "worktree"], default=None)
+    p.add_argument("--cleanup-worktrees", action="store_true")
+    p.add_argument("--unsafe-mode", action="store_true")
+    args = p.parse_args(argv)
+
+    mode_swarm(
+        args.objective,
+        unsafe_mode=bool(args.unsafe_mode),
+        profile=args.profile,
+        isolation=args.isolation,
+        cleanup_worktrees=bool(args.cleanup_worktrees),
+    )
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover - convenience entrypoint
+    raise SystemExit(main())
