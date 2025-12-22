@@ -19,7 +19,7 @@ from .config import AgentConfig, PlannerConfig, RunContext, RunnerConfig
 from agent.config.profile import RunUsage
 from .jsonio import dumps_compact
 from .loop_detection import LoopDetector
-from .exceptions import AgentException, LLMError
+from .exceptions import AgentException, LLMError, ToolExecutionError
 from .memory.sqlite_store import SqliteMemoryStore
 from .models import AgentRunResult, Observation, Plan, Reflection, Step, ToolResult
 from .perception import Perceptor
@@ -31,6 +31,7 @@ from .state import AgentState
 from .tools.builtins import build_default_tool_registry
 from .tools.registry import ToolRegistry
 from .trace import JsonlTracer
+from .retry_utils import LLM_RETRY_CONFIG, TOOL_RETRY_CONFIG, retry_with_backoff
 
 
 def _utc_ts_id() -> str:
@@ -1230,27 +1231,41 @@ class AgentRunner:
         tracer: JsonlTracer,
     ) -> ToolResult:
         last: Optional[ToolResult] = None
-        for attempt in range(self.cfg.tool_max_retries + 1):
-            if self.cfg.llm_heartbeat_seconds and attempt == 0:
+
+        def _attempt() -> ToolResult:
+            nonlocal last
+            if self.cfg.llm_heartbeat_seconds and last is None:
                 print(f"[TOOL] {tool_name} {self._format_tool_args(tool_args)}")
             if isinstance(getattr(self, "_stats", None), dict):
                 self._stats["tool_calls"] = self._stats.get("tool_calls", 0) + 1
             result = tools.call(tool_name, tool_args, ctx)
             last = result
-            if result.success or not result.retryable or attempt >= self.cfg.tool_max_retries:
+            if result.success or not result.retryable:
                 return result
+            raise ToolExecutionError(tool_name, message=result.error or "retryable_tool_error")
+
+        def _on_retry(exc: Exception, attempt: int, _delay: float) -> None:
             if isinstance(getattr(self, "_stats", None), dict):
                 self._stats["retries"] = self._stats.get("retries", 0) + 1
             tracer.log(
                 {
                     "type": "tool_retry",
                     "tool_name": tool_name,
-                    "attempt": attempt + 1,
-                    "error": result.error,
+                    "attempt": attempt,
+                    "error": str(exc),
                 }
             )
-            time.sleep(self.cfg.tool_retry_backoff_seconds * (attempt + 1))
-        return last or ToolResult(success=False, error="tool_failed")
+
+        retry_cfg = TOOL_RETRY_CONFIG.with_overrides(max_attempts=self.cfg.tool_max_retries + 1)
+        try:
+            return retry_with_backoff(
+                _attempt,
+                config=retry_cfg,
+                is_transient=lambda exc: isinstance(exc, ToolExecutionError),
+                on_retry=_on_retry,
+            )
+        except ToolExecutionError:
+            return last or ToolResult(success=False, error="tool_failed")
 
     def _check_conditions(
         self,
@@ -1446,33 +1461,49 @@ class AgentRunner:
     ):
         last_exc: Optional[Exception] = None
         retries = self.cfg.llm_max_retries if max_retries is None else max_retries
-        for attempt in range(retries + 1):
-            try:
-                return self._call_llm_with_heartbeat(
-                    fn,
-                    label=label or where,
-                    heartbeat_seconds=self.cfg.llm_heartbeat_seconds,
-                    timeout_seconds=timeout_seconds,
-                )
-            except Exception as exc:
-                last_exc = LLMError(f"{where} failed: {exc}", cause=exc)
+
+        def _attempt():
+            return self._call_llm_with_heartbeat(
+                fn,
+                label=label or where,
+                heartbeat_seconds=self.cfg.llm_heartbeat_seconds,
+                timeout_seconds=timeout_seconds,
+            )
+
+        def _on_retry(exc: Exception, attempt: int, _delay: float) -> None:
+            nonlocal last_exc
+            last_exc = LLMError(f"{where} failed: {exc}", cause=exc)
+            tracer.log(
+                {
+                    "type": "llm_retry",
+                    "where": where,
+                    "attempt": attempt,
+                    "error": str(last_exc),
+                    "exc_type": type(last_exc).__name__,
+                }
+            )
+            if isinstance(getattr(self, "_stats", None), dict):
+                self._stats["retries"] = self._stats.get("retries", 0) + 1
+
+        retry_cfg = LLM_RETRY_CONFIG.with_overrides(
+            max_attempts=retries + 1,
+            initial_delay_s=self.cfg.llm_retry_backoff_seconds,
+            max_delay_s=max(self.cfg.llm_retry_backoff_seconds, self.cfg.llm_retry_backoff_seconds * 4),
+        )
+        try:
+            return retry_with_backoff(_attempt, config=retry_cfg, on_retry=_on_retry)
+        except Exception as exc:
+            last_exc = last_exc or LLMError(f"{where} failed: {exc}", cause=exc)
+            if not allow_none:
                 tracer.log(
                     {
-                        "type": "llm_retry",
+                        "type": "llm_error",
                         "where": where,
-                        "attempt": attempt + 1,
                         "error": str(last_exc),
                         "exc_type": type(last_exc).__name__,
                     }
                 )
-                if attempt >= retries:
-                    break
-                if isinstance(getattr(self, "_stats", None), dict):
-                    self._stats["retries"] = self._stats.get("retries", 0) + 1
-                time.sleep(self.cfg.llm_retry_backoff_seconds * (attempt + 1))
-        if not allow_none:
-            tracer.log({"type": "llm_error", "where": where, "error": str(last_exc), "exc_type": type(last_exc).__name__})
-        return None
+            return None
 
     def _call_llm_with_heartbeat(
         self,

@@ -23,6 +23,7 @@ from ..config import AgentConfig, RunContext
 from agent.config.profile import ProfileConfig, RunUsage
 from ..memory.sqlite_store import MemoryKind, SqliteMemoryStore
 from ..models import ToolResult
+from ..retry_utils import WEB_RETRY_CONFIG, retry_with_backoff
 from .registry import ToolRegistry, ToolSpec
 
 # Lightweight in-memory sessions for GUI tools (keyed by run_id).
@@ -169,21 +170,26 @@ def web_search(ctx: RunContext, args: WebSearchArgs) -> ToolResult:
     url = "https://duckduckgo.com/html/"
     last_error: Optional[str] = None
     text = ""
-    for attempt in range(3):
-        try:
-            resp = requests.get(
-                url,
-                params={"q": query, "kl": args.region},
-                headers={"User-Agent": "DrCodePT-Agent/1.0"},
-                timeout=args.timeout_seconds,
-            )
-            content = resp.content[: args.max_bytes]
-            text = content.decode(resp.encoding or "utf-8", errors="replace")
-            last_error = None
-            break
-        except requests.RequestException as exc:
-            last_error = str(exc)
-            time.sleep(0.5 * (attempt + 1))
+
+    def _fetch() -> str:
+        resp = requests.get(
+            url,
+            params={"q": query, "kl": args.region},
+            headers={"User-Agent": "DrCodePT-Agent/1.0"},
+            timeout=args.timeout_seconds,
+        )
+        content = resp.content[: args.max_bytes]
+        return content.decode(resp.encoding or "utf-8", errors="replace")
+
+    try:
+        text = retry_with_backoff(
+            _fetch,
+            config=WEB_RETRY_CONFIG,
+            is_transient=lambda exc: isinstance(exc, requests.RequestException),
+        )
+    except requests.RequestException as exc:
+        last_error = str(exc)
+
     if last_error:
         return ToolResult(success=False, error=last_error, retryable=True)
 
