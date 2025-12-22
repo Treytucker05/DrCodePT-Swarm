@@ -203,6 +203,60 @@ def _ensure_repo_scan_subtask(subtasks: List[Subtask], *, objective: str, max_it
         a_task.goal = f"{repo_goal}\n\n{a_task.goal}".strip()
 
 
+def _expected_artifacts_for(subtask: Subtask) -> List[str]:
+    expected = ["result.json", "trace.jsonl"]
+    goal = subtask.goal.lower()
+    if "repo_map" in goal or "repo_index" in goal:
+        expected.extend(["repo_index.json", "repo_map.json"])
+    if "a_findings" in goal or subtask.id.strip().upper() == "A":
+        expected.append("A_findings.json")
+    return list(dict.fromkeys(expected))
+
+
+def _build_reduced_goal(
+    subtask: Subtask,
+    *,
+    failed_deps: List[str],
+    results_by_id: Dict[str, Dict[str, Any]],
+    run_dirs_by_id: Dict[str, Path],
+    subtasks_by_id: Dict[str, Subtask],
+) -> str:
+    lines = [
+        "Reduced synthesis mode: one or more dependencies failed.",
+        "Summarize what failed and why based on available result.json/trace.jsonl.",
+        "List missing artifacts per dependency.",
+        "Propose next-run objectives and minimal inputs needed.",
+        "",
+        f"Failed dependencies: {', '.join(failed_deps)}",
+        "Failure details:",
+    ]
+    for dep in failed_deps:
+        result = results_by_id.get(dep, {})
+        reason = ""
+        if isinstance(result.get("error"), dict):
+            err = result.get("error") or {}
+            reason = err.get("message") or err.get("type") or ""
+        reason = reason or str(result.get("stop_reason") or result.get("reason") or "unknown")
+        lines.append(f"- {dep}: {reason}")
+    lines.append("")
+    lines.append("Missing artifacts:")
+    for dep in failed_deps:
+        dep_task = subtasks_by_id.get(dep, Subtask(id=dep, goal="", depends_on=[], notes=""))
+        dep_dir = run_dirs_by_id.get(dep)
+        expected = _expected_artifacts_for(dep_task)
+        missing = []
+        if dep_dir is not None:
+            for name in expected:
+                if not (dep_dir / name).exists():
+                    missing.append(name)
+        if missing:
+            lines.append(f"- {dep}: {missing}")
+    lines.append("")
+    lines.append("Original goal (for context only):")
+    lines.append(subtask.goal)
+    return "\n".join(lines)
+
+
 def _trace_tail(trace_path: str, *, max_lines: int = 200) -> List[dict]:
     try:
         path = Path(trace_path)
@@ -323,6 +377,10 @@ def mode_swarm(objective: str, *, unsafe_mode: bool = False, profile: str | None
     remaining: Dict[str, Subtask] = {s.id: s for s in subtasks}
     completed: set[str] = set()
     results: List[tuple[Subtask, str, str, Path]] = []
+    results_by_id: Dict[str, Dict[str, Any]] = {}
+    run_dirs_by_id: Dict[str, Path] = {}
+    status_by_id: Dict[str, str] = {}
+    subtasks_by_id: Dict[str, Subtask] = {s.id: s for s in subtasks}
 
     while remaining:
         ready = [s for s in remaining.values() if all(d in completed for d in s.depends_on)]
@@ -332,11 +390,22 @@ def mode_swarm(objective: str, *, unsafe_mode: bool = False, profile: str | None
         with ThreadPoolExecutor(max_workers=workers) as executor:
             future_map: Dict[Any, tuple[Subtask, Path]] = {}
             for s in ready:
+                dep_failures = [d for d in s.depends_on if status_by_id.get(d) == "failed"]
+                subtask = s
+                if dep_failures:
+                    reduced_goal = _build_reduced_goal(
+                        s,
+                        failed_deps=dep_failures,
+                        results_by_id=results_by_id,
+                        run_dirs_by_id=run_dirs_by_id,
+                        subtasks_by_id=subtasks_by_id,
+                    )
+                    subtask = Subtask(id=s.id, goal=reduced_goal, depends_on=s.depends_on, notes=s.notes)
                 sub_dir = run_root / f"{s.id}_{uuid4().hex[:6]}"
                 sub_dir.mkdir(parents=True, exist_ok=True)
                 future = executor.submit(
                     _run_subagent,
-                    s,
+                    subtask,
                     repo_root=repo_root,
                     run_dir=sub_dir,
                     agent_cfg=agent_cfg,
@@ -368,6 +437,9 @@ def mode_swarm(objective: str, *, unsafe_mode: bool = False, profile: str | None
                     status = "failed"
                     stop_reason = f"exception:{type(exc).__name__}"
                 results.append((subtask, status, stop_reason, sub_run_dir))
+                run_dirs_by_id[subtask.id] = sub_run_dir
+                results_by_id[subtask.id] = _read_result(sub_run_dir)
+                status_by_id[subtask.id] = "success" if status == "success" else "failed"
                 completed.add(subtask.id)
                 if subtask.id in remaining:
                     del remaining[subtask.id]
