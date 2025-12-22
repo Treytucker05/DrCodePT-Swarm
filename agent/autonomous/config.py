@@ -37,6 +37,18 @@ class RunnerConfig:
     llm_max_retries: int = 2
     llm_retry_backoff_seconds: float = 1.2
 
+    def __post_init__(self) -> None:
+        if self.max_steps <= 0:
+            raise ValueError("max_steps must be > 0")
+        if self.timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be > 0")
+        if self.llm_plan_timeout_seconds is not None and self.llm_plan_timeout_seconds <= 0:
+            raise ValueError("llm_plan_timeout_seconds must be > 0")
+        if self.llm_plan_retry_timeout_seconds is not None and self.llm_plan_retry_timeout_seconds <= 0:
+            raise ValueError("llm_plan_retry_timeout_seconds must be > 0")
+        if self.llm_heartbeat_seconds is not None and self.llm_heartbeat_seconds < 0:
+            raise ValueError("llm_heartbeat_seconds must be >= 0")
+
 
 @dataclass(frozen=True)
 class PlannerConfig:

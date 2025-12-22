@@ -43,6 +43,8 @@ Profiles tune budgets without ever disabling timeouts (all profiles remain finit
 
 Use `--profile fast|deep|audit` on `python -m agent.run`. Swarm reads `SWARM_PROFILE`/`AUTO_PROFILE`/`AGENT_PROFILE`.
 Swarm workers are non-interactive; if a question is required they return `interaction_required` instead of prompting.
+Repo review tasks generate `repo_index.json` and `repo_map.json` artifacts to bound scanning.
+Filesystem tools enforce safety gates using allowed roots; set `AUTO_FS_ALLOWED_ROOTS`/`SWARM_FS_ALLOWED_ROOTS` or `*_FS_ANYWHERE`.
 
 ## Key paths
 - `agent/run.py` - autonomous agent CLI entrypoint.
@@ -58,6 +60,14 @@ Swarm workers are non-interactive; if a question is required they return `intera
 - Swarm cwd smoke test: `tests/test_swarm_cwd.py` blocks `os.chdir`, asserts `subprocess.run` receives explicit `cwd`, and requires ≥2 calls with workers=2.
 - Run tests: `python -m pytest -q`
 - Static guard: `rg -n "os\\.chdir\\(" agent/`
+
+## Pre-commit
+1) Install: `python -m pip install pre-commit`
+2) Enable: `pre-commit install`
+3) Run on all files: `pre-commit run -a`
+
+## CI
+- GitHub Actions runs pytest + mypy on push/PR (see `.github/workflows/ci.yml`).
 
 ## Legacy
 The older YAML supervisor and launcher scripts remain under `agent/` and `launchers/`.
