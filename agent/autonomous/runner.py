@@ -22,6 +22,8 @@ from .jsonio import dumps_compact
 from .loop_detection import LoopDetector
 from .exceptions import AgentException, LLMError, ToolExecutionError
 from .manifest import write_run_manifest
+from agent.autonomous.checkpointing import CheckpointManager
+from agent.autonomous.profiles import get_profile
 from .memory.sqlite_store import SqliteMemoryStore
 from .models import AgentRunResult, Observation, Plan, Reflection, Step, ToolResult
 from .perception import Perceptor
@@ -201,6 +203,7 @@ class AgentRunner:
             run_id = resume.get("run_id") or f"{_utc_ts_id()}_{uuid4().hex[:8]}"
         else:
             run_id = f"{_utc_ts_id()}_{uuid4().hex[:8]}"
+        self.run_id = run_id
         repo_root = Path(__file__).resolve().parents[2]
         run_dir = self.run_dir or (repo_root / "runs" / "autonomous" / run_id)
         if resume and resume.get("run_dir"):
@@ -209,13 +212,24 @@ class AgentRunner:
             except Exception:
                 pass
         try:
-            return self._run_impl(
+            result = self._run_impl(
                 task,
                 resume=resume,
                 run_id=run_id,
                 run_dir=run_dir,
                 repo_root=repo_root,
             )
+            result_status = "success" if result.success else "failure"
+            manifest_path = run_dir / "run_manifest.json"
+            if manifest_path.exists():
+                manifest = json.loads(manifest_path.read_text())
+                manifest["completed_at"] = datetime.now(timezone.utc).isoformat()
+                manifest["status"] = result_status
+                checkpoint_manager = getattr(self, "_checkpoint_manager", None)
+                if checkpoint_manager is not None:
+                    manifest["checkpoints"] = checkpoint_manager.list_checkpoints()
+                manifest_path.write_text(json.dumps(manifest, indent=2))
+            return result
         except Exception as exc:
             run_dir.mkdir(parents=True, exist_ok=True)
             configure_logging(run_dir)
@@ -248,6 +262,47 @@ class AgentRunner:
                 trace_path=str(Path(run_dir / "trace.jsonl")),
             )
 
+    def save_run_manifest(
+        self,
+        run_dir: Path,
+        profile_name: str,
+        task: str,
+        checkpoint_manager: CheckpointManager,
+    ) -> None:
+        """Save run manifest with profile and metadata.
+
+        Args:
+            run_dir: Run directory
+            profile_name: Profile name (fast, deep, audit)
+            task: Task description
+            checkpoint_manager: CheckpointManager instance
+        """
+        profile = get_profile(profile_name)
+
+        manifest = {
+            "run_id": self.run_id,
+            "task": task,
+            "profile": profile.name,
+            "profile_config": {
+                "max_steps": profile.max_steps,
+                "timeout_seconds": profile.timeout_seconds,
+                "max_files_to_read": profile.max_files_to_read,
+                "max_bytes_to_read": profile.max_bytes_to_read,
+                "max_web_sources": profile.max_web_sources,
+                "max_tool_calls": profile.max_tool_calls,
+                "enable_web_search": profile.enable_web_search,
+                "enable_code_execution": profile.enable_code_execution,
+                "enable_file_write": profile.enable_file_write,
+                "checkpoint_interval": profile.checkpoint_interval,
+            },
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "checkpoints": checkpoint_manager.list_checkpoints(),
+        }
+
+        manifest_path = run_dir / "run_manifest.json"
+        manifest_path.write_text(json.dumps(manifest, indent=2))
+        logger.info(f"Saved run manifest: {manifest_path}")
+
     def __del__(self):
         """Ensure resources are cleaned up."""
         try:
@@ -270,24 +325,35 @@ class AgentRunner:
         configure_logging(run_dir)
         workspace_dir = run_dir / "workspace"
         workspace_dir.mkdir(parents=True, exist_ok=True)
-        profile = self.agent_cfg.profile
+        # Initialize checkpoint manager
+        checkpoint_manager = CheckpointManager(run_dir)
+
+        # Get profile
+        profile = get_profile(self.cfg.profile)
+        logger.info(f"Using profile: {profile.name}")
+
+        agent_profile = self.agent_cfg.profile
         usage = RunUsage()
         ctx = RunContext(
             run_id=run_id,
             run_dir=run_dir,
             workspace_dir=workspace_dir,
-            profile=profile,
+            profile=agent_profile,
             usage=usage,
         )
+        self._checkpoint_manager = checkpoint_manager
 
         write_run_manifest(
             run_dir,
             run_id=run_id,
-            profile=profile,
+            profile=agent_profile,
             runner_cfg=self.cfg,
             workers=1,
             mode=self.mode_name,
         )
+
+        # Save initial manifest
+        self.save_run_manifest(run_dir, self.cfg.profile, task, checkpoint_manager)
 
         # trace.jsonl/result.json are the authoritative execution artifacts; stdout is for humans.
         tracer = JsonlTracer(run_dir / "trace.jsonl")
@@ -306,7 +372,7 @@ class AgentRunner:
         tracked_llm = TrackedLLM(llm)
         reflector = Reflector(llm=tracked_llm, pre_mortem_enabled=self.agent_cfg.pre_mortem_enabled)
 
-        if profile and profile.stage_checkpoints:
+        if agent_profile and agent_profile.stage_checkpoints:
             try:
                 from .repo_scan import RepoScanner, is_repo_review_task
 
@@ -315,8 +381,8 @@ class AgentRunner:
                     scanner = RepoScanner(
                         repo_root=repo_root,
                         run_dir=run_dir,
-                        max_results=profile.max_glob_results,
-                        profile=profile,
+                        max_results=agent_profile.max_glob_results,
+                        profile=agent_profile,
                         usage=usage,
                     )
                     index, repo_map = scanner.scan()
@@ -1019,6 +1085,20 @@ class AgentRunner:
                         f"Trimming observations from {len(state.observations)} to 1000"
                     )
                     state.observations = state.observations[-1000:]
+
+                # Save checkpoint periodically
+                step_count = steps_executed
+                if step_count % profile.checkpoint_interval == 0:
+                    checkpoint_state = {
+                        "step": step_count,
+                        "observations": [
+                            obs.model_dump() if hasattr(obs, "model_dump") else obs.dict()
+                            for obs in state.observations
+                        ],
+                        "task": task,
+                        "status": "in_progress",
+                    }
+                    checkpoint_manager.save_checkpoint(step_count, checkpoint_state)
 
                 args_hash = _hash_text(_json_dumps(step.tool_args))
                 output_text = _summarize_output(tool_result.output, limit=2000)

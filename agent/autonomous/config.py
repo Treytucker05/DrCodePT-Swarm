@@ -31,6 +31,8 @@ class AgentConfig:
 class RunnerConfig:
     max_steps: int = 30
     timeout_seconds: int = 600
+    profile: str = "deep"
+    """Execution profile: fast, deep, or audit."""
     cost_budget_usd: Optional[float] = None
     llm_heartbeat_seconds: Optional[float] = None
     llm_plan_timeout_seconds: Optional[int] = 360
