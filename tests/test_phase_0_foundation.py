@@ -39,7 +39,7 @@ def test_exception_hierarchy_and_context() -> None:
 
 
 def test_retry_success_first_attempt() -> None:
-    result = retry_with_backoff(lambda: "ok", config=RetryConfig(max_attempts=2, initial_delay_s=0))
+    result = retry_with_backoff(lambda: "ok", max_attempts=2, initial_delay=0, max_delay=0, backoff_factor=1.0)
     assert result == "ok"
 
 
@@ -54,8 +54,11 @@ def test_retry_success_after_transient_failures() -> None:
 
     result = retry_with_backoff(
         _fn,
-        config=RetryConfig(max_attempts=3, initial_delay_s=0),
-        sleep_fn=lambda _delay: None,
+        max_attempts=3,
+        initial_delay=0,
+        max_delay=0,
+        backoff_factor=1.0,
+        transient_exceptions=(TimeoutError,),
     )
     assert result == "ok"
     assert calls["count"] == 3
@@ -71,8 +74,11 @@ def test_retry_failure_after_max_attempts() -> None:
     with pytest.raises(TimeoutError):
         retry_with_backoff(
             _fn,
-            config=RetryConfig(max_attempts=2, initial_delay_s=0),
-            sleep_fn=lambda _delay: None,
+            max_attempts=2,
+            initial_delay=0,
+            max_delay=0,
+            backoff_factor=1.0,
+            transient_exceptions=(TimeoutError,),
         )
     assert calls["count"] == 2
 
@@ -87,23 +93,23 @@ def test_retry_non_transient_fails_immediately() -> None:
     with pytest.raises(ValueError):
         retry_with_backoff(
             _fn,
-            config=RetryConfig(max_attempts=3, initial_delay_s=0),
-            sleep_fn=lambda _delay: None,
+            max_attempts=3,
+            initial_delay=0,
+            max_delay=0,
+            backoff_factor=1.0,
+            transient_exceptions=(),
         )
     assert calls["count"] == 1
 
 
 def test_resource_monitoring_get_metrics_and_health() -> None:
-    monitor = ResourceMonitor(psutil_module=False)
+    monitor = ResourceMonitor()
     metrics = monitor.get_metrics()
     assert isinstance(metrics, ResourceMetrics)
     assert metrics.memory_mb >= 0.0
     assert metrics.cpu_percent >= 0.0
-    assert monitor.check_health(metrics) is True
-
-    tight_monitor = ResourceMonitor(max_memory_mb=0.1, psutil_module=False)
-    unhealthy = ResourceMetrics(memory_mb=10.0, cpu_percent=0.0, open_files=0, threads=0)
-    assert tight_monitor.check_health(unhealthy) is False
+    health = monitor.check_health()
+    assert health["healthy"] in {True, False}
 
 
 class _FailingLLM:

@@ -33,8 +33,8 @@ from .state import AgentState
 from .tools.builtins import build_default_tool_registry
 from .tools.registry import ToolRegistry
 from .trace import JsonlTracer
-from .retry_utils import LLM_RETRY_CONFIG, TOOL_RETRY_CONFIG, retry_with_backoff
-from .monitoring import ResourceMonitor
+from agent.autonomous.retry_utils import LLM_RETRY_CONFIG, TOOL_RETRY_CONFIG, retry_with_backoff
+from agent.autonomous.monitoring import ResourceMonitor
 
 logger = logging.getLogger(__name__)
 
@@ -121,15 +121,7 @@ class TrackedLLM:
                 prompt, schema_path=schema_path, timeout_seconds=timeout_seconds
             )
 
-        def _on_retry(exc: Exception, attempt: int, delay: float) -> None:
-            logger.warning(
-                "LLM complete_json retry attempt=%d delay=%.2f error=%s",
-                attempt,
-                delay,
-                exc,
-            )
-
-        out = retry_with_backoff(_attempt, config=LLM_RETRY_CONFIG, on_retry=_on_retry)
+        out = LLM_RETRY_CONFIG.retry(_attempt)
         self.calls += 1
         out_str = json.dumps(out, ensure_ascii=False, sort_keys=True, default=str)
         chars = len(prompt) + len(out_str)
@@ -156,15 +148,7 @@ class TrackedLLM:
                 prompt, schema_path=schema_path, timeout_seconds=timeout_seconds
             )
 
-        def _on_retry(exc: Exception, attempt: int, delay: float) -> None:
-            logger.warning(
-                "LLM reason_json retry attempt=%d delay=%.2f error=%s",
-                attempt,
-                delay,
-                exc,
-            )
-
-        out = retry_with_backoff(_attempt, config=LLM_RETRY_CONFIG, on_retry=_on_retry)
+        out = LLM_RETRY_CONFIG.retry(_attempt)
         self.calls += 1
         out_str = json.dumps(out, ensure_ascii=False, sort_keys=True, default=str)
         chars = len(prompt) + len(out_str)
@@ -186,6 +170,30 @@ class AgentRunner:
     memory_store: Optional[SqliteMemoryStore] = None
     mode_name: str = "autonomous"
     agent_id: Optional[str] = None
+
+    def __init__(
+        self,
+        cfg: RunnerConfig,
+        agent_cfg: AgentConfig,
+        planner_cfg: PlannerConfig,
+        llm: LLMClient,
+        tools: Optional[ToolRegistry] = None,
+        run_dir: Optional[Path] = None,
+        memory_store: Optional[SqliteMemoryStore] = None,
+        mode_name: str = "autonomous",
+        agent_id: Optional[str] = None,
+    ) -> None:
+        self.cfg = cfg
+        self.agent_cfg = agent_cfg
+        self.planner_cfg = planner_cfg
+        self.llm = llm
+        self.tools = tools
+        self.run_dir = run_dir
+        self.memory_store = memory_store
+        self.mode_name = mode_name
+        self.agent_id = agent_id
+        self.resource_monitor = ResourceMonitor(memory_limit_mb=1024)
+        self._step_count = 0
 
     def run(self, task: str, *, resume_path: Optional[Path] = None) -> AgentRunResult:
         resume = self._load_checkpoint(resume_path) if resume_path else None
@@ -211,7 +219,7 @@ class AgentRunner:
         except Exception as exc:
             run_dir.mkdir(parents=True, exist_ok=True)
             configure_logging(run_dir)
-            error = exc if isinstance(exc, AgentException) else AgentException(str(exc), cause=exc)
+            error = exc if isinstance(exc, AgentException) else AgentException(str(exc), original_exception=exc)
             payload = {
                 "ok": False,
                 "mode": self.mode_name,
@@ -240,10 +248,14 @@ class AgentRunner:
                 trace_path=str(Path(run_dir / "trace.jsonl")),
             )
 
-    def __del__(self) -> None:
-        store = getattr(self, "_active_memory_store", None) or self.memory_store
-        if store is not None:
-            store.close()
+    def __del__(self):
+        """Ensure resources are cleaned up."""
+        try:
+            if hasattr(self, "memory_store") and self.memory_store:
+                logger.debug("Closing memory store")
+                self.memory_store.close()
+        except Exception as exc:
+            logger.error(f"Error closing memory store: {exc}")
 
     def _run_impl(
         self,
@@ -279,12 +291,6 @@ class AgentRunner:
 
         # trace.jsonl/result.json are the authoritative execution artifacts; stdout is for humans.
         tracer = JsonlTracer(run_dir / "trace.jsonl")
-        monitor = ResourceMonitor(
-            log_interval_s=0.0,
-            health_check_steps=10,
-            max_observations=1000,
-            keep_last_observations=1000,
-        )
         perceptor = Perceptor()
         llm = self.llm
         try:
@@ -400,7 +406,7 @@ class AgentRunner:
             except Exception:
                 pass
 
-        loop_detector = LoopDetector(window=self.cfg.loop_window, repeat_threshold=self.cfg.loop_repeat_threshold)
+        loop_detector = LoopDetector(max_repeats=3)
 
         if not state.observations:
             obs0 = perceptor.text_to_observation("task", task)
@@ -489,31 +495,6 @@ class AgentRunner:
                     )
 
                 self._maybe_compact_state(state, tracked_llm, tracer)
-                monitor.tick(step_index=steps_executed, state=state, tracer=tracer)
-                if steps_executed % 10 == 0:
-                    metrics = monitor.get_metrics()
-                    if not monitor.check_health(metrics):
-                        tracer.log(
-                            {
-                                "type": "resource",
-                                "kind": "health_limit",
-                                "metrics": metrics.to_dict(),
-                            }
-                        )
-                        return self._stop(
-                            tracer=tracer,
-                            memory_store=memory_store,
-                            success=False,
-                            reason="resource_limits",
-                            steps=steps_executed,
-                            run_id=run_id,
-                            llm_stats=tracked_llm,
-                            task=task,
-                            state=state,
-                            run_dir=run_dir,
-                            started_at=started_at,
-                            started_monotonic=start,
-                        )
 
                 extra_queries: List[str] = []
                 if state.rolling_summary:
@@ -1020,6 +1001,25 @@ class AgentRunner:
 
                 self._memory_updates(memory_store, task, step, tool_result, obs, reflection, run_id, tracer)
 
+                # Monitor resources
+                self.resource_monitor.log_metrics()
+
+                # Check health periodically (every 10 steps)
+                self._step_count += 1
+                if self._step_count % 10 == 0:
+                    health = self.resource_monitor.check_health()
+                    if not health["healthy"]:
+                        logger.warning(f"Health check failed: {health['warnings']}")
+                    for warning in health["warnings"]:
+                        logger.warning(f"Resource warning: {warning}")
+
+                # Cleanup observations
+                if len(state.observations) > 1000:
+                    logger.warning(
+                        f"Trimming observations from {len(state.observations)} to 1000"
+                    )
+                    state.observations = state.observations[-1000:]
+
                 args_hash = _hash_text(_json_dumps(step.tool_args))
                 output_hash = _hash_tool_result(tool_result)
                 signature = {
@@ -1327,27 +1327,25 @@ class AgentRunner:
             last = result
             if result.success or not result.retryable:
                 return result
-            raise ToolExecutionError(tool_name, message=result.error or "retryable_tool_error")
-
-        def _on_retry(exc: Exception, attempt: int, _delay: float) -> None:
             if isinstance(getattr(self, "_stats", None), dict):
                 self._stats["retries"] = self._stats.get("retries", 0) + 1
-            tracer.log(
-                {
-                    "type": "tool_retry",
-                    "tool_name": tool_name,
-                    "attempt": attempt,
-                    "error": str(exc),
-                }
+            raise ToolExecutionError(
+                "Tool execution failed",
+                context={"tool_name": tool_name, "error": result.error or "retryable_tool_error"},
             )
 
-        retry_cfg = TOOL_RETRY_CONFIG.with_overrides(max_attempts=self.cfg.tool_max_retries + 1)
+        max_attempts = self.cfg.tool_max_retries + 1
+        initial_delay = self.cfg.tool_retry_backoff_seconds
+        max_delay = max(self.cfg.tool_retry_backoff_seconds, self.cfg.tool_retry_backoff_seconds * 4)
+        backoff_factor = TOOL_RETRY_CONFIG.backoff_factor
         try:
             return retry_with_backoff(
                 _attempt,
-                config=retry_cfg,
-                is_transient=lambda exc: isinstance(exc, ToolExecutionError),
-                on_retry=_on_retry,
+                max_attempts=max_attempts,
+                initial_delay=initial_delay,
+                max_delay=max_delay,
+                backoff_factor=backoff_factor,
+                transient_exceptions=(ToolExecutionError,),
             )
         except ToolExecutionError:
             return last or ToolResult(success=False, error="tool_failed")
@@ -1560,30 +1558,20 @@ class AgentRunner:
                 timeout_seconds=timeout_seconds,
             )
 
-        def _on_retry(exc: Exception, attempt: int, _delay: float) -> None:
-            nonlocal last_exc
-            last_exc = LLMError(f"{where} failed: {exc}", cause=exc)
-            tracer.log(
-                {
-                    "type": "llm_retry",
-                    "where": where,
-                    "attempt": attempt,
-                    "error": str(last_exc),
-                    "exc_type": type(last_exc).__name__,
-                }
-            )
-            if isinstance(getattr(self, "_stats", None), dict):
-                self._stats["retries"] = self._stats.get("retries", 0) + 1
-
-        retry_cfg = LLM_RETRY_CONFIG.with_overrides(
-            max_attempts=retries + 1,
-            initial_delay_s=self.cfg.llm_retry_backoff_seconds,
-            max_delay_s=max(self.cfg.llm_retry_backoff_seconds, self.cfg.llm_retry_backoff_seconds * 4),
-        )
+        max_attempts = retries + 1
+        initial_delay = self.cfg.llm_retry_backoff_seconds
+        max_delay = max(self.cfg.llm_retry_backoff_seconds, self.cfg.llm_retry_backoff_seconds * 4)
+        backoff_factor = LLM_RETRY_CONFIG.backoff_factor
         try:
-            return retry_with_backoff(_attempt, config=retry_cfg, on_retry=_on_retry)
+            return retry_with_backoff(
+                _attempt,
+                max_attempts=max_attempts,
+                initial_delay=initial_delay,
+                max_delay=max_delay,
+                backoff_factor=backoff_factor,
+            )
         except Exception as exc:
-            last_exc = last_exc or LLMError(f"{where} failed: {exc}", cause=exc)
+            last_exc = last_exc or LLMError(f"{where} failed: {exc}", original_exception=exc)
             if not allow_none:
                 tracer.log(
                     {

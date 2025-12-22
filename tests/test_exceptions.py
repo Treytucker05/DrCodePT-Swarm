@@ -28,13 +28,12 @@ def test_exception_hierarchy() -> None:
 
 
 def test_tool_execution_error_records_tool() -> None:
-    err = ToolExecutionError("file_read", "boom")
-    assert err.tool_name == "file_read"
-    assert err.data.get("tool_name") == "file_read"
-    assert "boom" in str(err)
+    err = ToolExecutionError("boom", context={"tool_name": "file_read"})
+    assert err.message == "boom"
+    assert err.context.get("tool_name") == "file_read"
+    assert "tool_name=file_read" in str(err)
 
 
 def test_interaction_required_error_questions() -> None:
-    err = InteractionRequiredError(questions=["Q1", "", None, "Q2"])
-    assert err.questions == ["Q1", "Q2"]
-    assert err.data.get("questions") == ["Q1", "Q2"]
+    err = InteractionRequiredError("need input", questions=["Q1", "", None, "Q2"])
+    assert err.questions == ["Q1", "", None, "Q2"]

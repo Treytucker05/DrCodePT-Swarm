@@ -1,156 +1,77 @@
-from __future__ import annotations
+"""Custom exceptions for the autonomous agent framework.
 
-from typing import Any, Dict, Iterable, Optional
+This module defines a hierarchy of exceptions that provide semantic meaning
+to different failure modes. Instead of catching broad Exception types,
+code should catch specific exception types that indicate what went wrong.
+"""
+
+from typing import Optional, Dict, Any
 
 
 class AgentException(Exception):
-    """Base exception for agent failures.
-
-    Attributes:
-        message: Human-readable error message.
-        context: Optional contextual metadata.
-        original_exception: The underlying exception, if any.
-        data: Structured details for logging or diagnostics.
-
-    Example:
-        >>> try:
-        ...     raise RuntimeError("boom")
-        ... except RuntimeError as exc:
-        ...     raise AgentException(
-        ...         "failed",
-        ...         context={"step": "plan"},
-        ...         original_exception=exc,
-        ...     )
-    """
+    """Base exception for all agent-related errors."""
 
     def __init__(
         self,
-        message: str = "",
-        *,
+        message: str,
         context: Optional[Dict[str, Any]] = None,
-        original_exception: Optional[BaseException] = None,
-        data: Optional[Dict[str, Any]] = None,
-        cause: Optional[BaseException] = None,
+        original_exception: Optional[Exception] = None,
     ):
         super().__init__(message)
         self.message = message
         self.context = context or {}
-        self.original_exception = original_exception or cause
-        self.data = data or {}
-        self.cause = cause or original_exception
+        self.original_exception = original_exception
+
+    def __str__(self) -> str:
+        if self.context:
+            context_str = ", ".join(f"{k}={v}" for k, v in self.context.items())
+            return f"{self.message} ({context_str})"
+        return self.message
 
 
 class ToolExecutionError(AgentException):
-    """Raised when a tool call fails.
-
-    Attributes:
-        tool_name: Name of the tool that failed.
-        context: Optional contextual metadata.
-        original_exception: The underlying exception, if any.
-
-    Example:
-        >>> raise ToolExecutionError("file_read", "permission denied")
-    """
-
-    def __init__(
-        self,
-        tool_name: str,
-        message: str = "",
-        *,
-        context: Optional[Dict[str, Any]] = None,
-        original_exception: Optional[BaseException] = None,
-        cause: Optional[BaseException] = None,
-    ):
-        detail = message or f"Tool execution failed: {tool_name}"
-        payload = {"tool_name": tool_name}
-        if context:
-            payload.update(context)
-        super().__init__(
-            detail,
-            context=context,
-            original_exception=original_exception,
-            cause=cause,
-            data=payload,
-        )
-        self.tool_name = tool_name
+    """Raised when a tool fails to execute."""
+    pass
 
 
 class PlanningError(AgentException):
-    """Raised when planning fails.
-
-    Example:
-        >>> raise PlanningError("no plan could be generated")
-    """
+    """Raised when planning fails."""
+    pass
 
 
 class MemoryError(AgentException):
-    """Raised when memory storage/retrieval fails.
-
-    Example:
-        >>> raise MemoryError("memory store unavailable")
-    """
+    """Raised when memory operations fail."""
+    pass
 
 
 class LLMError(AgentException):
-    """Raised for LLM call failures.
-
-    Example:
-        >>> raise LLMError("LLM timed out")
-    """
+    """Raised when LLM calls fail."""
+    pass
 
 
 class ConfigurationError(AgentException):
-    """Raised for invalid configuration values.
-
-    Example:
-        >>> raise ConfigurationError("timeout_seconds must be > 0")
-    """
+    """Raised when configuration is invalid."""
+    pass
 
 
 class DependencyError(AgentException):
-    """Raised when optional dependencies are missing.
-
-    Example:
-        >>> raise DependencyError("faiss not installed")
-    """
+    """Raised when optional dependencies are missing."""
+    pass
 
 
 class ReflectionError(AgentException):
-    """Raised when reflection step fails unexpectedly.
-
-    Example:
-        >>> raise ReflectionError("reflection JSON invalid")
-    """
+    """Raised when reflection fails."""
+    pass
 
 
 class InteractionRequiredError(AgentException):
-    """Raised when a human interaction is required but disallowed.
-
-    Attributes:
-        questions: Optional list of questions that require user input.
-
-    Example:
-        >>> raise InteractionRequiredError(questions=["Which file?"])
-    """
+    """Raised when human interaction is required."""
 
     def __init__(
         self,
-        message: str = "Interaction required",
-        *,
-        questions: Optional[Iterable[str]] = None,
+        message: str,
+        questions: Optional[list] = None,
         context: Optional[Dict[str, Any]] = None,
-        original_exception: Optional[BaseException] = None,
-        cause: Optional[BaseException] = None,
     ):
-        qs = [q for q in (questions or []) if isinstance(q, str) and q]
-        payload = {"questions": qs}
-        if context:
-            payload.update(context)
-        super().__init__(
-            message,
-            context=context,
-            original_exception=original_exception,
-            cause=cause,
-            data=payload,
-        )
-        self.questions = qs
+        super().__init__(message, context)
+        self.questions = questions or []

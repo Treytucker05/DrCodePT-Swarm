@@ -89,7 +89,11 @@ class ToolRegistry:
                 },
             )
         except Exception as exc:
-            err = ToolExecutionError(name, cause=exc)
+            err = ToolExecutionError(
+                f"Tool execution failed: {name}",
+                context={"tool_name": name},
+                original_exception=exc,
+            )
             return ToolResult(
                 success=False,
                 error=str(err),

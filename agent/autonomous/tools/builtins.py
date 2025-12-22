@@ -224,8 +224,11 @@ def web_search(ctx: RunContext, args: WebSearchArgs) -> ToolResult:
     try:
         text = retry_with_backoff(
             _fetch,
-            config=WEB_RETRY_CONFIG,
-            is_transient=lambda exc: isinstance(exc, requests.RequestException),
+            max_attempts=WEB_RETRY_CONFIG.max_attempts,
+            initial_delay=WEB_RETRY_CONFIG.initial_delay,
+            max_delay=WEB_RETRY_CONFIG.max_delay,
+            backoff_factor=WEB_RETRY_CONFIG.backoff_factor,
+            transient_exceptions=(requests.RequestException,),
         )
     except requests.RequestException as exc:
         last_error = str(exc)

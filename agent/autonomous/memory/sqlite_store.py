@@ -12,20 +12,26 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
+from agent.autonomous.exceptions import DependencyError
+
 logger = logging.getLogger(__name__)
 
-try:  # optional
-    import faiss  # type: ignore
+_FAISS_AVAILABLE = False
+_FAISS_LOAD_ERROR = None
 
+try:
+    import faiss  # type: ignore
     _FAISS_AVAILABLE = True
+    logger.info("FAISS loaded successfully for accelerated memory search")
 except ImportError as exc:  # pragma: no cover - optional dependency
-    logger.info("faiss not installed; vector search disabled: %s", exc)
-    faiss = None  # type: ignore[assignment]
-    _FAISS_AVAILABLE = False
+    logger.warning(
+        "FAISS not installed; using slower fallback embeddings. "
+        "Install with: pip install faiss-cpu"
+    )
+    _FAISS_LOAD_ERROR = f"ImportError: {exc}"
 except Exception as exc:  # pragma: no cover - optional dependency
-    logger.warning("faiss import failed: %s", exc)
-    faiss = None  # type: ignore[assignment]
-    _FAISS_AVAILABLE = False
+    logger.error(f"Unexpected error loading FAISS: {exc}", exc_info=True)
+    _FAISS_LOAD_ERROR = f"Unexpected error: {exc}"
 
 
 MemoryKind = Literal["experience", "procedure", "knowledge", "user_info"]
@@ -64,13 +70,16 @@ def _load_sentence_transformer():
         return _ST_MODEL
     try:
         from sentence_transformers import SentenceTransformer
-    except ImportError as exc:  # pragma: no cover - optional dependency
-        logger.info("sentence-transformers not installed; using hash embeddings: %s", exc)
-        _ST_LOAD_ERROR = exc
+    except ImportError as exc:
+        logger.warning(
+            "SentenceTransformer not installed; using hash-based embeddings. "
+            "Install with: pip install sentence-transformers"
+        )
+        _ST_LOAD_ERROR = f"ImportError: {exc}"
         return None
-    except Exception as exc:  # pragma: no cover - optional dependency
-        logger.warning("sentence-transformers import failed: %s", exc)
-        _ST_LOAD_ERROR = exc
+    except Exception as exc:
+        logger.error(f"Unexpected error importing SentenceTransformer: {exc}", exc_info=True)
+        _ST_LOAD_ERROR = f"Unexpected error: {exc}"
         return None
     model_name = (os.getenv(_EMBED_ENV_VAR) or _DEFAULT_EMBED_MODEL).strip()
     if not model_name:
