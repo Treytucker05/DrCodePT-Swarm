@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from agent.autonomous.config import AgentConfig, PlannerConfig, RunnerConfig
@@ -98,8 +98,8 @@ def _build_agent_cfg(repo_root: Path, *, unsafe_mode: bool) -> AgentConfig:
     allowed_roots = _split_paths(raw_roots) if raw_roots.strip() else list(_default_allowed_roots(repo_root))
     return AgentConfig(
         unsafe_mode=bool(unsafe_mode),
-        enable_web_gui=_bool_env("SWARM_ENABLE_WEB_GUI", _bool_env("AUTO_ENABLE_WEB_GUI", True)),
-        enable_desktop=_bool_env("SWARM_ENABLE_DESKTOP", _bool_env("AUTO_ENABLE_DESKTOP", True)),
+        enable_web_gui=_bool_env("SWARM_ENABLE_WEB_GUI", _bool_env("AUTO_ENABLE_WEB_GUI", False)),
+        enable_desktop=_bool_env("SWARM_ENABLE_DESKTOP", _bool_env("AUTO_ENABLE_DESKTOP", False)),
         pre_mortem_enabled=_bool_env("SWARM_PRE_MORTEM", _bool_env("AUTO_PRE_MORTEM", False)),
         allow_user_info_storage=_bool_env(
             "SWARM_ALLOW_USER_INFO_STORAGE", _bool_env("AUTO_ALLOW_USER_INFO_STORAGE", False)
@@ -113,7 +113,16 @@ def _build_agent_cfg(repo_root: Path, *, unsafe_mode: bool) -> AgentConfig:
 def _build_runner_cfg() -> RunnerConfig:
     max_steps = _int_env("SWARM_MAX_STEPS", _int_env("AUTO_MAX_STEPS", 30))
     timeout_seconds = _int_env("SWARM_TIMEOUT_SECONDS", _int_env("AUTO_TIMEOUT_SECONDS", 600))
-    return RunnerConfig(max_steps=max_steps, timeout_seconds=timeout_seconds)
+    heartbeat = _int_env("SWARM_LLM_HEARTBEAT_SECONDS", _int_env("AUTO_LLM_HEARTBEAT_SECONDS", 5))
+    plan_timeout = _int_env("SWARM_LLM_PLAN_TIMEOUT_SECONDS", _int_env("AUTO_LLM_PLAN_TIMEOUT_SECONDS", 360))
+    retry_timeout = _int_env("SWARM_LLM_PLAN_RETRY_TIMEOUT_SECONDS", _int_env("AUTO_LLM_PLAN_RETRY_TIMEOUT_SECONDS", 90))
+    return RunnerConfig(
+        max_steps=max_steps,
+        timeout_seconds=timeout_seconds,
+        llm_heartbeat_seconds=heartbeat,
+        llm_plan_timeout_seconds=plan_timeout,
+        llm_plan_retry_timeout_seconds=retry_timeout,
+    )
 
 
 def _planner_mode_for(task: str) -> str:
@@ -187,6 +196,16 @@ def _trace_tail(trace_path: str, *, max_lines: int = 200) -> List[dict]:
         return []
 
 
+def _read_result(run_dir: Path) -> Dict[str, Any]:
+    try:
+        path = run_dir / "result.json"
+        if not path.is_file():
+            return {}
+        return json.loads(path.read_text(encoding="utf-8", errors="ignore"))
+    except Exception:
+        return {}
+
+
 def _run_subagent(
     subtask: Subtask,
     *,
@@ -195,7 +214,7 @@ def _run_subagent(
     agent_cfg: AgentConfig,
     runner_cfg: RunnerConfig,
     unsafe_mode: bool,
-) -> tuple[Subtask, str, str, str]:
+) -> tuple[Subtask, str, str, Path]:
     planner_mode = _planner_mode_for(subtask.goal)
     planner_cfg = PlannerConfig(
         mode=planner_mode,  # type: ignore[arg-type]
@@ -203,21 +222,22 @@ def _run_subagent(
         max_plan_steps=_int_env("SWARM_MAX_PLAN_STEPS", _int_env("AUTO_MAX_PLAN_STEPS", 6)),
     )
     try:
-        llm = CodexCliClient.from_env()
+        llm = CodexCliClient.from_env(workdir=repo_root, log_dir=run_dir)
     except (CodexCliNotFoundError, CodexCliAuthError) as exc:
         return subtask, "failed", f"llm_error: {exc}", ""
 
-    os.chdir(str(repo_root))
     runner = AgentRunner(
         cfg=runner_cfg,
         agent_cfg=agent_cfg,
         planner_cfg=planner_cfg,
         llm=llm,
         run_dir=run_dir,
+        mode_name="swarm_subagent",
+        agent_id=subtask.id,
     )
     result = runner.run(subtask.goal)
     status = "success" if result.success else "failed"
-    return subtask, status, result.stop_reason or "", result.trace_path or ""
+    return subtask, status, result.stop_reason or "", run_dir
 
 
 def mode_swarm(objective: str, *, unsafe_mode: bool = False) -> None:
@@ -238,6 +258,7 @@ def mode_swarm(objective: str, *, unsafe_mode: bool = False) -> None:
     max_subtasks = max(1, _int_env("SWARM_MAX_SUBTASKS", 3))
     workers = max(1, _int_env("SWARM_MAX_WORKERS", 2))
 
+    llm = llm.with_context(workdir=repo_root, log_dir=run_root)
     subtasks = _decompose(llm, objective, max_items=max_subtasks)
     if not subtasks:
         print("[SWARM] Could not decompose; running as a single Auto task.")
@@ -254,10 +275,12 @@ def mode_swarm(objective: str, *, unsafe_mode: bool = False) -> None:
 
     agent_cfg = _build_agent_cfg(repo_root, unsafe_mode=unsafe_mode)
     runner_cfg = _build_runner_cfg()
+    if not agent_cfg.enable_web_gui and not agent_cfg.enable_desktop:
+        print("[SWARM] MCP-based tools disabled (web_gui/desktop). Using local file/Python/web_fetch tools only.")
 
     remaining: Dict[str, Subtask] = {s.id: s for s in subtasks}
     completed: set[str] = set()
-    results: List[tuple[Subtask, str, str, str]] = []
+    results: List[tuple[Subtask, str, str, Path]] = []
 
     while remaining:
         ready = [s for s in remaining.values() if all(d in completed for d in s.depends_on)]
@@ -280,32 +303,48 @@ def mode_swarm(objective: str, *, unsafe_mode: bool = False) -> None:
                 future_map[future] = s
 
             for future in as_completed(future_map):
-                subtask, status, stop_reason, trace = future.result()
-                results.append((subtask, status, stop_reason, trace))
+                subtask, status, stop_reason, sub_run_dir = future.result()
+                results.append((subtask, status, stop_reason, sub_run_dir))
                 completed.add(subtask.id)
                 if subtask.id in remaining:
                     del remaining[subtask.id]
 
     print("\n[SWARM] Results:")
-    for subtask, status, stop_reason, trace in results:
+    for subtask, status, stop_reason, sub_run_dir in results:
+        result_data = _read_result(sub_run_dir)
+        ok = result_data.get("ok")
+        if isinstance(ok, bool):
+            status = "success" if ok else "failed"
+        if isinstance(result_data.get("error"), dict):
+            err = result_data["error"]
+            stop_reason = err.get("message") or err.get("type") or stop_reason
         line = f"- {subtask.id}: {status}"
         if stop_reason:
             line += f" | {stop_reason}"
         print(line)
-        if trace:
-            print(f"  trace: {trace}")
+        trace_path = sub_run_dir / "trace.jsonl"
+        if trace_path.is_file():
+            print(f"  trace: {trace_path}")
 
     if _bool_env("SWARM_SUMMARIZE", True):
         tails = []
-        for subtask, status, stop_reason, trace in results:
-            if trace:
+        for subtask, status, stop_reason, sub_run_dir in results:
+            result_data = _read_result(sub_run_dir)
+            ok = result_data.get("ok")
+            if isinstance(ok, bool):
+                status = "success" if ok else "failed"
+            if isinstance(result_data.get("error"), dict):
+                err = result_data["error"]
+                stop_reason = err.get("message") or err.get("type") or stop_reason
+            trace_path = sub_run_dir / "trace.jsonl"
+            if trace_path.is_file():
                 tails.append(
                     {
                         "id": subtask.id,
                         "goal": subtask.goal,
                         "status": status,
                         "stop_reason": stop_reason,
-                        "trace_tail": _trace_tail(trace),
+                        "trace_tail": _trace_tail(str(trace_path)),
                     }
                 )
         prompt = (

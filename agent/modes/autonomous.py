@@ -147,7 +147,7 @@ def mode_autonomous(task: str, *, unsafe_mode: bool = False) -> None:
     )
 
     try:
-        llm = CodexCliClient.from_env()
+        llm = CodexCliClient.from_env(workdir=REPO_ROOT)
     except CodexCliNotFoundError as exc:
         print(f"{RED}[ERROR]{RESET} {exc}")
         return
@@ -161,10 +161,14 @@ def mode_autonomous(task: str, *, unsafe_mode: bool = False) -> None:
         f"{YELLOW}[INFO]{RESET} Running closed-loop agent (planner={planner_label}, unsafe_mode={agent_cfg.unsafe_mode})."
     )
 
-    # Ensure imports resolve and relative paths behave.
-    os.chdir(str(REPO_ROOT))
-
-    runner = AgentRunner(cfg=runner_cfg, agent_cfg=agent_cfg, planner_cfg=planner_cfg, llm=llm)
+    runner = AgentRunner(
+        cfg=runner_cfg,
+        agent_cfg=agent_cfg,
+        planner_cfg=planner_cfg,
+        llm=llm,
+        mode_name="auto",
+        agent_id="auto",
+    )
     result = runner.run(task)
 
     if result.success:

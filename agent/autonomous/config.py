@@ -23,6 +23,9 @@ class RunnerConfig:
     max_steps: int = 30
     timeout_seconds: int = 600
     cost_budget_usd: Optional[float] = None
+    llm_heartbeat_seconds: Optional[float] = None
+    llm_plan_timeout_seconds: Optional[int] = 360
+    llm_plan_retry_timeout_seconds: Optional[int] = 90
     loop_repeat_threshold: int = 3
     loop_window: int = 8
     no_state_change_threshold: int = 3

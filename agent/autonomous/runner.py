@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -44,6 +45,7 @@ class TrackedLLM:
         self._tokens_per_char = float(os.getenv("LLM_TOKENS_PER_CHAR", "0.25"))
         cost_per_1k = os.getenv("LLM_COST_PER_1K_TOKENS_USD")
         self._cost_per_1k = float(cost_per_1k) if cost_per_1k else None
+        self.default_timeout_seconds: Optional[int] = None
 
         self.provider = getattr(llm, "provider", "unknown")
         self.model = getattr(llm, "model", "unknown")
@@ -53,6 +55,8 @@ class TrackedLLM:
         return self._cost_per_1k
 
     def complete_json(self, prompt: str, *, schema_path: Path, timeout_seconds: Optional[int] = None) -> Dict[str, Any]:
+        if timeout_seconds is None and self.default_timeout_seconds is not None:
+            timeout_seconds = self.default_timeout_seconds
         out = self._llm.complete_json(prompt, schema_path=schema_path, timeout_seconds=timeout_seconds)
         self.calls += 1
         out_str = json.dumps(out, ensure_ascii=False, sort_keys=True, default=str)
@@ -64,6 +68,8 @@ class TrackedLLM:
         return out
 
     def reason_json(self, prompt: str, *, schema_path: Path, timeout_seconds: Optional[int] = None) -> Dict[str, Any]:
+        if timeout_seconds is None and self.default_timeout_seconds is not None:
+            timeout_seconds = self.default_timeout_seconds
         # Prefer a dedicated reasoning method if available.
         if hasattr(self._llm, "reason_json"):
             out = self._llm.reason_json(prompt, schema_path=schema_path, timeout_seconds=timeout_seconds)  # type: ignore[attr-defined]
@@ -90,6 +96,8 @@ class AgentRunner:
     tools: Optional[ToolRegistry] = None
     run_dir: Optional[Path] = None
     memory_store: Optional[SqliteMemoryStore] = None
+    mode_name: str = "autonomous"
+    agent_id: Optional[str] = None
 
     def run(self, task: str, *, resume_path: Optional[Path] = None) -> AgentRunResult:
         resume = self._load_checkpoint(resume_path) if resume_path else None
@@ -111,11 +119,41 @@ class AgentRunner:
 
         tracer = JsonlTracer(run_dir / "trace.jsonl")
         perceptor = Perceptor()
-        tracked_llm = TrackedLLM(self.llm)
+        llm = self.llm
+        try:
+            from agent.llm.codex_cli_client import CodexCliClient
+
+            if isinstance(llm, CodexCliClient):
+                llm = llm.with_context(workdir=repo_root, log_dir=run_dir)
+        except Exception:
+            pass
+        tracked_llm = TrackedLLM(llm)
         reflector = Reflector(llm=tracked_llm, pre_mortem_enabled=self.agent_cfg.pre_mortem_enabled)
 
         memory_store = self.memory_store or self._open_default_memory_store()
         tools = self.tools or build_default_tool_registry(self.agent_cfg, run_dir, memory_store=memory_store)
+        tool_summary = ""
+        if self.cfg.llm_heartbeat_seconds:
+            tool_summary = self._describe_tools_for_humans(tools)
+            print(f"[TOOLS] I can use: {tool_summary}.")
+        heartbeat_label = self.cfg.llm_heartbeat_seconds
+        plan_timeout = self.cfg.llm_plan_timeout_seconds
+        retry_timeout = self.cfg.llm_plan_retry_timeout_seconds
+        heartbeat_text = f"{heartbeat_label}s" if heartbeat_label else "off"
+        print(
+            f"[CONFIG] plan_timeout={plan_timeout}s plan_retry_timeout={retry_timeout}s heartbeat={heartbeat_text}"
+        )
+        self._stats = {"tool_calls": 0, "retries": 0}
+        started_at = datetime.now(timezone.utc).isoformat()
+        start = time.monotonic()
+
+        state = AgentState(task=task)
+        steps_executed = 0
+        consecutive_no_progress = 0
+        last_plan_hash: Optional[str] = None
+        exploration_nudge_next = False
+        exploration_reason = ""
+        loop_nudge_used = False
 
         if self.cfg.cost_budget_usd is not None and tracked_llm.cost_per_1k is None:
             tracer.log(
@@ -125,23 +163,22 @@ class AgentRunner:
                     "budget_usd": self.cfg.cost_budget_usd,
                 }
             )
-            return AgentRunResult(
+            return self._stop(
+                tracer=tracer,
+                memory_store=memory_store,
                 success=False,
-                stop_reason="cost_budget_requires_LLM_COST_PER_1K_TOKENS_USD",
-                steps_executed=0,
+                reason="cost_budget_requires_LLM_COST_PER_1K_TOKENS_USD",
+                steps=0,
                 run_id=run_id,
-                trace_path=str(run_dir / "trace.jsonl"),
+                llm_stats=tracked_llm,
+                task=task,
+                state=state,
+                run_dir=run_dir,
+                started_at=started_at,
+                started_monotonic=start,
             )
 
         planner = self._make_planner(tracked_llm, tools)
-
-        state = AgentState(task=task)
-        steps_executed = 0
-        consecutive_no_progress = 0
-        last_plan_hash: Optional[str] = None
-        exploration_nudge_next = False
-        exploration_reason = ""
-        loop_nudge_used = False
 
         if resume:
             try:
@@ -172,7 +209,6 @@ class AgentRunner:
             state.add_observation(obs0)
             tracer.log({"type": "observation", "observation": self._dump(obs0)})
 
-        start = time.monotonic()
         last_state_fingerprint = state.state_fingerprint()
         same_state_steps = 0
 
@@ -204,6 +240,9 @@ class AgentRunner:
                         llm_stats=tracked_llm,
                         task=task,
                         state=state,
+                        run_dir=run_dir,
+                        started_at=started_at,
+                        started_monotonic=start,
                     )
                 if steps_executed >= self.cfg.max_steps:
                     return self._stop(
@@ -216,8 +255,11 @@ class AgentRunner:
                         llm_stats=tracked_llm,
                         task=task,
                         state=state,
+                        run_dir=run_dir,
+                        started_at=started_at,
+                        started_monotonic=start,
                     )
-                if (time.monotonic() - start) >= self.cfg.timeout_seconds:
+                if (time.monotonic() - start) >= self.cfg.timeout_seconds:      
                     return self._stop(
                         tracer=tracer,
                         memory_store=memory_store,
@@ -228,6 +270,9 @@ class AgentRunner:
                         llm_stats=tracked_llm,
                         task=task,
                         state=state,
+                        run_dir=run_dir,
+                        started_at=started_at,
+                        started_monotonic=start,
                     )
                 if self.cfg.cost_budget_usd is not None and tracked_llm.estimated_cost_usd > self.cfg.cost_budget_usd:
                     return self._stop(
@@ -240,6 +285,9 @@ class AgentRunner:
                         llm_stats=tracked_llm,
                         task=task,
                         state=state,
+                        run_dir=run_dir,
+                        started_at=started_at,
+                        started_monotonic=start,
                     )
 
                 self._maybe_compact_state(state, tracked_llm, tracer)
@@ -257,11 +305,38 @@ class AgentRunner:
                             + " Exploration nudge: take one lightweight exploration step "
                             + "(web: scroll/search/expand menus; desktop: scroll/alt-tab/resnapshot)."
                         )
+                    plan_label = f"Planning next step ({self.planner_cfg.mode})"
+                    if tool_summary:
+                        plan_label = f"{plan_label} using {tool_summary}"
+
+                    def _plan_call(compact: bool):
+                        obs = state.observations if not compact else state.observations[-3:]
+                        mem = memories if not compact else memories[:3]
+                        timeout = self.cfg.llm_plan_timeout_seconds if not compact else self.cfg.llm_plan_retry_timeout_seconds
+                        return self._with_llm_timeout(
+                            tracked_llm,
+                            timeout,
+                            lambda: planner.plan(task=nudge_task, observations=obs, memories=mem),
+                        )
+
                     plan = self._call_llm_with_retry(
                         tracer=tracer,
                         where="plan",
-                        fn=lambda: planner.plan(task=nudge_task, observations=state.observations, memories=memories),
+                        fn=lambda: _plan_call(False),
+                        label=plan_label,
+                        max_retries=0,
+                        timeout_seconds=self.cfg.llm_plan_timeout_seconds,
                     )
+                    if plan is None:
+                        print("[THINKING] Planning is taking too long; trying a simpler, faster plan.")
+                        plan = self._call_llm_with_retry(
+                            tracer=tracer,
+                            where="plan_fast",
+                            fn=lambda: _plan_call(True),
+                            label=f"{plan_label} (fast retry)",
+                            max_retries=0,
+                            timeout_seconds=self.cfg.llm_plan_retry_timeout_seconds,
+                        )
                     if exploration_nudge_next and plan is not None:
                         tracer.log(
                             {
@@ -273,38 +348,73 @@ class AgentRunner:
                         exploration_nudge_next = False
                         exploration_reason = ""
                     if plan is None:
+                        print("[THINKING] Still no plan. This may be a tool/setup issue or a flawed approach. Stopping to avoid a hang.")
                         return self._stop(
                             tracer=tracer,
                             memory_store=memory_store,
                             success=False,
-                            reason="llm_error",
+                            reason="llm_plan_timeout",
                             steps=steps_executed,
                             run_id=run_id,
                             llm_stats=tracked_llm,
                             task=task,
                             state=state,
+                            run_dir=run_dir,
+                            started_at=started_at,
+                            started_monotonic=start,
                         )
                     current_plan = plan
                     state.current_plan = current_plan
                     state.current_step_idx = 0
                 else:
                     if current_plan is None or state.current_step_idx >= len(current_plan.steps):
+                        plan_label = f"Planning next step ({self.planner_cfg.mode})"
+                        if tool_summary:
+                            plan_label = f"{plan_label} using {tool_summary}"
+
+                        def _plan_call(compact: bool):
+                            obs = state.observations if not compact else state.observations[-3:]
+                            mem = memories if not compact else memories[:3]
+                            timeout = self.cfg.llm_plan_timeout_seconds if not compact else self.cfg.llm_plan_retry_timeout_seconds
+                            return self._with_llm_timeout(
+                                tracked_llm,
+                                timeout,
+                                lambda: planner.plan(task=task, observations=obs, memories=mem),
+                            )
+
                         current_plan = self._call_llm_with_retry(
                             tracer=tracer,
                             where="plan",
-                            fn=lambda: planner.plan(task=task, observations=state.observations, memories=memories),
+                            fn=lambda: _plan_call(False),
+                            label=plan_label,
+                            max_retries=0,
+                            timeout_seconds=self.cfg.llm_plan_timeout_seconds,
                         )
                         if current_plan is None:
+                            print("[THINKING] Planning is taking too long; trying a simpler, faster plan.")
+                            current_plan = self._call_llm_with_retry(
+                                tracer=tracer,
+                                where="plan_fast",
+                                fn=lambda: _plan_call(True),
+                                label=f"{plan_label} (fast retry)",
+                                max_retries=0,
+                                timeout_seconds=self.cfg.llm_plan_retry_timeout_seconds,
+                            )
+                        if current_plan is None:
+                            print("[THINKING] Still no plan. This may be a tool/setup issue or a flawed approach. Stopping to avoid a hang.")
                             return self._stop(
                                 tracer=tracer,
                                 memory_store=memory_store,
                                 success=False,
-                                reason="llm_error",
+                                reason="llm_plan_timeout",
                                 steps=steps_executed,
                                 run_id=run_id,
                                 llm_stats=tracked_llm,
                                 task=task,
                                 state=state,
+                                run_dir=run_dir,
+                                started_at=started_at,
+                                started_monotonic=start,
                             )
                         state.current_plan = current_plan
                         state.current_step_idx = 0
@@ -326,9 +436,14 @@ class AgentRunner:
                         llm_stats=tracked_llm,
                         task=task,
                         state=state,
+                        run_dir=run_dir,
+                        started_at=started_at,
+                        started_monotonic=start,
                     )
 
                 step = plan.steps[0] if self.planner_cfg.mode == "react" else plan.steps[state.current_step_idx]
+                if self.cfg.llm_heartbeat_seconds:
+                    print(f"[PLAN] Next tool: {step.tool_name} - {step.goal}")
 
                 preempted_tool_result: Optional[ToolResult] = None
                 # Approval gate for tools that require explicit confirmation
@@ -559,6 +674,9 @@ class AgentRunner:
                         llm_stats=tracked_llm,
                         task=task,
                         state=state,
+                        run_dir=run_dir,
+                        started_at=started_at,
+                        started_monotonic=start,
                     )
 
                 reflection = self._call_llm_with_retry(
@@ -577,6 +695,9 @@ class AgentRunner:
                         llm_stats=tracked_llm,
                         task=task,
                         state=state,
+                        run_dir=run_dir,
+                        started_at=started_at,
+                        started_monotonic=start,
                     )
 
                 if tool_result.metadata.get("suggested_reflection") in {"minor_repair", "replan"}:
@@ -636,6 +757,9 @@ class AgentRunner:
                         llm_stats=tracked_llm,
                         task=task,
                         state=state,
+                        run_dir=run_dir,
+                        started_at=started_at,
+                        started_monotonic=start,
                     )
 
                 self._memory_updates(memory_store, task, step, tool_result, obs, reflection, run_id, tracer)
@@ -657,6 +781,9 @@ class AgentRunner:
                             llm_stats=tracked_llm,
                             task=task,
                             state=state,
+                            run_dir=run_dir,
+                            started_at=started_at,
+                            started_monotonic=start,
                         )
 
                 if step.tool_name == "finish" and tool_result.success:
@@ -671,6 +798,9 @@ class AgentRunner:
                         task=task,
                         state=state,
                         plan=plan,
+                        run_dir=run_dir,
+                        started_at=started_at,
+                        started_monotonic=start,
                     )
 
                 if reflection.status == "success":
@@ -703,6 +833,9 @@ class AgentRunner:
                         llm_stats=tracked_llm,
                         task=task,
                         state=state,
+                        run_dir=run_dir,
+                        started_at=started_at,
+                        started_monotonic=start,
                     )
 
                 if reflection.status == "minor_repair":
@@ -911,10 +1044,16 @@ class AgentRunner:
     ) -> ToolResult:
         last: Optional[ToolResult] = None
         for attempt in range(self.cfg.tool_max_retries + 1):
+            if self.cfg.llm_heartbeat_seconds and attempt == 0:
+                print(f"[TOOL] {tool_name} {self._format_tool_args(tool_args)}")
+            if isinstance(getattr(self, "_stats", None), dict):
+                self._stats["tool_calls"] = self._stats.get("tool_calls", 0) + 1
             result = tools.call(tool_name, tool_args, ctx)
             last = result
             if result.success or not result.retryable or attempt >= self.cfg.tool_max_retries:
                 return result
+            if isinstance(getattr(self, "_stats", None), dict):
+                self._stats["retries"] = self._stats.get("retries", 0) + 1
             tracer.log(
                 {
                     "type": "tool_retry",
@@ -1027,6 +1166,45 @@ class AgentRunner:
             return "desktop"
         return None
 
+    def _format_tool_list(self, tools: ToolRegistry, *, max_items: int = 10) -> str:
+        names = [spec.name for spec in tools.list_tools()]
+        if len(names) <= max_items:
+            return ",".join(names)
+        head = ",".join(names[:max_items])
+        return f"{head},...(+{len(names) - max_items})"
+
+    def _format_tool_args(self, args: Dict[str, Any], *, limit: int = 120) -> str:
+        if not args:
+            return ""
+        try:
+            text = json.dumps(args, ensure_ascii=False)
+        except Exception:
+            text = str(args)
+        if len(text) > limit:
+            text = text[: limit - 3] + "..."
+        return text
+
+    def _describe_tools_for_humans(self, tools: ToolRegistry) -> str:
+        names = {spec.name for spec in tools.list_tools()}
+        parts: List[str] = []
+        if {"file_read", "file_write", "file_search", "list_dir", "glob_paths"} & names:
+            parts.append("files")
+        if "python_exec" in names:
+            parts.append("python")
+        if {"web_fetch", "web_search"} & names:
+            parts.append("web")
+        if {"memory_store", "memory_search"} & names:
+            parts.append("memory")
+        if "mail" in names:
+            parts.append("mail")
+        if {"web_gui_snapshot", "web_find_elements", "web_click", "web_type", "web_scroll"} & names:
+            parts.append("browser automation")
+        if {"desktop", "desktop_som_snapshot", "desktop_click"} & names:
+            parts.append("desktop automation")
+        if "shell_exec" in names:
+            parts.append("shell")
+        return ", ".join(parts) if parts else "basic tools"
+
     def _maybe_capture_ui_snapshot(
         self,
         *,
@@ -1075,11 +1253,20 @@ class AgentRunner:
         where: str,
         fn,
         allow_none: bool = False,
+        label: Optional[str] = None,
+        max_retries: Optional[int] = None,
+        timeout_seconds: Optional[int] = None,
     ):
         last_exc: Optional[Exception] = None
-        for attempt in range(self.cfg.llm_max_retries + 1):
+        retries = self.cfg.llm_max_retries if max_retries is None else max_retries
+        for attempt in range(retries + 1):
             try:
-                return fn()
+                return self._call_llm_with_heartbeat(
+                    fn,
+                    label=label or where,
+                    heartbeat_seconds=self.cfg.llm_heartbeat_seconds,
+                    timeout_seconds=timeout_seconds,
+                )
             except Exception as exc:
                 last_exc = exc
                 tracer.log(
@@ -1091,12 +1278,59 @@ class AgentRunner:
                         "exc_type": type(exc).__name__,
                     }
                 )
-                if attempt >= self.cfg.llm_max_retries:
+                if attempt >= retries:
                     break
+                if isinstance(getattr(self, "_stats", None), dict):
+                    self._stats["retries"] = self._stats.get("retries", 0) + 1
                 time.sleep(self.cfg.llm_retry_backoff_seconds * (attempt + 1))
         if not allow_none:
             tracer.log({"type": "llm_error", "where": where, "error": str(last_exc), "exc_type": type(last_exc).__name__})
         return None
+
+    def _call_llm_with_heartbeat(
+        self,
+        fn,
+        *,
+        label: str,
+        heartbeat_seconds: Optional[float],
+        timeout_seconds: Optional[int] = None,
+    ):
+        if not heartbeat_seconds or heartbeat_seconds <= 0:
+            return fn()
+        done = threading.Event()
+        result: Dict[str, Any] = {}
+        error: Dict[str, BaseException] = {}
+
+        def _target() -> None:
+            try:
+                result["value"] = fn()
+            except BaseException as exc:  # noqa: BLE001
+                error["exc"] = exc
+            finally:
+                done.set()
+
+        label_msg = label or "Thinking"
+        print(f"[THINKING] {label_msg}")
+        if timeout_seconds:
+            print(f"[THINKING] Time limit: {timeout_seconds}s. If it takes longer, I will switch to a simpler approach.")
+        thread = threading.Thread(target=_target, daemon=True)
+        thread.start()
+        start = time.monotonic()
+        while not done.wait(timeout=heartbeat_seconds):
+            elapsed = time.monotonic() - start
+            print(f"[THINKING] Still working on {label_msg}... elapsed={elapsed:.1f}s")
+        if error:
+            raise error["exc"]
+        return result.get("value")
+
+    def _with_llm_timeout(self, llm: TrackedLLM, timeout_seconds: Optional[int], fn):
+        prev = llm.default_timeout_seconds
+        if timeout_seconds is not None:
+            llm.default_timeout_seconds = timeout_seconds
+        try:
+            return fn()
+        finally:
+            llm.default_timeout_seconds = prev
 
     def _memory_updates(
         self,
@@ -1208,6 +1442,9 @@ class AgentRunner:
         task: str,
         state: AgentState,
         plan: Optional[Plan] = None,
+        run_dir: Optional[Path] = None,
+        started_at: Optional[str] = None,
+        started_monotonic: Optional[float] = None,
     ) -> AgentRunResult:
         tracer.log(
             {
@@ -1248,6 +1485,38 @@ class AgentRunner:
                         content=dumps_compact(self._dump(plan), max_chars=12_000),
                         metadata={"run_id": run_id},
                     )
+            except Exception:
+                pass
+
+        if run_dir:
+            try:
+                ended_at = datetime.now(timezone.utc).isoformat()
+                duration_s = None
+                if started_monotonic is not None:
+                    duration_s = time.monotonic() - started_monotonic
+                error_obj = None
+                if not success:
+                    error_obj = {"message": reason, "type": "stop_reason", "traceback": None}
+                result = {
+                    "ok": success,
+                    "mode": self.mode_name,
+                    "agent_id": self.agent_id or run_id,
+                    "run_id": run_id,
+                    "started_at": started_at,
+                    "ended_at": ended_at,
+                    "duration_s": duration_s,
+                    "final_answer": None,
+                    "error": error_obj,
+                    "stats": {
+                        "tool_calls": int(self._stats.get("tool_calls", 0)) if hasattr(self, "_stats") else 0,
+                        "llm_calls": int(llm_stats.calls),
+                        "retries": int(self._stats.get("retries", 0)) if hasattr(self, "_stats") else 0,
+                    },
+                }
+                Path(run_dir / "result.json").write_text(
+                    json.dumps(result, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
             except Exception:
                 pass
 

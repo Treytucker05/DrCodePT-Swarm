@@ -118,7 +118,15 @@ def main(argv: list[str] | None = None) -> int:
 
         return run_think_loop(args.task, run_dir=run_dir, llm=llm)
 
-    runner = AgentRunner(cfg=runner_cfg, agent_cfg=agent_cfg, planner_cfg=planner_cfg, llm=llm, run_dir=run_dir)
+    runner = AgentRunner(
+        cfg=runner_cfg,
+        agent_cfg=agent_cfg,
+        planner_cfg=planner_cfg,
+        llm=llm,
+        run_dir=run_dir,
+        mode_name="runner",
+        agent_id="runner",
+    )
     result = runner.run(args.task)
     print(f"success={result.success} stop_reason={result.stop_reason} steps={result.steps_executed}")
     if result.trace_path:

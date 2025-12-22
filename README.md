@@ -20,6 +20,12 @@ No `OPENAI_API_KEY` is required; the agent uses your local Codex CLI login.
 - Memory uses embeddings with FAISS acceleration when available (falls back gracefully if disabled).
 - Built-in tools include `web_search`, `web_fetch` with HTML stripping, and `delegate_task` for sub-agent handoffs.
 
+## Run artifacts and concurrency safety
+- The agent no longer uses `os.chdir()` in concurrent code paths; all subprocesses run with explicit `cwd=` and absolute paths.
+- Each run writes `trace.jsonl` and `result.json` in its run folder.
+- Codex CLI stdout/stderr are captured into `stdout.log` and `stderr.log` when a run directory is available.
+- Swarm runs store per-subagent artifacts under `runs/swarm/<run_id>/<subtask_id_*>/`.
+
 ## Key paths
 - `agent/run.py` - autonomous agent CLI entrypoint.
 - `agent/autonomous/` - orchestrator + planning + reflection + memory + tools.

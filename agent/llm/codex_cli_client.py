@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 from uuid import uuid4
@@ -88,17 +89,25 @@ class CodexCliClient(LLMClient):
     timeout_seconds: int = 120
     profile_reason: str = "reason"
     profile_exec: str = "exec"
+    workdir: Optional[Path] = None
+    log_dir: Optional[Path] = None
 
     provider: str = "codex_cli"
 
     @staticmethod
-    def from_env() -> "CodexCliClient":
+    def from_env(
+        *,
+        workdir: Optional[Path] = None,
+        log_dir: Optional[Path] = None,
+    ) -> "CodexCliClient":
         return CodexCliClient(
             codex_bin=(os.getenv("CODEX_BIN") or "codex").strip(),
             model=(os.getenv("CODEX_MODEL") or "").strip(),
             timeout_seconds=int((os.getenv("CODEX_TIMEOUT_SECONDS") or "120").strip()),
             profile_reason=(os.getenv("CODEX_PROFILE_REASON") or "reason").strip(),
             profile_exec=(os.getenv("CODEX_PROFILE_EXEC") or "exec").strip(),
+            workdir=workdir,
+            log_dir=log_dir,
         )
 
     def _resolve_bin(self) -> str:
@@ -108,6 +117,38 @@ class CodexCliClient(LLMClient):
                 f"Codex CLI not found: {self.codex_bin}. Install Codex CLI and ensure it is on PATH."
             )
         return resolved
+
+    def _resolve_workdir(self) -> Path:
+        if self.workdir:
+            try:
+                return Path(self.workdir).resolve()
+            except Exception:
+                return Path(self.workdir)
+        try:
+            return Path(__file__).resolve().parents[2]
+        except Exception:
+            return Path.cwd()
+
+    def with_context(
+        self,
+        *,
+        workdir: Optional[Path] = None,
+        log_dir: Optional[Path] = None,
+    ) -> "CodexCliClient":
+        return CodexCliClient(
+            codex_bin=self.codex_bin,
+            model=self.model,
+            timeout_seconds=self.timeout_seconds,
+            profile_reason=self.profile_reason,
+            profile_exec=self.profile_exec,
+            workdir=workdir or self.workdir,
+            log_dir=log_dir or self.log_dir,
+        )
+
+    def _append_log(self, path: Path, content: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8", errors="ignore") as f:
+            f.write(content)
 
     def _run_exec(
         self,
@@ -121,6 +162,7 @@ class CodexCliClient(LLMClient):
         schema_path = schema_path.resolve()
         if not schema_path.is_file():
             raise CodexCliExecutionError(f"JSON schema not found: {schema_path}")
+        workdir = self._resolve_workdir()
 
         out_path = Path(tempfile.gettempdir()) / f"codex_last_message_{uuid4().hex}.json"
 
@@ -175,6 +217,7 @@ class CodexCliClient(LLMClient):
                         encoding="utf-8",
                         errors="ignore",
                         env=env,
+                        cwd=workdir,
                         timeout=timeout_seconds or self.timeout_seconds,
                     )
             except FileNotFoundError as exc:
@@ -194,6 +237,19 @@ class CodexCliClient(LLMClient):
         stdout = proc.stdout or ""
         stderr = proc.stderr or ""
 
+        if self.log_dir:
+            ts = datetime.now(timezone.utc).isoformat()
+            header = (
+                f"\n[{ts}] profile={profile} exit={proc.returncode} "
+                f"cwd={workdir} schema={schema_path} prompt_chars={len(prompt)}\n"
+                f"cmd: {' '.join(cmd)}\n"
+            )
+            try:
+                self._append_log(Path(self.log_dir) / "stdout.log", header + stdout + "\n")
+                self._append_log(Path(self.log_dir) / "stderr.log", header + stderr + "\n")
+            except Exception:
+                pass
+
         if proc.returncode != 0:
             stderr_tail = _tail(stderr)
             stdout_tail = _tail(stdout)
@@ -206,8 +262,8 @@ class CodexCliClient(LLMClient):
                 try:
                     exc.stdout_tail = stdout_tail
                     exc.stderr_tail = stderr_tail
-                    exc.cwd = str(Path.cwd())
-                    exc.workdir = str(Path.cwd())
+                    exc.cwd = str(workdir)
+                    exc.workdir = str(workdir)
                     exc.cmd = cmd
                 except Exception:
                     pass
@@ -221,8 +277,8 @@ class CodexCliClient(LLMClient):
             try:
                 exc.stdout_tail = stdout_tail
                 exc.stderr_tail = stderr_tail
-                exc.cwd = str(Path.cwd())
-                exc.workdir = str(Path.cwd())
+                exc.cwd = str(workdir)
+                exc.workdir = str(workdir)
                 exc.cmd = cmd
             except Exception:
                 pass
