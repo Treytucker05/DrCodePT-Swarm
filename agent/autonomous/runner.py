@@ -33,6 +33,7 @@ from .tools.builtins import build_default_tool_registry
 from .tools.registry import ToolRegistry
 from .trace import JsonlTracer
 from .retry_utils import LLM_RETRY_CONFIG, TOOL_RETRY_CONFIG, retry_with_backoff
+from .monitoring import ResourceMonitor
 
 
 def _utc_ts_id() -> str:
@@ -241,6 +242,7 @@ class AgentRunner:
 
         # trace.jsonl/result.json are the authoritative execution artifacts; stdout is for humans.
         tracer = JsonlTracer(run_dir / "trace.jsonl")
+        monitor = ResourceMonitor()
         perceptor = Perceptor()
         llm = self.llm
         try:
@@ -441,6 +443,7 @@ class AgentRunner:
                     )
 
                 self._maybe_compact_state(state, tracked_llm, tracer)
+                monitor.tick(step_index=steps_executed, state=state, tracer=tracer)
 
                 extra_queries: List[str] = []
                 if state.rolling_summary:
