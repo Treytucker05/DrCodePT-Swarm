@@ -1,5 +1,6 @@
 {
   "type": "object",
+  "additionalProperties": false,
   "properties": {
     "ready_to_run": { "type": "boolean" },
     "normalized_objective": { "type": "string" },
@@ -14,13 +15,14 @@
       "type": "array",
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "properties": {
           "id": { "type": "string" },
           "question": { "type": "string" },
           "why": { "type": "string" },
           "default": { "type": ["string", "null"] }
         },
-        "required": ["id", "question", "why"]
+        "required": ["id", "question", "why", "default"]
       }
     },
     "assumptions_if_no_answer": { "type": "array", "items": { "type": "string" } },
