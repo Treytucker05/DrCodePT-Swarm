@@ -215,6 +215,7 @@ def _run_subagent(
     runner_cfg: RunnerConfig,
     unsafe_mode: bool,
 ) -> tuple[Subtask, str, str, Path]:
+    # Threaded swarm runs must never mutate process-global state (e.g., os.chdir).
     planner_mode = _planner_mode_for(subtask.goal)
     planner_cfg = PlannerConfig(
         mode=planner_mode,  # type: ignore[arg-type]
@@ -311,6 +312,7 @@ def mode_swarm(objective: str, *, unsafe_mode: bool = False) -> None:
 
     print("\n[SWARM] Results:")
     for subtask, status, stop_reason, sub_run_dir in results:
+        # result.json is the canonical outcome; terminal output is a convenience.
         result_data = _read_result(sub_run_dir)
         ok = result_data.get("ok")
         if isinstance(ok, bool):

@@ -1,4 +1,5 @@
 from .base import LLMClient
+from .backend import LLMBackend, RunConfig, RunResult
 from .codex_cli_client import CodexCliClient
 from .errors import (
     CodexCliAuthError,
@@ -16,6 +17,9 @@ from .errors import (
 
 __all__ = [
     "LLMClient",
+    "LLMBackend",
+    "RunConfig",
+    "RunResult",
     "CodexCliClient",
     "LLMError",
     "LLMConfigError",

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
+from .backend import RunConfig, RunResult
 from .base import LLMClient
 from .errors import (
     CodexCliAuthError,
@@ -93,6 +94,7 @@ class CodexCliClient(LLMClient):
     log_dir: Optional[Path] = None
 
     provider: str = "codex_cli"
+    # TODO: Future MCP backend can be added here without changing swarm logic.
 
     @staticmethod
     def from_env(
@@ -144,6 +146,36 @@ class CodexCliClient(LLMClient):
             workdir=workdir or self.workdir,
             log_dir=log_dir or self.log_dir,
         )
+
+    def run(
+        self,
+        *,
+        prompt: str,
+        workdir: Optional[Path],
+        run_dir: Optional[Path],
+        config: RunConfig,
+    ) -> RunResult:
+        """
+        Backend-style entrypoint for structured runs. This preserves existing
+        behavior by delegating to the same JSON-only helpers.
+        """
+        client = self
+        if workdir or run_dir:
+            client = self.with_context(workdir=workdir, log_dir=run_dir)
+        profile = (config.profile or "reason").strip().lower()
+        if profile == "exec":
+            data = client.complete_json(
+                prompt,
+                schema_path=config.schema_path,
+                timeout_seconds=config.timeout_seconds,
+            )
+        else:
+            data = client.reason_json(
+                prompt,
+                schema_path=config.schema_path,
+                timeout_seconds=config.timeout_seconds,
+            )
+        return RunResult(data=data, workdir=client._resolve_workdir())
 
     def _append_log(self, path: Path, content: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

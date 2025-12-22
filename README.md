@@ -26,6 +26,13 @@ No `OPENAI_API_KEY` is required; the agent uses your local Codex CLI login.
 - Codex CLI stdout/stderr are captured into `stdout.log` and `stderr.log` when a run directory is available.
 - Swarm runs store per-subagent artifacts under `runs/swarm/<run_id>/<subtask_id_*>/`.
 
+## Concurrency & Execution Invariants
+These are contractual guarantees (not suggestions):
+- Threaded code paths MUST NOT mutate process-global state (cwd, env vars, event loops).
+- Every subprocess call MUST pass an explicit `cwd`.
+- Every agent/subagent run MUST emit structured artifacts (`trace.jsonl`, and `result.json` when present).
+- Swarm correctness depends on artifacts, not terminal output.
+
 ## Key paths
 - `agent/run.py` - autonomous agent CLI entrypoint.
 - `agent/autonomous/` - orchestrator + planning + reflection + memory + tools.

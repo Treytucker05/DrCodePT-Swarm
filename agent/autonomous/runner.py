@@ -117,6 +117,7 @@ class AgentRunner:
         workspace_dir.mkdir(parents=True, exist_ok=True)
         ctx = RunContext(run_id=run_id, run_dir=run_dir, workspace_dir=workspace_dir)
 
+        # trace.jsonl/result.json are the authoritative execution artifacts; stdout is for humans.
         tracer = JsonlTracer(run_dir / "trace.jsonl")
         perceptor = Perceptor()
         llm = self.llm

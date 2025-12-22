@@ -70,9 +70,11 @@ def test_swarm_runs_with_explicit_cwd(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def fake_run(cmd: List[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         cwd = kwargs.get("cwd")
-        assert cwd is not None, "subprocess.run must receive cwd"
+        assert cwd is not None, "swarm must pass explicit cwd to subprocess.run"
         actual = str(Path(cwd).resolve())
-        assert actual == expected_cwd, f"cwd mismatch: {actual} != {expected_cwd}"
+        assert actual == expected_cwd, (
+            f"swarm must use repo_root as cwd for codex runs: {actual} != {expected_cwd}"
+        )
 
         try:
             schema_idx = cmd.index("--output-schema")

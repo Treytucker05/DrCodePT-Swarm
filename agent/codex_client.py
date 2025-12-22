@@ -12,6 +12,8 @@ from agent.llm import (
     CodexCliExecutionError,
     CodexCliNotFoundError,
     CodexCliOutputError,
+    LLMBackend,
+    RunConfig,
     schemas as llm_schemas,
 )
 
@@ -31,7 +33,7 @@ class CodexTaskClient:
     - research summarization
     """
 
-    llm: CodexCliClient
+    llm: LLMBackend
     planner_system_prompt_path: Path
     max_retries: int = 2
     retry_backoff_seconds: float = 1.0
@@ -49,7 +51,17 @@ class CodexTaskClient:
         last_exc: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:
-                data = self.llm.reason_json(prompt, schema_path=schema_path, timeout_seconds=timeout_seconds)
+                result = self.llm.run(
+                    prompt=prompt,
+                    workdir=None,
+                    run_dir=None,
+                    config=RunConfig(
+                        schema_path=schema_path,
+                        profile="reason",
+                        timeout_seconds=timeout_seconds,
+                    ),
+                )
+                data = result.data
                 if not isinstance(data, dict):
                     raise CodexCliOutputError(f"Expected JSON object, got: {type(data).__name__}")
                 return data
