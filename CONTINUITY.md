@@ -1,11 +1,31 @@
 # Continuity Ledger
 
-- Goal (incl. success criteria): Continue implementation per CODEX_IMPLEMENTATION_PROMPT.md in DrCodePT-Swarm; unblock swarm mode schema error; proceed to Phase 1.
+- Goal (incl. success criteria): Complete Phase 7 per CODEX_IMPLEMENTATION_PROMPT.md in DrCodePT-Swarm and report checklist.
 - Constraints/Assumptions: Follow AGENTS.md (minimal scoped changes, no destructive actions, log phase banners, run pytest -q for relevant changes, safe-by-default). Keep ASCII. approval_policy=never. Use specific exception handling and logging; avoid broad except where feasible.
 - Key decisions: Repo is C:\Users\treyt\OneDrive\Desktop\DrCodePT-Swarm. Clarify schema needed required+additionalProperties fixes for Structured Outputs.
 - State:
   - Done: Added `additionalProperties: false` at root and blocking_questions items; updated blocking_questions.required to include default; pytest -q passed (96). Attempted to rerun treys_agent swarm flow, but CLI produced no output (stopped with Ctrl+C).
-  - Now: Commit schema fix; start Phase 1 implementation in DrCodePT-Swarm.
-  - Next: Implement Phase 1 changes and tests.
-- Open questions (UNCONFIRMED if needed): Exact command to reproduce swarm flow non-interactively? UNCONFIRMED.
-- Working set (files/ids/commands): agent/llm/schemas/clarify.schema.json; pytest -q; attempted python agent/treys_agent.py
+  - Done: Reimplemented Phase 0 per user prompt; updated exceptions/retry_utils/monitoring, runner/reflection/sqlite_store, loop detection, tool retry usage, and tests. Ran py_compile on specified files; pytest -v on test_runner_smoke and test_memory_store passed. Committed as 792a597.
+  - Done: Patched swarm clarification to return interaction_required (no input). Ran swarm; it exited cleanly with result.json containing interaction_required questions.
+  - Done: Phase 1.1 change committed (73a7464). Tests test_non_interactive_workers and test_runner_smoke passed.
+  - Done: Phase 1 tasks implemented and committed (62224de); wiring updates committed (88f560f). Phase 1 tests plus runner_smoke and memory_store passed.
+  - Done: Phase 2 tasks implemented and committed (52feba1); profile max_steps enforcement committed (59a264d). Profiles, checkpointing, and run manifest tests passed; runner_smoke, memory_store, non_interactive_workers passed.
+  - Done: Phase 3 files and tests added (worktree, sandbox, conflict detection). Worktree branch creation patched to avoid checkout.
+  - Done: Phase 3 tests passed (worktree, sandbox, conflict detection) and existing tests passed (runner_smoke, memory_store, profiles, checkpointing). Isolation files verified.
+  - Done: Phase 3 changes committed (c33e9b1).
+  - Done: Phase 4 workers implemented (process worker, worker pool, health monitor) and tests added.
+  - Done: Phase 4 tests and required existing tests passed.
+  - Done: Phase 4 changes committed (6c4da5b).
+  - Done: Phase 5 QA agent, artifact validator, runner integration, and tests implemented.
+  - Done: Phase 5 tests and required existing tests passed.
+  - Done: Phase 5 changes committed (c9da8db).
+  - Done: Phase 6 security modules and tests implemented.
+  - Done: Phase 6 tests and required existing tests passed.
+  - Done: Phase 6 changes committed (e4de6dd).
+  - Done: Phase 7 evaluation harness, CI workflows, benchmarks, and tests implemented.
+  - Done: Phase 7 tests and required existing tests passed.
+  - Done: Phase 7 changes committed (636eca9).
+  - Now: Report Phase 7 checklist.
+  - Next: Phase 7 complete (agent 10.0/10).
+- Open questions (UNCONFIRMED if needed): None.
+- Working set (files/ids/commands): tests/fixtures/golden_tasks.json; tests/test_evaluation_harness.py; .github/workflows/ci.yml; .github/workflows/evaluation.yml; scripts/benchmark.py; tests/test_benchmark.py; CONTINUITY.md
