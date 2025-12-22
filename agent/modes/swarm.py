@@ -12,6 +12,7 @@ from uuid import uuid4
 import traceback
 
 from agent.autonomous.config import AgentConfig, PlannerConfig, RunnerConfig
+from agent.autonomous.manifest import write_run_manifest
 from agent.autonomous.repo_scan import is_repo_review_task
 from agent.config.profile import resolve_profile
 from agent.autonomous.runner import AgentRunner
@@ -371,6 +372,14 @@ def mode_swarm(objective: str, *, unsafe_mode: bool = False, profile: str | None
 
     agent_cfg = _build_agent_cfg(repo_root, unsafe_mode=unsafe_mode, profile_name=profile)
     runner_cfg = _build_runner_cfg(profile)
+    write_run_manifest(
+        run_root,
+        run_id=run_root.name,
+        profile=profile_cfg,
+        runner_cfg=runner_cfg,
+        workers=workers,
+        mode="swarm",
+    )
     if not agent_cfg.enable_web_gui and not agent_cfg.enable_desktop:
         print("[SWARM] MCP-based tools disabled (web_gui/desktop). Using local file/Python/web_fetch tools only.")
 

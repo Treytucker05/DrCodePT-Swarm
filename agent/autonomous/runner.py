@@ -20,6 +20,7 @@ from agent.config.profile import RunUsage
 from .jsonio import dumps_compact
 from .loop_detection import LoopDetector
 from .exceptions import AgentException, LLMError, ToolExecutionError
+from .manifest import write_run_manifest
 from .memory.sqlite_store import SqliteMemoryStore
 from .models import AgentRunResult, Observation, Plan, Reflection, Step, ToolResult
 from .perception import Perceptor
@@ -227,6 +228,15 @@ class AgentRunner:
             workspace_dir=workspace_dir,
             profile=profile,
             usage=usage,
+        )
+
+        write_run_manifest(
+            run_dir,
+            run_id=run_id,
+            profile=profile,
+            runner_cfg=self.cfg,
+            workers=1,
+            mode=self.mode_name,
         )
 
         # trace.jsonl/result.json are the authoritative execution artifacts; stdout is for humans.

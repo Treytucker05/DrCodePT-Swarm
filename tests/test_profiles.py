@@ -19,6 +19,12 @@ def test_profile_defaults() -> None:
     assert deep.max_total_bytes_to_read >= profile.max_total_bytes_to_read
 
 
+def test_profile_selection_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUTO_PROFILE", "deep")
+    profile = resolve_profile(None, env_keys=("AUTO_PROFILE",))
+    assert profile.name == "deep"
+
+
 def test_repo_index_respects_max_glob_results(tmp_path: Path) -> None:
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
