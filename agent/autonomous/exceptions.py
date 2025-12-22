@@ -1,27 +1,17 @@
-"""Custom exceptions for the autonomous agent framework.
-
-This module defines a hierarchy of exceptions that provide semantic meaning
-to different failure modes. Instead of catching broad Exception types,
-code should catch specific exception types that indicate what went wrong.
-"""
+"""Custom exceptions for the autonomous agent framework."""
 
 from typing import Optional, Dict, Any
 
 
 class AgentException(Exception):
     """Base exception for all agent-related errors."""
-
-    def __init__(
-        self,
-        message: str,
-        context: Optional[Dict[str, Any]] = None,
-        original_exception: Optional[Exception] = None,
-    ):
+    
+    def __init__(self, message: str, context: Optional[Dict[str, Any]] = None, original_exception: Optional[Exception] = None):
         super().__init__(message)
         self.message = message
         self.context = context or {}
         self.original_exception = original_exception
-
+    
     def __str__(self) -> str:
         if self.context:
             context_str = ", ".join(f"{k}={v}" for k, v in self.context.items())
@@ -66,12 +56,7 @@ class ReflectionError(AgentException):
 
 class InteractionRequiredError(AgentException):
     """Raised when human interaction is required."""
-
-    def __init__(
-        self,
-        message: str,
-        questions: Optional[list] = None,
-        context: Optional[Dict[str, Any]] = None,
-    ):
+    
+    def __init__(self, message: str, questions: Optional[list] = None, context: Optional[Dict[str, Any]] = None):
         super().__init__(message, context)
         self.questions = questions or []

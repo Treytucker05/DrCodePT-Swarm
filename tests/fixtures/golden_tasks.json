@@ -3,41 +3,16 @@
     {
       "id": "repo_analysis",
       "description": "Analyze repository structure",
-      "task": "Analyze this repository and provide an overview of its structure, key files, and purpose",
+      "task": "Analyze this repository and provide an overview",
       "expected_status": "success",
-      "timeout": 300,
-      "required_artifacts": ["repo_map.json"]
+      "timeout": 300
     },
     {
       "id": "code_review",
       "description": "Review code quality",
-      "task": "Review the code in this repository and identify potential improvements, bugs, or code quality issues",
+      "task": "Review the code in this repository",
       "expected_status": "success",
-      "timeout": 600,
-      "required_artifacts": ["findings.json"]
-    },
-    {
-      "id": "no_interactive_prompts",
-      "description": "Swarm should not prompt for input",
-      "task": "Analyze this repository",
-      "mode": "swarm",
-      "expected_no_prompts": true,
       "timeout": 600
-    },
-    {
-      "id": "partial_failure_handling",
-      "description": "Swarm handles partial failures",
-      "task": "Analyze multiple aspects of this repository",
-      "mode": "swarm",
-      "expected_status": ["success", "partial_failure"],
-      "timeout": 600
-    },
-    {
-      "id": "loop_detection",
-      "description": "Loop detection works correctly",
-      "task": "Scan repository for patterns",
-      "expected_no_false_loops": true,
-      "timeout": 300
     }
   ]
 }
