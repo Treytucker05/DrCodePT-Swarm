@@ -6,11 +6,28 @@ import pytest
 
 from agent.autonomous.isolation import copy_repo_to_workspace
 from agent.modes import swarm as swarm_mod
+from agent.llm.backend import RunResult
 
 
 class _DummyLLM:
     def with_context(self, **kwargs):
         return self
+
+    def run(self, *, prompt: str, workdir, run_dir, config) -> RunResult:
+        return RunResult(
+            data={
+                "ready_to_run": True,
+                "normalized_objective": "isolation test",
+                "task_type": "other",
+                "search_terms": [],
+                "glob_patterns": [],
+                "candidate_roots": [],
+                "blocking_questions": [],
+                "assumptions_if_no_answer": [],
+                "expected_output": "ok",
+            },
+            workdir=Path(workdir or "."),
+        )
 
 
 def test_copy_repo_to_workspace_skips_dirs(tmp_path: Path) -> None:
@@ -41,7 +58,7 @@ def test_swarm_uses_sandbox_workdir(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(swarm_mod, "_swarm_run_dir", lambda: run_root)
     monkeypatch.setattr(swarm_mod.CodexCliClient, "from_env", lambda *args, **kwargs: _DummyLLM())
 
-    def _fake_decompose(llm, objective: str, *, max_items: int):
+    def _fake_decompose(*_args, **_kwargs):
         return [swarm_mod.Subtask(id="A", goal="do work", depends_on=[], notes="")]
 
     monkeypatch.setattr(swarm_mod, "_decompose", _fake_decompose)

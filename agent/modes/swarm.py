@@ -5,7 +5,6 @@ import os
 import re
 from dataclasses import dataclass, replace
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -23,6 +22,8 @@ from agent.autonomous.isolation import (
 from agent.autonomous.qa import QaResult, format_qa_summary, validate_artifacts
 import subprocess
 from agent.autonomous.manifest import write_run_manifest
+from agent.preflight.repo_fish import PreflightResult, run_preflight
+from agent.preflight.clarify import ClarifyResult, run_clarifier
 from agent.autonomous.repo_scan import is_repo_review_task
 from agent.config.profile import resolve_profile
 from agent.autonomous.runner import AgentRunner
@@ -157,13 +158,31 @@ class Subtask:
     notes: str
 
 
-def _decompose(llm: CodexCliClient, objective: str, *, max_items: int) -> List[Subtask]:
+def _decompose(
+    llm: CodexCliClient,
+    objective: str,
+    *,
+    max_items: int,
+    clarify: ClarifyResult,
+    preflight: PreflightResult,
+) -> List[Subtask]:
     prompt = (
         "You are a swarm coordinator. Decompose the objective into 2-4 parallelizable subtasks.\n"
         "Only add dependencies when truly required. Use short IDs like A, B, C.\n"
-        "If the objective is a repo review, require a repo_index/repo_map stage and review only selected files.\n"
-        "Never ask to read the entire repo; cap reviews to the repo_map selection.\n"
-        f"Objective: {objective}\n"
+        "Use the preflight repo_map and root listing; do NOT scan the entire repo.\n"
+        "If the objective is a repo review, review only selected files from repo_map.\n"
+        "If task_type is find_filepath, follow this structure:\n"
+        "  A: Use repo_map + search_terms to list candidate paths.\n"
+        "  B: Validate by opening only those candidate files/paths.\n"
+        "  C: Return best match + rationale + next candidates.\n"
+        f"Normalized objective: {objective}\n"
+        f"Task type: {clarify.task_type}\n"
+        f"Search terms: {clarify.search_terms}\n"
+        f"Glob patterns: {clarify.glob_patterns}\n"
+        f"Candidate roots: {clarify.candidate_roots}\n"
+        f"Expected output: {clarify.expected_output}\n"
+        f"Preflight repo_map: {preflight.repo_map_path}\n"
+        f"Preflight root listing: {preflight.root_listing_path}\n"
         "Return JSON only."
     )
     data = llm.reason_json(prompt, schema_path=llm_schemas.TASK_DECOMPOSITION)
@@ -206,6 +225,58 @@ def _ensure_repo_scan_subtask(subtasks: List[Subtask], *, objective: str, max_it
             s.depends_on = ["A" if d == old_id else d for d in s.depends_on]
     if repo_goal not in a_task.goal:
         a_task.goal = f"{repo_goal}\n\n{a_task.goal}".strip()
+
+
+def _ask_blocking_questions(questions: List[Dict[str, Any]]) -> Dict[str, str]:
+    answers: Dict[str, str] = {}
+    for q in questions:
+        question = str(q.get("question") or "").strip()
+        if not question:
+            continue
+        default = q.get("default")
+        prompt = f"{question}"
+        if default:
+            prompt += f" (default: {default})"
+        prompt += "\n> "
+        resp = input(prompt).strip()
+        if not resp and default:
+            resp = str(default)
+        answers[str(q.get("id") or question)] = resp
+    return answers
+
+
+def _format_answers(answers: Dict[str, str]) -> str:
+    lines = []
+    for key, val in answers.items():
+        if not val:
+            continue
+        lines.append(f"{key}: {val}")
+    return "\n".join(lines)
+
+
+def _annotate_subtasks(
+    subtasks: List[Subtask],
+    *,
+    clarify: ClarifyResult,
+    preflight: PreflightResult,
+) -> List[Subtask]:
+    prefix_lines = [
+        f"Preflight repo_map: {preflight.repo_map_path}",
+        f"Preflight root listing: {preflight.root_listing_path}",
+    ]
+    if clarify.search_terms:
+        prefix_lines.append(f"Search terms: {clarify.search_terms}")
+    if clarify.glob_patterns:
+        prefix_lines.append(f"Glob patterns: {clarify.glob_patterns}")
+    if clarify.candidate_roots:
+        prefix_lines.append(f"Candidate roots: {clarify.candidate_roots}")
+    prefix = "\n".join(prefix_lines).strip()
+    if not prefix:
+        return subtasks
+    updated = []
+    for s in subtasks:
+        updated.append(Subtask(id=s.id, goal=f"{prefix}\n\n{s.goal}".strip(), depends_on=s.depends_on, notes=s.notes))
+    return updated
 
 
 def _select_isolation_mode(profile_name: str, explicit: str | None) -> str:
@@ -420,14 +491,56 @@ def mode_swarm(
     )
 
     llm = llm.with_context(workdir=repo_root, log_dir=run_root)
-    subtasks = _decompose(llm, objective, max_items=max_subtasks)
+
+    preflight_dir = run_root / "preflight"
+    preflight = run_preflight(
+        repo_root=repo_root,
+        objective=objective,
+        run_dir=preflight_dir,
+        max_results=min(profile_cfg.max_glob_results, 200),
+        max_map_files=min(profile_cfg.max_files_to_read, 20),
+        max_total_bytes=min(profile_cfg.max_total_bytes_to_read, 200_000),
+    )
+    clarify = run_clarifier(
+        llm,
+        objective=objective,
+        root_listing=preflight.root_listing,
+        repo_map=preflight.repo_map,
+        run_dir=preflight_dir,
+        workdir=repo_root,
+        timeout_seconds=profile_cfg.plan_timeout_s,
+    )
+    if not clarify.ready_to_run and clarify.blocking_questions:
+        print("\n[SWARM] Clarification needed before starting workers:")
+        answers = _ask_blocking_questions(clarify.blocking_questions)
+        if answers:
+            augmented = objective + "\n\nUser answers:\n" + _format_answers(answers)
+            clarify = run_clarifier(
+                llm,
+                objective=augmented,
+                root_listing=preflight.root_listing,
+                repo_map=preflight.repo_map,
+                run_dir=preflight_dir,
+                workdir=repo_root,
+                timeout_seconds=profile_cfg.plan_timeout_s,
+            )
+    normalized_objective = clarify.normalized_objective or objective
+
+    subtasks = _decompose(
+        llm,
+        normalized_objective,
+        max_items=max_subtasks,
+        clarify=clarify,
+        preflight=preflight,
+    )
     if not subtasks:
         print("[SWARM] Could not decompose; running as a single Auto task.")
         from agent.modes.autonomous import mode_autonomous
 
-        mode_autonomous(objective, unsafe_mode=unsafe_mode)
+        mode_autonomous(normalized_objective, unsafe_mode=unsafe_mode)
         return
-    _ensure_repo_scan_subtask(subtasks, objective=objective, max_items=max_subtasks)
+    subtasks = _annotate_subtasks(subtasks, clarify=clarify, preflight=preflight)
+    _ensure_repo_scan_subtask(subtasks, objective=normalized_objective, max_items=max_subtasks)
 
     print(f"\n[SWARM] Objective: {objective}")
     print(f"[SWARM] Subtasks: {len(subtasks)} | Workers: {workers}")

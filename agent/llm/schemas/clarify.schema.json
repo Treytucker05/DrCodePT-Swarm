@@ -1,0 +1,40 @@
+{
+  "type": "object",
+  "properties": {
+    "ready_to_run": { "type": "boolean" },
+    "normalized_objective": { "type": "string" },
+    "task_type": {
+      "type": "string",
+      "enum": ["find_filepath", "repo_review", "research", "other"]
+    },
+    "search_terms": { "type": "array", "items": { "type": "string" } },
+    "glob_patterns": { "type": "array", "items": { "type": "string" } },
+    "candidate_roots": { "type": "array", "items": { "type": "string" } },
+    "blocking_questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "question": { "type": "string" },
+          "why": { "type": "string" },
+          "default": { "type": ["string", "null"] }
+        },
+        "required": ["id", "question", "why"]
+      }
+    },
+    "assumptions_if_no_answer": { "type": "array", "items": { "type": "string" } },
+    "expected_output": { "type": "string" }
+  },
+  "required": [
+    "ready_to_run",
+    "normalized_objective",
+    "task_type",
+    "search_terms",
+    "glob_patterns",
+    "candidate_roots",
+    "blocking_questions",
+    "assumptions_if_no_answer",
+    "expected_output"
+  ]
+}

@@ -48,6 +48,18 @@ def _make_fake_coded_response(schema_name: str) -> Dict[str, Any]:
         return {"ok": True, "failed": []}
     if schema_name == "chat_response.schema.json":
         return {"response": "ok", "action": {"type": "none", "folder": None}}
+    if schema_name == "clarify.schema.json":
+        return {
+            "ready_to_run": True,
+            "normalized_objective": "Smoke test objective",
+            "task_type": "other",
+            "search_terms": [],
+            "glob_patterns": [],
+            "candidate_roots": [],
+            "blocking_questions": [],
+            "assumptions_if_no_answer": [],
+            "expected_output": "ok",
+        }
     raise AssertionError(f"Unhandled schema in test stub: {schema_name}")
 
 

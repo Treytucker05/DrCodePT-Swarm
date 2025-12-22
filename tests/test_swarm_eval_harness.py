@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from agent.modes import swarm as swarm_mod
+from agent.llm.backend import RunResult
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,22 @@ class SwarmEvalCase:
 class _DummyLLM:
     def with_context(self, **kwargs):
         return self
+
+    def run(self, *, prompt: str, workdir, run_dir, config) -> RunResult:
+        return RunResult(
+            data={
+                "ready_to_run": True,
+                "normalized_objective": "swarm eval",
+                "task_type": "other",
+                "search_terms": [],
+                "glob_patterns": [],
+                "candidate_roots": [],
+                "blocking_questions": [],
+                "assumptions_if_no_answer": [],
+                "expected_output": "summary",
+            },
+            workdir=Path(workdir or "."),
+        )
 
 
 def _write_artifacts(run_dir: Path, *, ok: bool, error: dict | None = None, repo_map: bool = False) -> None:
