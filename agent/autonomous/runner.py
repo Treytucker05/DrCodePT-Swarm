@@ -424,6 +424,7 @@ class AgentRunner:
         exploration_nudge_next = False
         exploration_reason = ""
         loop_nudge_used = False
+        max_steps = max(1, min(self.cfg.max_steps, profile.max_steps))
 
         if self.cfg.cost_budget_usd is not None and tracked_llm.cost_per_1k is None:
             tracer.log(
@@ -514,7 +515,7 @@ class AgentRunner:
                         started_at=started_at,
                         started_monotonic=start,
                     )
-                if steps_executed >= self.cfg.max_steps:
+                if steps_executed >= max_steps:
                     return self._stop(
                         tracer=tracer,
                         memory_store=memory_store,
