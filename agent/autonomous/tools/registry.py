@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, List, Optional, Type
 from pydantic import BaseModel, ValidationError
 
 from ..config import AgentConfig, RunContext
-from ..errors import InteractionRequiredError
+from ..exceptions import InteractionRequiredError, ToolExecutionError
 from ..models import ToolResult
 
 
@@ -63,10 +63,17 @@ class ToolRegistry:
             parsed = spec.args_model(**(args or {}))
         except ValidationError as exc:
             return ToolResult(success=False, error=f"Tool args validation failed: {exc}")
-        if name == "human_ask" and not self._agent_cfg.allow_human_ask:
-            question = getattr(parsed, "question", None)
-            questions = [question] if isinstance(question, str) and question else []
-            err = InteractionRequiredError("Interactive tools are disabled for this run.")
+        try:
+            if name == "human_ask" and not self._agent_cfg.allow_human_ask:
+                question = getattr(parsed, "question", None)
+                questions = [question] if isinstance(question, str) and question else []
+                raise InteractionRequiredError(
+                    "Interactive tools are disabled for this run.",
+                    questions=questions,
+                )
+            return spec.fn(ctx, parsed)
+        except InteractionRequiredError as exc:
+            questions = getattr(exc, "questions", None) or []
             return ToolResult(
                 success=False,
                 error="interaction_required",
@@ -77,11 +84,21 @@ class ToolRegistry:
                 },
                 metadata={
                     "interaction_required": True,
+                    "error_type": exc.__class__.__name__,
+                    "message": str(exc),
+                },
+            )
+        except Exception as exc:
+            err = ToolExecutionError(name, cause=exc)
+            return ToolResult(
+                success=False,
+                error=str(err),
+                metadata={
                     "error_type": err.__class__.__name__,
+                    "tool_name": name,
                     "message": str(err),
                 },
             )
-        return spec.fn(ctx, parsed)
 
     def requires_approval(self, name: str) -> bool:
         return False

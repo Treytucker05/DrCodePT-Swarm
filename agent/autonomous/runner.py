@@ -5,6 +5,7 @@ import os
 import threading
 import time
 import hashlib
+import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,7 @@ from .config import AgentConfig, PlannerConfig, RunContext, RunnerConfig
 from agent.config.profile import RunUsage
 from .jsonio import dumps_compact
 from .loop_detection import LoopDetector
+from .exceptions import AgentException, LLMError
 from .memory.sqlite_store import SqliteMemoryStore
 from .models import AgentRunResult, Observation, Plan, Reflection, Step, ToolResult
 from .perception import Perceptor
@@ -163,6 +165,55 @@ class AgentRunner:
                 run_dir = Path(resume.get("run_dir")).resolve()
             except Exception:
                 pass
+        try:
+            return self._run_impl(
+                task,
+                resume=resume,
+                run_id=run_id,
+                run_dir=run_dir,
+                repo_root=repo_root,
+            )
+        except Exception as exc:
+            run_dir.mkdir(parents=True, exist_ok=True)
+            configure_logging(run_dir)
+            error = exc if isinstance(exc, AgentException) else AgentException(str(exc), cause=exc)
+            payload = {
+                "ok": False,
+                "mode": self.mode_name,
+                "agent_id": self.agent_id or run_id,
+                "run_id": run_id,
+                "final_answer": None,
+                "error": {
+                    "message": str(error),
+                    "type": error.__class__.__name__,
+                    "traceback": traceback.format_exc(),
+                    "data": getattr(error, "data", {}),
+                },
+            }
+            try:
+                Path(run_dir / "result.json").write_text(
+                    json.dumps(payload, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+            return AgentRunResult(
+                success=False,
+                stop_reason="exception",
+                steps_executed=0,
+                run_id=run_id,
+                trace_path=str(Path(run_dir / "trace.jsonl")),
+            )
+
+    def _run_impl(
+        self,
+        task: str,
+        *,
+        resume: Optional[dict],
+        run_id: str,
+        run_dir: Path,
+        repo_root: Path,
+    ) -> AgentRunResult:
         run_dir.mkdir(parents=True, exist_ok=True)
         configure_logging(run_dir)
         workspace_dir = run_dir / "workspace"
@@ -1404,14 +1455,14 @@ class AgentRunner:
                     timeout_seconds=timeout_seconds,
                 )
             except Exception as exc:
-                last_exc = exc
+                last_exc = LLMError(f"{where} failed: {exc}", cause=exc)
                 tracer.log(
                     {
                         "type": "llm_retry",
                         "where": where,
                         "attempt": attempt + 1,
-                        "error": str(exc),
-                        "exc_type": type(exc).__name__,
+                        "error": str(last_exc),
+                        "exc_type": type(last_exc).__name__,
                     }
                 )
                 if attempt >= retries:
