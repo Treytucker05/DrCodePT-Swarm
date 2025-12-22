@@ -1,11 +1,11 @@
 # Continuity Ledger
 
-- Goal (incl. success criteria): Implement Phase 0.5 Smart Conversational Startup Flow (new `agent/autonomous/startup_flow.py`, new `tests/test_startup_flow.py`, modify `agent/run.py` to replace `--mode` arg with startup flow), run the specified pytest command + manual run, then commit with the provided message.
-- Constraints/Assumptions: Follow AGENTS.md (minimal scoped changes; phase banners; keep ASCII; run relevant pytest). approval_policy=never. User-provided file contents and edits must be applied exactly as written.
-- Key decisions: Use the user-specified `StartupFlow` interactive prompts to determine `mode/depth/specialists` when no CLI mode is provided.
+- Goal (incl. success criteria): Fix `swarm` mode crash in `treys_agent.py` caused by missing exports in `agent.autonomous.isolation` / `agent.autonomous.qa`, and help user with a high-efficiency plan-execution approach.
+- Constraints/Assumptions: Follow AGENTS.md (minimal scoped changes; keep ASCII; run relevant pytest). approval_policy=never.
+- Key decisions: Export the helpers expected by `agent.modes.swarm` from `agent/autonomous/isolation/__init__.py` and `agent/autonomous/qa/__init__.py`.
 - State:
-  - Done: Implemented `agent/autonomous/startup_flow.py` + `tests/test_startup_flow.py`, updated `agent/run.py`, ran the requested pytest command, sanity-ran the startup prompt flow (cancelled at confirmation), and committed "Phase 0.5: Smart Conversational Startup Flow - Replace mode selection with intelligent startup flow".
-  - Now: Phase 0.5 complete.
-  - Next: Await next phase/task.
+  - Done: Phase 0.5 Smart Conversational Startup Flow implemented and committed.
+  - Now: Swarm imports fixed and verified locally; pending commit.
+  - Next: Commit the fix, then re-run `treys_agent.py` and choose `swarm` again.
 - Open questions (UNCONFIRMED if needed): None.
-- Working set (files/ids/commands): agent/autonomous/startup_flow.py; tests/test_startup_flow.py; agent/run.py; `python -m pytest tests/test_startup_flow.py -v`; `python -m agent.run --task "analyze code"`; `git commit -m "Phase 0.5: Smart Conversational Startup Flow - Replace mode selection with intelligent startup flow"`; `PYTHONIOENCODING=utf-8`
+- Working set (files/ids/commands): agent/autonomous/isolation/__init__.py; agent/autonomous/qa/__init__.py; tests/test_isolation_exports.py; agent/modes/swarm.py; `python -c "from agent.modes.swarm import mode_swarm; print('ok')"`; `PYTHONIOENCODING=utf-8`
