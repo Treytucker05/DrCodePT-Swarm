@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Literal, Optional, Tuple
 
 from agent.config.profile import ProfileConfig, RunUsage, resolve_profile
+from .exceptions import ConfigurationError
 
 
 @dataclass(frozen=True)
@@ -39,15 +40,15 @@ class RunnerConfig:
 
     def __post_init__(self) -> None:
         if self.max_steps <= 0:
-            raise ValueError("max_steps must be > 0")
+            raise ConfigurationError("max_steps must be > 0")
         if self.timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be > 0")
+            raise ConfigurationError("timeout_seconds must be > 0")
         if self.llm_plan_timeout_seconds is not None and self.llm_plan_timeout_seconds <= 0:
-            raise ValueError("llm_plan_timeout_seconds must be > 0")
+            raise ConfigurationError("llm_plan_timeout_seconds must be > 0")
         if self.llm_plan_retry_timeout_seconds is not None and self.llm_plan_retry_timeout_seconds <= 0:
-            raise ValueError("llm_plan_retry_timeout_seconds must be > 0")
+            raise ConfigurationError("llm_plan_retry_timeout_seconds must be > 0")
         if self.llm_heartbeat_seconds is not None and self.llm_heartbeat_seconds < 0:
-            raise ValueError("llm_heartbeat_seconds must be >= 0")
+            raise ConfigurationError("llm_heartbeat_seconds must be >= 0")
 
 
 @dataclass(frozen=True)

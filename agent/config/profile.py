@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Literal, Optional
 import os
 
+from agent.autonomous.exceptions import ConfigurationError
+
 
 ProfileName = Literal["fast", "deep", "audit"]
 
@@ -21,6 +23,24 @@ class ProfileConfig:
     max_web_sources: int
     allow_interactive: bool
     stage_checkpoints: bool
+
+    def __post_init__(self) -> None:
+        if self.workers < 1:
+            raise ConfigurationError("workers must be >= 1")
+        if self.plan_timeout_s <= 0:
+            raise ConfigurationError("plan_timeout_s must be > 0")
+        if self.plan_retry_timeout_s <= 0:
+            raise ConfigurationError("plan_retry_timeout_s must be > 0")
+        if self.heartbeat_s < 0:
+            raise ConfigurationError("heartbeat_s must be >= 0")
+        if self.max_files_to_read <= 0:
+            raise ConfigurationError("max_files_to_read must be > 0")
+        if self.max_total_bytes_to_read <= 0:
+            raise ConfigurationError("max_total_bytes_to_read must be > 0")
+        if self.max_glob_results <= 0:
+            raise ConfigurationError("max_glob_results must be > 0")
+        if self.max_web_sources < 0:
+            raise ConfigurationError("max_web_sources must be >= 0")
 
 
 @dataclass

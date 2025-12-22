@@ -22,6 +22,9 @@ def configure_logging(run_dir: Optional[Path] = None) -> None:
     console.setFormatter(fmt_console)
     root.addHandler(console)
 
+    for noisy in ("urllib3", "requests", "httpx", "openai"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
     if run_dir:
         run_dir.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(run_dir / "agent.log", encoding="utf-8")
