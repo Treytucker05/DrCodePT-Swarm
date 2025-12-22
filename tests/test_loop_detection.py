@@ -3,12 +3,23 @@ from __future__ import annotations
 from agent.autonomous.loop_detection import LoopDetector
 
 
-def test_loop_detector_allows_changed_output() -> None:
-    detector = LoopDetector(window=3, repeat_threshold=3)
-    sig1 = "file_search:{\"q\":\"x\"}:hash1"
-    sig2 = "file_search:{\"q\":\"x\"}:hash2"
-    assert detector.update(sig1, "state") is False
-    assert detector.update(sig2, "state") is False
-    assert detector.update(sig1, "state") is False
-    assert detector.update(sig1, "state") is False
-    assert detector.update(sig1, "state") is True
+def test_loop_detector_ignores_changing_output() -> None:
+    detector = LoopDetector(window=5, repeat_threshold=3)
+    assert detector.update("file_search", "args", "out1") is False
+    assert detector.update("file_search", "args", "out2") is False
+    assert detector.update("file_search", "args", "out1") is False
+    assert detector.update("file_search", "args", "out2") is False
+
+
+def test_loop_detector_triggers_on_identical_output() -> None:
+    detector = LoopDetector(window=4, repeat_threshold=3)
+    assert detector.update("file_search", "args", "out") is False
+    assert detector.update("file_search", "args", "out") is False
+    assert detector.update("file_search", "args", "out") is True
+
+
+def test_loop_detector_separates_args() -> None:
+    detector = LoopDetector(window=4, repeat_threshold=2)
+    assert detector.update("file_search", "args1", "out") is False
+    assert detector.update("file_search", "args2", "out") is False
+    assert detector.update("file_search", "args2", "out") is True

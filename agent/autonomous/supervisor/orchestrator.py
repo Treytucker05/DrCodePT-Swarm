@@ -5,6 +5,7 @@ import os
 import threading
 import time
 import uuid
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -43,6 +44,10 @@ class Phase(str, Enum):
     ASK_USER = "ASK_USER"
     DONE = "DONE"
     ABORT = "ABORT"
+
+
+def _hash_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
 @dataclass
@@ -492,8 +497,16 @@ class SupervisorOrchestrator:
                     state.last_error = "no_steps"
                     continue
                 step = state.last_plan.next_steps[0].model_dump()
-                action_sig = f"{step.get('tool')}:{step.get('description')}"
-                if self.loop_detector.update(action_sig, state.context_fingerprint):
+                tool_name = str(step.get("tool") or "")
+                args_blob = json.dumps(
+                    step.get("args") or step.get("description") or "",
+                    sort_keys=True,
+                    ensure_ascii=False,
+                    default=str,
+                )
+                args_hash = _hash_text(args_blob)
+                output_hash = _hash_text(state.context_fingerprint or "")
+                if self.loop_detector.update(tool_name, args_hash, output_hash):
                     state.last_error = "loop_detected"
                     state.phase = Phase.RESEARCH
                     continue

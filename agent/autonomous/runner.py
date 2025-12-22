@@ -39,6 +39,10 @@ def _json_dumps(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, ensure_ascii=False, default=str)
 
 
+def _hash_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
 def _hash_tool_result(result: ToolResult) -> str:
     payload = {
         "success": result.success,
@@ -47,6 +51,40 @@ def _hash_tool_result(result: ToolResult) -> str:
     }
     blob = _json_dumps(payload).encode("utf-8", errors="ignore")
     return hashlib.sha256(blob).hexdigest()[:12]
+
+
+def _summarize_output(output: Any, *, limit: int = 500) -> str:
+    try:
+        text = _json_dumps(output)
+    except Exception:
+        text = str(output)
+    if len(text) > limit:
+        return f"{text[:limit]}..."
+    return text
+
+
+def _write_loop_detected(
+    run_dir: Path,
+    *,
+    signature: Dict[str, str],
+    output_summary: str,
+    window: int,
+    repeat_threshold: int,
+) -> None:
+    payload = {
+        "signature": signature,
+        "output_summary": output_summary,
+        "window": window,
+        "repeat_threshold": repeat_threshold,
+    }
+    try:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "loop_detected.json").write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception:
+        return
 
 
 class TrackedLLM:
@@ -845,29 +883,44 @@ class AgentRunner:
 
                 self._memory_updates(memory_store, task, step, tool_result, obs, reflection, run_id, tracer)
 
+                args_hash = _hash_text(_json_dumps(step.tool_args))
                 output_hash = _hash_tool_result(tool_result)
-                action_signature = f"{step.tool_name}:{_json_dumps(step.tool_args)}:{output_hash}"
-                if loop_detector.update(action_signature, state.state_fingerprint()):
-                        if self.planner_cfg.mode == "react" and not loop_nudge_used:
-                            exploration_nudge_next = True
-                            exploration_reason = "loop_detected"
-                            loop_nudge_used = True
-                        else:
-                            return self._stop(
-                                tracer=tracer,
-                                memory_store=memory_store,
-                                success=False,
-                                reason="loop_detected",
-                                steps=steps_executed,
-                                run_id=run_id,
-                                llm_stats=tracked_llm,
-                                task=task,
-                                state=state,
-                                run_dir=run_dir,
-                                started_at=started_at,
-                                started_monotonic=start,
-                                error_data={"signature": action_signature},
-                            )
+                signature = {
+                    "tool_name": step.tool_name,
+                    "args_hash": args_hash,
+                    "output_hash": output_hash,
+                }
+                if loop_detector.update(step.tool_name, args_hash, output_hash):
+                    if self.planner_cfg.mode == "react" and not loop_nudge_used:
+                        exploration_nudge_next = True
+                        exploration_reason = "loop_detected"
+                        loop_nudge_used = True
+                    else:
+                        _write_loop_detected(
+                            run_dir,
+                            signature=signature,
+                            output_summary=_summarize_output(tool_result.output),
+                            window=self.cfg.loop_window,
+                            repeat_threshold=self.cfg.loop_repeat_threshold,
+                        )
+                        return self._stop(
+                            tracer=tracer,
+                            memory_store=memory_store,
+                            success=False,
+                            reason="loop_detected",
+                            steps=steps_executed,
+                            run_id=run_id,
+                            llm_stats=tracked_llm,
+                            task=task,
+                            state=state,
+                            run_dir=run_dir,
+                            started_at=started_at,
+                            started_monotonic=start,
+                            error_data={
+                                "signature": signature,
+                                "output_summary": _summarize_output(tool_result.output),
+                            },
+                        )
 
                 if step.tool_name == "finish" and tool_result.success:
                     return self._stop(

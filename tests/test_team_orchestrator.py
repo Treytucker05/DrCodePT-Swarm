@@ -76,7 +76,7 @@ def test_orchestrator_loop_detection_switches_to_research(tmp_path):
             super().__init__()
             self.called = 0
 
-        def update(self, action_signature: str, state_fingerprint: str) -> bool:  # noqa: ARG002
+        def update(self, tool_name: str, args_hash: str, output_hash: str) -> bool:  # noqa: ARG002
             self.called += 1
             return self.called == 1
 

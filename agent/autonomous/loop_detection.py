@@ -9,17 +9,16 @@ from typing import Deque, Tuple
 class LoopDetector:
     window: int = 8
     repeat_threshold: int = 3
-    _recent: Deque[Tuple[str, str]] = field(default_factory=deque)
+    _recent: Deque[Tuple[str, str, str]] = field(default_factory=deque)
 
-    def update(self, action_signature: str, state_fingerprint: str) -> bool:
+    def update(self, tool_name: str, args_hash: str, output_hash: str) -> bool:
         """
         Returns True if a loop is detected:
-          repeated same (action_signature, state_fingerprint) >= repeat_threshold within the window.
+          repeated same (tool_name, args_hash, output_hash) >= repeat_threshold within the window.
         """
-        self._recent.append((action_signature, state_fingerprint))
+        signature = (tool_name, args_hash, output_hash)
+        self._recent.append(signature)
         while len(self._recent) > self.window:
             self._recent.popleft()
-
-        count = sum(1 for a, s in self._recent if a == action_signature and s == state_fingerprint)
+        count = sum(1 for entry in self._recent if entry == signature)
         return count >= self.repeat_threshold
-
