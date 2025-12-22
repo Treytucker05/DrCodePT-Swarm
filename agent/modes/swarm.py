@@ -20,6 +20,8 @@ from agent.autonomous.isolation import (
     remove_worktree,
     sanitize_branch_name,
 )
+from agent.autonomous.qa import QaResult, format_qa_summary, validate_artifacts
+import subprocess
 from agent.autonomous.manifest import write_run_manifest
 from agent.autonomous.repo_scan import is_repo_review_task
 from agent.config.profile import resolve_profile
@@ -245,6 +247,28 @@ def _expected_artifacts_for(subtask: Subtask) -> List[str]:
     if "a_findings" in goal or subtask.id.strip().upper() == "A":
         expected.append("A_findings.json")
     return list(dict.fromkeys(expected))
+
+
+def _should_run_tests(objective: str, subtasks: Iterable[Subtask]) -> bool:
+    text = (objective or "").lower()
+    keywords = (
+        "implement",
+        "refactor",
+        "fix",
+        "change",
+        "modify",
+        "update",
+        "code",
+        "add",
+        "remove",
+    )
+    if any(k in text for k in keywords):
+        return True
+    for sub in subtasks:
+        goal = sub.goal.lower()
+        if any(k in goal for k in keywords):
+            return True
+    return False
 
 
 def _build_reduced_goal(
@@ -580,6 +604,30 @@ def mode_swarm(
             if summary:
                 print("\n[SWARM] Summary:")
                 print(summary)
+
+    # QA validation
+    qa_results: Dict[str, QaResult] = {}
+    for subtask, _status, _stop_reason, sub_run_dir in results:
+        expected = _expected_artifacts_for(subtask)
+        qa_results[subtask.id] = validate_artifacts(sub_run_dir, expected)
+
+    test_result: Optional[Dict[str, Any]] = None
+    if _bool_env("SWARM_QA_RUN_TESTS", False) and _should_run_tests(objective, subtasks):
+        cmd = os.getenv("SWARM_QA_COMMAND") or "python -m pytest -q"
+        proc = subprocess.run(cmd, shell=True, cwd=str(repo_root), capture_output=True, text=True)
+        stdout_tail = (proc.stdout or "").splitlines()[-10:]
+        stderr_tail = (proc.stderr or "").splitlines()[-10:]
+        message = " ".join(stdout_tail[-2:] + stderr_tail[-2:]).strip()
+        test_result = {
+            "ok": proc.returncode == 0,
+            "command": cmd,
+            "returncode": proc.returncode,
+            "message": message or f"exit {proc.returncode}",
+        }
+
+    print("\n[SWARM] QA Summary:")
+    for line in format_qa_summary(qa_results, test_result):
+        print(line)
 
     print(f"[SWARM] Run folder: {run_root}")
 
