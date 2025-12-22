@@ -27,6 +27,7 @@ from agent.preflight.clarify import ClarifyResult, run_clarifier
 from agent.autonomous.repo_scan import is_repo_review_task
 from agent.config.profile import resolve_profile
 from agent.autonomous.runner import AgentRunner
+from agent.autonomous.task_orchestrator import TaskOrchestrator
 from agent.llm import CodexCliAuthError, CodexCliClient, CodexCliNotFoundError
 from agent.llm import schemas as llm_schemas
 
@@ -569,6 +570,7 @@ def mode_swarm(
     status_by_id: Dict[str, str] = {}
     subtasks_by_id: Dict[str, Subtask] = {s.id: s for s in subtasks}
     worktrees_by_id: Dict[str, WorktreeInfo] = {}
+    orchestrator = TaskOrchestrator()
 
     while remaining:
         ready = [s for s in remaining.values() if all(d in completed for d in s.depends_on)]
@@ -578,7 +580,7 @@ def mode_swarm(
         with ThreadPoolExecutor(max_workers=workers) as executor:
             future_map: Dict[Any, tuple[Subtask, Path]] = {}
             for s in ready:
-                dep_failures = [d for d in s.depends_on if status_by_id.get(d) == "failed"]
+                _reduce, dep_failures = orchestrator.should_reduce(s.depends_on, status_by_id)
                 subtask = s
                 if dep_failures:
                     reduced_goal = _build_reduced_goal(
