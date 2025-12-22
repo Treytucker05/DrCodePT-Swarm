@@ -97,13 +97,7 @@ def _choose_planner_mode(task: str) -> str:
 
 
 def _default_allowed_roots(repo_root: Path) -> Tuple[Path, ...]:
-    userprofile = os.getenv("USERPROFILE") or ""
-    roots: list[Path] = []
-    if userprofile:
-        roots.append(Path(userprofile) / "Desktop")
-        roots.append(Path(userprofile) / "OneDrive" / "Desktop")
-    roots.append(repo_root)
-    return tuple(roots)
+    return (repo_root,)
 
 
 def _build_agent_cfg(repo_root: Path, *, unsafe_mode: bool, profile_name: str | None) -> AgentConfig:

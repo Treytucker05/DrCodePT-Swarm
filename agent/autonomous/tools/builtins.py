@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import time
+import shlex
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +30,10 @@ from .registry import ToolRegistry, ToolSpec
 # Lightweight in-memory sessions for GUI tools (keyed by run_id).
 _WEB_SESSIONS: Dict[str, Dict[str, Any]] = {}
 _DESKTOP_SOM_STATE: Dict[str, Dict[str, Any]] = {}
+
+_SAFE_SHELL_COMMANDS = {"rg", "git", "python", "py", "pytest"}
+_BLOCKED_SHELL_TOKENS = {"rm", "del", "erase", "format", "mkfs", "shutdown", "reboot"}
+_BLOCKED_SHELL_CHARS = {"&&", "||", ";", "|", ">", "<"}
 
 
 def _label_id(idx: int) -> str:
@@ -82,6 +87,39 @@ def _cap_results(value: int, cap: Optional[int]) -> int:
     return min(value, cap)
 
 
+def _command_root(command: str) -> str:
+    try:
+        parts = shlex.split(command, posix=False)
+    except Exception:
+        parts = command.strip().split()
+    if not parts:
+        return ""
+    token = parts[0]
+    name = Path(token).name.lower()
+    for ext in (".exe", ".cmd", ".bat"):
+        if name.endswith(ext):
+            name = name[: -len(ext)]
+    return name
+
+
+def _shell_allowed(command: str, *, unsafe_mode: bool) -> tuple[bool, str]:
+    if unsafe_mode:
+        return True, ""
+    if not command or not command.strip():
+        return False, "empty command"
+    lowered = command.lower()
+    if any(ch in lowered for ch in _BLOCKED_SHELL_CHARS):
+        return False, "chaining/pipes not allowed"
+    if "http://" in lowered or "https://" in lowered:
+        return False, "commands containing URLs are blocked by default"
+    root = _command_root(command)
+    if root in _BLOCKED_SHELL_TOKENS:
+        return False, f"blocked command: {root}"
+    if root not in _SAFE_SHELL_COMMANDS:
+        return False, f"command not allowlisted: {root or 'unknown'}"
+    return True, ""
+
+
 class WebFetchArgs(BaseModel):
     url: str
     timeout_seconds: int = 15
@@ -122,10 +160,12 @@ def web_fetch(ctx: RunContext, args: WebFetchArgs) -> ToolResult:
                 "status_code": resp.status_code,
                 "headers": dict(resp.headers),
                 "text": text,
+                "untrusted": True,
             },
+            metadata={"untrusted": True},
         )
     except requests.RequestException as exc:
-        return ToolResult(success=False, error=str(exc), retryable=True)
+        return ToolResult(success=False, error=str(exc), retryable=True, metadata={"untrusted": True})
 
 
 class WebSearchArgs(BaseModel):
@@ -191,7 +231,7 @@ def web_search(ctx: RunContext, args: WebSearchArgs) -> ToolResult:
         last_error = str(exc)
 
     if last_error:
-        return ToolResult(success=False, error=last_error, retryable=True)
+        return ToolResult(success=False, error=last_error, retryable=True, metadata={"untrusted": True})
 
     link_re = re.compile(r'<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', re.S)
     snippet_re = re.compile(r'class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</(?:a|div|span|p)>', re.S)
@@ -225,7 +265,9 @@ def web_search(ctx: RunContext, args: WebSearchArgs) -> ToolResult:
                 "results": results,
                 "source": "duckduckgo_html",
                 "warning": "no_results",
+                "untrusted": True,
             },
+            metadata={"untrusted": True},
         )
     return ToolResult(
         success=True,
@@ -236,7 +278,9 @@ def web_search(ctx: RunContext, args: WebSearchArgs) -> ToolResult:
             "results": results,
             "source": "duckduckgo_html",
             "warning": warning,
+            "untrusted": True,
         },
+        metadata={"untrusted": True},
     )
 
 
@@ -1008,9 +1052,23 @@ class ShellExecArgs(BaseModel):
 def shell_exec_factory(agent_cfg: AgentConfig):
     def shell_exec(ctx: RunContext, args: ShellExecArgs) -> ToolResult:
         try:
+            allowed, reason = _shell_allowed(args.command, unsafe_mode=agent_cfg.unsafe_mode)
+            if not allowed:
+                return ToolResult(
+                    success=False,
+                    error=f"shell_exec blocked: {reason}",
+                    metadata={"unsafe_blocked": True, "command": args.command},
+                )
+            cwd = args.cwd or str(ctx.workspace_dir)
+            if not _fs_allowed(Path(cwd), agent_cfg, ctx):
+                return ToolResult(
+                    success=False,
+                    error=f"shell_exec blocked outside allowed roots: {cwd}",
+                    metadata={"unsafe_blocked": True, "cwd": cwd},
+                )
             proc = subprocess.run(
                 args.command,
-                cwd=args.cwd or str(ctx.workspace_dir),
+                cwd=cwd,
                 capture_output=True,
                 text=True,
                 timeout=args.timeout_seconds,
@@ -1079,10 +1137,12 @@ def web_gui_snapshot(ctx: RunContext, args: WebGuiSnapshotArgs) -> ToolResult:
                 "accessibility_tree": a11y,
                 "html_preview": html[:4000],
                 "screenshot": screenshot_path,
+                "untrusted": True,
             },
+            metadata={"untrusted": True},
         )
     except Exception as exc:
-        return ToolResult(success=False, error=str(exc), retryable=True)
+        return ToolResult(success=False, error=str(exc), retryable=True, metadata={"untrusted": True})
 
 
 def _get_web_session(ctx: RunContext, *, headless: Optional[bool] = None) -> Dict[str, Any]:

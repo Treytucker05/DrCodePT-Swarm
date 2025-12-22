@@ -120,6 +120,11 @@ def _append_sources_section(markdown: str) -> str:
     return base.rstrip() + section
 
 
+def _has_citations(text: str) -> bool:
+    lowered = text.lower()
+    return "http://" in lowered or "https://" in lowered
+
+
 def _log_event(log: list[str], kind: str, message: str) -> None:
     ts = datetime.now().strftime("%H:%M:%S")
     log.append(f"{ts} [{kind}] {message}")
@@ -803,6 +808,10 @@ Instructions:
         return
 
     findings_body = findings
+    if not _has_citations(findings_body):
+        warn = "Citations missing; include raw URLs for sources."
+        _log_event(log, "WARN", warn)
+        findings_body = f"{findings_body}\n\n[WARN] {warn}"
     findings_with_sources = _append_sources_section(findings_body)
     print(f"\n{CYAN}[FINDINGS]{RESET}\n{findings_with_sources}")
 
@@ -825,6 +834,10 @@ Do additional research and answer this follow-up. Include citations as raw URLs.
         if more.startswith("[CODEX ERROR]"):
             print(f"{RED}{more}{RESET}")
             continue
+        if not _has_citations(more):
+            warn = "Citations missing; include raw URLs for sources."
+            _log_event(log, "WARN", warn)
+            more = f"{more}\n\n[WARN] {warn}"
         print(f"\n{CYAN}[MORE]{RESET}\n{more}")
         findings_body += f"\n\n{more}"
 

@@ -15,6 +15,10 @@ class Perceptor:
             if parsed is None:
                 parsed = {}
             parsed["ui_snapshot"] = result.metadata.get("ui_snapshot")
+        if isinstance(result.metadata, dict) and result.metadata.get("untrusted"):
+            if parsed is None:
+                parsed = {}
+            parsed["untrusted"] = True
         salient = []
         if result.success:
             salient.append(f"{tool_name} succeeded")

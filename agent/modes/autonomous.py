@@ -115,13 +115,8 @@ def mode_autonomous(task: str, *, unsafe_mode: bool = False) -> None:
     if planner_mode not in {"react", "plan_first"}:
         planner_mode = "react"
 
-    # Default allowed roots: Desktop (including OneDrive Desktop if present) + repo root.
-    userprofile = os.getenv("USERPROFILE") or ""
-    desktop_default = []
-    if userprofile:
-        desktop_default.append(Path(userprofile) / "Desktop")
-        desktop_default.append(Path(userprofile) / "OneDrive" / "Desktop")
-    desktop_default.append(REPO_ROOT)
+    # Default allowed roots: repo root only (run_dir/workspace are always allowed).
+    desktop_default = [REPO_ROOT]
 
     fs_anywhere = _bool_env("AUTO_FS_ANYWHERE", False)
     raw_roots = os.getenv("AUTO_FS_ALLOWED_ROOTS", "").strip()

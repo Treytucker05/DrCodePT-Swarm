@@ -248,15 +248,15 @@ class TestAgentRunnerIntegration:
         assert any("42" in r.content for r in results)
 
     def test_shell_execution(self, tmp_path: Path) -> None:
-        """Agent should be able to execute shell commands."""
+        """Agent should be able to execute allowlisted shell commands."""
         llm = StubLLM(responses=[
             {
                 "goal": "run command",
                 "steps": [{
                     "id": "step1",
-                    "goal": "echo test",
+                    "goal": "python test",
                     "tool_name": "shell_exec",
-                    "tool_args": [{"key": "command", "value": "echo hello_shell"}],
+                    "tool_args": [{"key": "command", "value": "python -c \"print('hello_shell')\""}],
                 }]
             },
             {"status": "success", "explanation_short": "echoed", "next_hint": ""},
@@ -272,7 +272,7 @@ class TestAgentRunnerIntegration:
             {"status": "success", "explanation_short": "done", "next_hint": ""},
         ])
 
-        result = self._run_agent(tmp_path, llm, "Run echo command")
+        result = self._run_agent(tmp_path, llm, "Run python command")
 
         assert result.success
         assert result.steps_executed == 2

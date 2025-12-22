@@ -41,13 +41,7 @@ def _split_paths(raw: str) -> list[Path]:
 
 
 def _default_allowed_roots(repo_root: Path) -> tuple[Path, ...]:
-    userprofile = os.getenv("USERPROFILE") or ""
-    roots: list[Path] = []
-    if userprofile:
-        roots.append(Path(userprofile) / "Desktop")
-        roots.append(Path(userprofile) / "OneDrive" / "Desktop")
-    roots.append(repo_root)
-    return tuple(roots)
+    return (repo_root,)
 
 
 def _iter_checkpoints(root: Path) -> list[Path]:
