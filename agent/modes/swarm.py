@@ -12,6 +12,7 @@ from uuid import uuid4
 import traceback
 
 from agent.autonomous.config import AgentConfig, PlannerConfig, RunnerConfig
+from agent.autonomous.repo_scan import is_repo_review_task
 from agent.config.profile import resolve_profile
 from agent.autonomous.runner import AgentRunner
 from agent.llm import CodexCliAuthError, CodexCliClient, CodexCliNotFoundError
@@ -180,6 +181,28 @@ def _decompose(llm: CodexCliClient, objective: str, *, max_items: int) -> List[S
     return items
 
 
+def _ensure_repo_scan_subtask(subtasks: List[Subtask], *, objective: str, max_items: int) -> None:
+    if not is_repo_review_task(objective):
+        return
+    repo_goal = (
+        "Stage A: use repo_index.json and repo_map.json in this run directory. "
+        "Only read files listed in repo_map.json (no broad globbing). "
+        "Write A_findings.json summarizing repo structure, key files, and risks."
+    )
+    a_task = next((s for s in subtasks if s.id.strip().upper() == "A"), None)
+    if a_task is None:
+        if len(subtasks) < max_items:
+            subtasks.insert(0, Subtask(id="A", goal=repo_goal, depends_on=[], notes=""))
+            return
+        a_task = subtasks[0]
+        old_id = a_task.id
+        a_task.id = "A"
+        for s in subtasks[1:]:
+            s.depends_on = ["A" if d == old_id else d for d in s.depends_on]
+    if repo_goal not in a_task.goal:
+        a_task.goal = f"{repo_goal}\n\n{a_task.goal}".strip()
+
+
 def _trace_tail(trace_path: str, *, max_lines: int = 200) -> List[dict]:
     try:
         path = Path(trace_path)
@@ -284,6 +307,7 @@ def mode_swarm(objective: str, *, unsafe_mode: bool = False, profile: str | None
 
         mode_autonomous(objective, unsafe_mode=unsafe_mode)
         return
+    _ensure_repo_scan_subtask(subtasks, objective=objective, max_items=max_subtasks)
 
     print(f"\n[SWARM] Objective: {objective}")
     print(f"[SWARM] Subtasks: {len(subtasks)} | Workers: {workers}")

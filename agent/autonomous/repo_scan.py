@@ -28,6 +28,27 @@ class RepoFile:
     description: str = ""
 
 
+@dataclass
+class RepoScanner:
+    repo_root: Path
+    run_dir: Path
+    max_results: int
+    profile: ProfileConfig
+    usage: Optional[RunUsage] = None
+
+    def index(self) -> List[RepoFile]:
+        return build_repo_index(self.repo_root, run_dir=self.run_dir, max_results=self.max_results)
+
+    def map(self, repo_files: Optional[Iterable[RepoFile]] = None) -> List[RepoFile]:
+        files = repo_files if repo_files is not None else self.index()
+        return build_repo_map(files, run_dir=self.run_dir, profile=self.profile, usage=self.usage)
+
+    def scan(self) -> Tuple[List[RepoFile], List[RepoFile]]:
+        index = self.index()
+        repo_map = build_repo_map(index, run_dir=self.run_dir, profile=self.profile, usage=self.usage)
+        return index, repo_map
+
+
 def _is_skipped(path: Path) -> bool:
     return any(part in _SKIP_DIRS for part in path.parts)
 

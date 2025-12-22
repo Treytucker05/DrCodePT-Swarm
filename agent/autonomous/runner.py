@@ -155,16 +155,18 @@ class AgentRunner:
 
         if profile and profile.stage_checkpoints:
             try:
-                from .repo_scan import build_repo_index, build_repo_map, is_repo_review_task
+                from .repo_scan import RepoScanner, is_repo_review_task
 
                 if is_repo_review_task(task):
                     repo_root = Path(__file__).resolve().parents[2]
-                    index = build_repo_index(
-                        repo_root,
+                    scanner = RepoScanner(
+                        repo_root=repo_root,
                         run_dir=run_dir,
                         max_results=profile.max_glob_results,
+                        profile=profile,
+                        usage=usage,
                     )
-                    repo_map = build_repo_map(index, run_dir=run_dir, profile=profile, usage=usage)
+                    index, repo_map = scanner.scan()
                     tracer.log(
                         {
                             "type": "checkpoint",
