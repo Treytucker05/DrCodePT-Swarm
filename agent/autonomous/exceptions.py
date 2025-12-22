@@ -10,9 +10,17 @@ class AgentException(Exception):
         message: Human-readable error message.
         context: Optional contextual metadata.
         original_exception: The underlying exception, if any.
+        data: Structured details for logging or diagnostics.
 
     Example:
-        >>> raise AgentException("failed", context={"step": "plan"}, original_exception=RuntimeError("boom"))
+        >>> try:
+        ...     raise RuntimeError("boom")
+        ... except RuntimeError as exc:
+        ...     raise AgentException(
+        ...         "failed",
+        ...         context={"step": "plan"},
+        ...         original_exception=exc,
+        ...     )
     """
 
     def __init__(
@@ -25,6 +33,7 @@ class AgentException(Exception):
         cause: Optional[BaseException] = None,
     ):
         super().__init__(message)
+        self.message = message
         self.context = context or {}
         self.original_exception = original_exception or cause
         self.data = data or {}
@@ -33,6 +42,11 @@ class AgentException(Exception):
 
 class ToolExecutionError(AgentException):
     """Raised when a tool call fails.
+
+    Attributes:
+        tool_name: Name of the tool that failed.
+        context: Optional contextual metadata.
+        original_exception: The underlying exception, if any.
 
     Example:
         >>> raise ToolExecutionError("file_read", "permission denied")
@@ -111,6 +125,9 @@ class ReflectionError(AgentException):
 
 class InteractionRequiredError(AgentException):
     """Raised when a human interaction is required but disallowed.
+
+    Attributes:
+        questions: Optional list of questions that require user input.
 
     Example:
         >>> raise InteractionRequiredError(questions=["Which file?"])

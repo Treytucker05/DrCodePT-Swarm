@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -34,6 +35,8 @@ from .tools.registry import ToolRegistry
 from .trace import JsonlTracer
 from .retry_utils import LLM_RETRY_CONFIG, TOOL_RETRY_CONFIG, retry_with_backoff
 from .monitoring import ResourceMonitor
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_ts_id() -> str:
@@ -113,7 +116,20 @@ class TrackedLLM:
     def complete_json(self, prompt: str, *, schema_path: Path, timeout_seconds: Optional[int] = None) -> Dict[str, Any]:
         if timeout_seconds is None and self.default_timeout_seconds is not None:
             timeout_seconds = self.default_timeout_seconds
-        out = self._llm.complete_json(prompt, schema_path=schema_path, timeout_seconds=timeout_seconds)
+        def _attempt():
+            return self._llm.complete_json(
+                prompt, schema_path=schema_path, timeout_seconds=timeout_seconds
+            )
+
+        def _on_retry(exc: Exception, attempt: int, delay: float) -> None:
+            logger.warning(
+                "LLM complete_json retry attempt=%d delay=%.2f error=%s",
+                attempt,
+                delay,
+                exc,
+            )
+
+        out = retry_with_backoff(_attempt, config=LLM_RETRY_CONFIG, on_retry=_on_retry)
         self.calls += 1
         out_str = json.dumps(out, ensure_ascii=False, sort_keys=True, default=str)
         chars = len(prompt) + len(out_str)
@@ -126,13 +142,29 @@ class TrackedLLM:
     def reason_json(self, prompt: str, *, schema_path: Path, timeout_seconds: Optional[int] = None) -> Dict[str, Any]:
         if timeout_seconds is None and self.default_timeout_seconds is not None:
             timeout_seconds = self.default_timeout_seconds
-        # Prefer a dedicated reasoning method if available.
-        if hasattr(self._llm, "reason_json"):
-            out = self._llm.reason_json(prompt, schema_path=schema_path, timeout_seconds=timeout_seconds)  # type: ignore[attr-defined]
-        elif hasattr(self._llm, "complete_reasoning"):
-            out = self._llm.complete_reasoning(prompt, schema_path=schema_path, timeout_seconds=timeout_seconds)  # type: ignore[attr-defined]
-        else:
-            out = self._llm.complete_json(prompt, schema_path=schema_path, timeout_seconds=timeout_seconds)
+        def _attempt():
+            # Prefer a dedicated reasoning method if available.
+            if hasattr(self._llm, "reason_json"):
+                return self._llm.reason_json(
+                    prompt, schema_path=schema_path, timeout_seconds=timeout_seconds
+                )  # type: ignore[attr-defined]
+            if hasattr(self._llm, "complete_reasoning"):
+                return self._llm.complete_reasoning(
+                    prompt, schema_path=schema_path, timeout_seconds=timeout_seconds
+                )  # type: ignore[attr-defined]
+            return self._llm.complete_json(
+                prompt, schema_path=schema_path, timeout_seconds=timeout_seconds
+            )
+
+        def _on_retry(exc: Exception, attempt: int, delay: float) -> None:
+            logger.warning(
+                "LLM reason_json retry attempt=%d delay=%.2f error=%s",
+                attempt,
+                delay,
+                exc,
+            )
+
+        out = retry_with_backoff(_attempt, config=LLM_RETRY_CONFIG, on_retry=_on_retry)
         self.calls += 1
         out_str = json.dumps(out, ensure_ascii=False, sort_keys=True, default=str)
         chars = len(prompt) + len(out_str)
@@ -208,6 +240,11 @@ class AgentRunner:
                 trace_path=str(Path(run_dir / "trace.jsonl")),
             )
 
+    def __del__(self) -> None:
+        store = getattr(self, "_active_memory_store", None) or self.memory_store
+        if store is not None:
+            store.close()
+
     def _run_impl(
         self,
         task: str,
@@ -242,16 +279,24 @@ class AgentRunner:
 
         # trace.jsonl/result.json are the authoritative execution artifacts; stdout is for humans.
         tracer = JsonlTracer(run_dir / "trace.jsonl")
-        monitor = ResourceMonitor()
+        monitor = ResourceMonitor(
+            log_interval_s=0.0,
+            health_check_steps=10,
+            max_observations=1000,
+            keep_last_observations=1000,
+        )
         perceptor = Perceptor()
         llm = self.llm
         try:
             from agent.llm.codex_cli_client import CodexCliClient
-
+        except ImportError as exc:
+            logger.info("CodexCliClient unavailable: %s", exc)
+        else:
             if isinstance(llm, CodexCliClient):
-                llm = llm.with_context(workdir=repo_root, log_dir=run_dir)
-        except Exception:
-            pass
+                try:
+                    llm = llm.with_context(workdir=repo_root, log_dir=run_dir)
+                except (OSError, RuntimeError, ValueError) as exc:
+                    logger.warning("CodexCliClient context setup failed: %s", exc)
         tracked_llm = TrackedLLM(llm)
         reflector = Reflector(llm=tracked_llm, pre_mortem_enabled=self.agent_cfg.pre_mortem_enabled)
 
@@ -283,6 +328,7 @@ class AgentRunner:
                 tracer.log({"type": "checkpoint_error", "name": "repo_scan", "error": str(exc)})
 
         memory_store = self.memory_store or self._open_default_memory_store()
+        self._active_memory_store = memory_store
         tools = self.tools or build_default_tool_registry(self.agent_cfg, run_dir, memory_store=memory_store)
         tool_summary = ""
         if self.cfg.llm_heartbeat_seconds:
@@ -444,6 +490,30 @@ class AgentRunner:
 
                 self._maybe_compact_state(state, tracked_llm, tracer)
                 monitor.tick(step_index=steps_executed, state=state, tracer=tracer)
+                if steps_executed % 10 == 0:
+                    metrics = monitor.get_metrics()
+                    if not monitor.check_health(metrics):
+                        tracer.log(
+                            {
+                                "type": "resource",
+                                "kind": "health_limit",
+                                "metrics": metrics.to_dict(),
+                            }
+                        )
+                        return self._stop(
+                            tracer=tracer,
+                            memory_store=memory_store,
+                            success=False,
+                            reason="resource_limits",
+                            steps=steps_executed,
+                            run_id=run_id,
+                            llm_stats=tracked_llm,
+                            task=task,
+                            state=state,
+                            run_dir=run_dir,
+                            started_at=started_at,
+                            started_monotonic=start,
+                        )
 
                 extra_queries: List[str] = []
                 if state.rolling_summary:
@@ -817,6 +887,8 @@ class AgentRunner:
 
                 obs = perceptor.tool_result_to_observation(step.tool_name, tool_result)
                 state.add_observation(obs)
+                if len(state.observations) > 1000:
+                    state.observations = state.observations[-1000:]
                 self._save_checkpoint(
                     run_dir,
                     state=state,
@@ -1279,6 +1351,9 @@ class AgentRunner:
             )
         except ToolExecutionError:
             return last or ToolResult(success=False, error="tool_failed")
+        except (RuntimeError, ValueError, OSError, TypeError) as exc:
+            logger.error("Tool execution raised %s: %s", type(exc).__name__, exc)
+            return last or ToolResult(success=False, error=str(exc))
 
     def _check_conditions(
         self,
@@ -1361,8 +1436,10 @@ class AgentRunner:
                 result = tools.call("desktop_som_snapshot", {}, ctx)
                 obs = Perceptor().tool_result_to_observation("desktop_som_snapshot", result)
                 tracer.log({"type": "recovery", "tool": "desktop_som_snapshot", "result": self._dump(result)})
-            except Exception as e:
-                tracer.log({"type": "recovery_failed", "tool": "desktop_som_snapshot", "error": str(e)})
+            except (RuntimeError, ValueError, OSError, TypeError) as exc:
+                tracer.log(
+                    {"type": "recovery_failed", "tool": "desktop_som_snapshot", "error": str(exc)}
+                )
         if tools.has_tool("desktop"):
             try:
                 # Gentle exploration: scroll a bit and rescan.
@@ -1370,8 +1447,8 @@ class AgentRunner:
                 result = tools.call("desktop", {"action": "hotkey", "params": {"keys": ["alt", "tab"]}}, ctx)
                 obs = Perceptor().tool_result_to_observation("desktop", result)
                 tracer.log({"type": "recovery", "tool": "desktop", "result": self._dump(result)})
-            except Exception as e:
-                tracer.log({"type": "recovery_failed", "tool": "desktop", "error": str(e)})
+            except (RuntimeError, ValueError, OSError, TypeError) as exc:
+                tracer.log({"type": "recovery_failed", "tool": "desktop", "error": str(exc)})
         return obs
 
     def _tool_category(self, tool_name: str) -> Optional[str]:

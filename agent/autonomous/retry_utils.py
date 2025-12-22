@@ -11,8 +11,14 @@ T = TypeVar("T")
 class RetryConfig:
     """Configuration for retry behavior.
 
+    Args:
+        max_attempts: Maximum number of attempts.
+        initial_delay_s: Initial delay in seconds (alias: initial_delay).
+        max_delay_s: Max delay in seconds (alias: max_delay).
+        backoff_factor: Exponential backoff multiplier.
+
     Example:
-        >>> RetryConfig(max_attempts=3, initial_delay_s=1.0, max_delay_s=5.0)
+        >>> RetryConfig(max_attempts=3, initial_delay=1.0, max_delay=5.0)
     """
 
     max_attempts: int = 3
@@ -20,7 +26,46 @@ class RetryConfig:
     max_delay_s: float = 5.0
     backoff_factor: float = 2.0
 
+    def __init__(
+        self,
+        max_attempts: int = 3,
+        initial_delay_s: Optional[float] = None,
+        max_delay_s: Optional[float] = None,
+        backoff_factor: float = 2.0,
+        *,
+        initial_delay: Optional[float] = None,
+        max_delay: Optional[float] = None,
+    ) -> None:
+        if initial_delay_s is None:
+            initial_delay_s = 1.0 if initial_delay is None else float(initial_delay)
+        elif initial_delay is not None and float(initial_delay_s) != float(initial_delay):
+            raise ValueError("initial_delay and initial_delay_s must match")
+        if max_delay_s is None:
+            max_delay_s = 5.0 if max_delay is None else float(max_delay)
+        elif max_delay is not None and float(max_delay_s) != float(max_delay):
+            raise ValueError("max_delay and max_delay_s must match")
+        object.__setattr__(self, "max_attempts", int(max_attempts))
+        object.__setattr__(self, "initial_delay_s", float(initial_delay_s))
+        object.__setattr__(self, "max_delay_s", float(max_delay_s))
+        object.__setattr__(self, "backoff_factor", float(backoff_factor))
+
+    @property
+    def initial_delay(self) -> float:
+        return self.initial_delay_s
+
+    @property
+    def max_delay(self) -> float:
+        return self.max_delay_s
+
     def with_overrides(self, **kwargs: Any) -> "RetryConfig":
+        if "initial_delay" in kwargs:
+            if "initial_delay_s" in kwargs and kwargs["initial_delay"] != kwargs["initial_delay_s"]:
+                raise ValueError("initial_delay and initial_delay_s must match")
+            kwargs["initial_delay_s"] = kwargs.pop("initial_delay")
+        if "max_delay" in kwargs:
+            if "max_delay_s" in kwargs and kwargs["max_delay"] != kwargs["max_delay_s"]:
+                raise ValueError("max_delay and max_delay_s must match")
+            kwargs["max_delay_s"] = kwargs.pop("max_delay")
         return RetryConfig(**{**self.__dict__, **kwargs})
 
 

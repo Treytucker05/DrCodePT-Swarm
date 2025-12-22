@@ -1,14 +1,16 @@
 from __future__ import annotations
-
+import logging
 import textwrap
 from typing import Any, Optional
-
 from agent.llm.base import LLMClient
 from agent.llm import schemas as llm_schemas
-
+from agent.llm.errors import LLMError as ProviderLLMError
+from .exceptions import LLMError, ReflectionError
 from .jsonio import dumps_compact
 from .models import Observation, Reflection, Step, ToolResult
 from .pydantic_compat import model_validate
+
+logger = logging.getLogger(__name__)
 
 
 class Reflector:
@@ -38,8 +40,19 @@ class Reflector:
         ).strip()
         try:
             return self._llm.reason_json(prompt, schema_path=llm_schemas.PREMORTEM)
-        except Exception:
-            # Don't block execution on pre-mortem failures.
+        except TimeoutError as exc:
+            logger.warning("Pre-mortem timed out: %s", exc)
+            return None
+        except (LLMError, ProviderLLMError) as exc:
+            logger.warning("Pre-mortem LLM error: %s", exc)
+            return None
+        except Exception as exc:
+            err = ReflectionError(
+                "pre_mortem failed",
+                context={"task": task, "step_id": step.id},
+                original_exception=exc,
+            )
+            logger.exception("Pre-mortem failed: %s", err)
             return None
 
     def reflect(
@@ -84,7 +97,17 @@ class Reflector:
         try:
             data = self._llm.reason_json(prompt, schema_path=llm_schemas.REFLECTION)
             return model_validate(Reflection, data)
-        except Exception:
-            if tool_result.success:
-                return Reflection(status="success", explanation_short="Tool succeeded.", next_hint="")
-            return Reflection(status="replan", explanation_short="Tool failed.", next_hint=tool_result.error or "")
+        except TimeoutError as exc:
+            logger.warning("Reflection timed out: %s", exc)
+        except (LLMError, ProviderLLMError) as exc:
+            logger.warning("Reflection LLM error: %s", exc)
+        except Exception as exc:
+            err = ReflectionError(
+                "reflection failed",
+                context={"task": task, "step_id": step.id},
+                original_exception=exc,
+            )
+            logger.exception("Reflection failed: %s", err)
+        if tool_result.success:
+            return Reflection(status="success", explanation_short="Tool succeeded.", next_hint="")
+        return Reflection(status="replan", explanation_short="Tool failed.", next_hint=tool_result.error or "")

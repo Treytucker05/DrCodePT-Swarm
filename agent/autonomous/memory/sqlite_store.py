@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -11,11 +12,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
+logger = logging.getLogger(__name__)
+
 try:  # optional
     import faiss  # type: ignore
 
     _FAISS_AVAILABLE = True
-except Exception:  # pragma: no cover - optional dependency
+except ImportError as exc:  # pragma: no cover - optional dependency
+    logger.info("faiss not installed; vector search disabled: %s", exc)
+    faiss = None  # type: ignore[assignment]
+    _FAISS_AVAILABLE = False
+except Exception as exc:  # pragma: no cover - optional dependency
+    logger.warning("faiss import failed: %s", exc)
     faiss = None  # type: ignore[assignment]
     _FAISS_AVAILABLE = False
 
@@ -56,7 +64,12 @@ def _load_sentence_transformer():
         return _ST_MODEL
     try:
         from sentence_transformers import SentenceTransformer
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        logger.info("sentence-transformers not installed; using hash embeddings: %s", exc)
+        _ST_LOAD_ERROR = exc
+        return None
     except Exception as exc:  # pragma: no cover - optional dependency
+        logger.warning("sentence-transformers import failed: %s", exc)
         _ST_LOAD_ERROR = exc
         return None
     model_name = (os.getenv(_EMBED_ENV_VAR) or _DEFAULT_EMBED_MODEL).strip()
@@ -69,7 +82,12 @@ def _load_sentence_transformer():
             _ST_MODEL_DIM = int(_ST_MODEL.get_sentence_embedding_dimension())
         except Exception:
             _ST_MODEL_DIM = None
-    except Exception as exc:  # pragma: no cover - model download/load failure
+    except (OSError, RuntimeError, ValueError) as exc:  # pragma: no cover - model download/load failure
+        logger.warning("SentenceTransformer model load failed for '%s': %s", model_name, exc)
+        _ST_LOAD_ERROR = exc
+        _ST_MODEL = None
+    except Exception as exc:  # pragma: no cover - unexpected failure
+        logger.error("SentenceTransformer model load failed unexpectedly for '%s': %s", model_name, exc)
         _ST_LOAD_ERROR = exc
         _ST_MODEL = None
     return _ST_MODEL
