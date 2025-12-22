@@ -1,33 +1,71 @@
-from __future__ import annotations
+"""Tests for task orchestration."""
 
-from pathlib import Path
-
-from agent.autonomous.task_orchestrator import TaskOrchestrator
-from agent.modes import swarm as swarm_mod
+import pytest
+from agent.autonomous.orchestration import TaskOrchestrator
 
 
-def test_task_orchestrator_reduced_goal(tmp_path: Path) -> None:
-    orchestrator = TaskOrchestrator()
-    subtask = swarm_mod.Subtask(id="C", goal="Synthesize results", depends_on=["A", "B"], notes="")
-    status_by_id = {"A": "failed", "B": "success"}
-    should_reduce, failed = orchestrator.should_reduce(subtask.depends_on, status_by_id)
-    assert should_reduce is True
-    assert failed == ["A"]
-
-    run_dir = tmp_path / "A_run"
-    run_dir.mkdir()
-    results_by_id = {"A": {"error": {"message": "boom", "type": "exception"}}}
-    run_dirs_by_id = {"A": run_dir}
-    subtasks_by_id = {"A": swarm_mod.Subtask(id="A", goal="Collect data", depends_on=[], notes="")}
-
-    reduced = swarm_mod._build_reduced_goal(
-        subtask,
-        failed_deps=failed,
-        results_by_id=results_by_id,
-        run_dirs_by_id=run_dirs_by_id,
-        subtasks_by_id=subtasks_by_id,
+def test_task_skipped_if_dependency_failed():
+    """Test that task is skipped if dependency failed."""
+    orchestrator = TaskOrchestrator(
+        tasks=["task_a", "task_b", "task_c"],
+        dependencies={
+            "task_a": [],
+            "task_b": [],
+            "task_c": ["task_a", "task_b"],
+        }
     )
-    assert "Reduced synthesis mode" in reduced
-    assert "Failed dependencies: A" in reduced
-    assert "Missing artifacts" in reduced
-    assert "Propose next-run objectives" in reduced
+
+    results = {"task_a": "failed"}
+    assert not orchestrator.should_run_task("task_c", results)
+
+
+def test_task_runs_in_reduced_mode_if_dependency_failed():
+    """Test that task runs in reduced mode if dependency failed."""
+    orchestrator = TaskOrchestrator(
+        tasks=["task_a", "task_b", "task_c"],
+        dependencies={
+            "task_a": [],
+            "task_b": [],
+            "task_c": ["task_a", "task_b"],
+        }
+    )
+
+    results = {"task_a": "failed", "task_b": "success"}
+    mode = orchestrator.get_task_mode("task_c", results)
+    assert mode == "reduced"
+
+
+def test_task_runs_in_normal_mode_if_dependencies_succeed():
+    """Test that task runs in normal mode if dependencies succeed."""
+    orchestrator = TaskOrchestrator(
+        tasks=["task_a", "task_b", "task_c"],
+        dependencies={
+            "task_a": [],
+            "task_b": [],
+            "task_c": ["task_a", "task_b"],
+        }
+    )
+
+    results = {"task_a": "success", "task_b": "success"}
+    mode = orchestrator.get_task_mode("task_c", results)
+    assert mode == "normal"
+
+
+def test_execution_order_respects_dependencies():
+    """Test that execution order respects dependencies."""
+    orchestrator = TaskOrchestrator(
+        tasks=["task_a", "task_b", "task_c"],
+        dependencies={
+            "task_a": [],
+            "task_b": ["task_a"],
+            "task_c": ["task_a", "task_b"],
+        }
+    )
+
+    order = orchestrator.get_execution_order()
+
+    # task_a should come before task_b
+    assert order.index("task_a") < order.index("task_b")
+
+    # task_b should come before task_c
+    assert order.index("task_b") < order.index("task_c")

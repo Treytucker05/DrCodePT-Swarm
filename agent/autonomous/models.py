@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import uuid4
 from typing import Any, Dict, List, Literal, Optional
@@ -62,3 +63,19 @@ class AgentRunResult(BaseModel):
     steps_executed: int
     run_id: str
     trace_path: Optional[str] = None
+
+
+@dataclass
+class SwarmResult:
+    """Result from swarm execution.
+
+    Attributes:
+        status: "success", "partial_failure", or "failure"
+        results: List of successful task results
+        failures: List of failed tasks
+        summary: Human-readable summary
+    """
+    status: str
+    results: List[Any]  # List of TaskResult
+    failures: List[Dict[str, Any]]
+    summary: str

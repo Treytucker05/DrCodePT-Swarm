@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass, replace
@@ -12,6 +13,8 @@ from uuid import uuid4
 import traceback
 
 from agent.autonomous.config import AgentConfig, PlannerConfig, RunnerConfig
+from agent.autonomous.exceptions import AgentException
+from agent.autonomous.models import SwarmResult
 from agent.autonomous.isolation import (
     WorktreeInfo,
     copy_repo_to_workspace,
@@ -30,6 +33,81 @@ from agent.autonomous.runner import AgentRunner
 from agent.autonomous.task_orchestrator import TaskOrchestrator
 from agent.llm import CodexCliAuthError, CodexCliClient, CodexCliNotFoundError
 from agent.llm import schemas as llm_schemas
+
+logger = logging.getLogger(__name__)
+
+
+def aggregate_swarm_results(
+    futures: List,
+    timeout: int = 30,
+) -> SwarmResult:
+    """Aggregate results from all workers, handling failures.
+
+    This function collects results from all workers, handling timeouts
+    and exceptions gracefully. It always returns a SwarmResult with
+    whatever results were successfully collected.
+
+    Args:
+        futures: List of futures from worker tasks
+        timeout: Timeout per worker in seconds
+
+    Returns:
+        SwarmResult with results and failures
+    """
+    results = []
+    failures = []
+
+    for future in as_completed(futures, timeout=timeout):
+        try:
+            result = future.result(timeout=timeout)
+            results.append(result)
+            logger.info("Worker completed: %s", getattr(result, "task_id", "unknown"))
+
+        except TimeoutError as exc:
+            logger.error("Worker timed out: %s", exc)
+            failures.append({
+                "type": "timeout",
+                "error": str(exc),
+                "task_id": getattr(future, "task_id", "unknown"),
+            })
+
+        except AgentException as exc:
+            logger.error("Agent error in worker: %s", exc)
+            failures.append({
+                "type": "agent_error",
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+                "task_id": getattr(future, "task_id", "unknown"),
+            })
+
+        except Exception as exc:
+            logger.error("Worker failed: %s", exc, exc_info=True)
+            failures.append({
+                "type": "exception",
+                "error": str(exc),
+                "error_type": type(exc).__name__,
+                "task_id": getattr(future, "task_id", "unknown"),
+            })
+
+    # Determine overall status
+    if not failures:
+        status = "success"
+    elif results:
+        status = "partial_failure"
+    else:
+        status = "failure"
+
+    # Create summary
+    summary = f"Completed {len(results)}/{len(futures)} tasks"
+    if failures:
+        summary += f" ({len(failures)} failures)"
+
+    return SwarmResult(
+        status=status,
+        results=results,
+        failures=failures,
+        summary=summary,
+    )
 
 
 def _load_dotenv() -> None:
@@ -102,7 +180,13 @@ def _default_allowed_roots(repo_root: Path) -> Tuple[Path, ...]:
     return (repo_root,)
 
 
-def _build_agent_cfg(repo_root: Path, *, unsafe_mode: bool, profile_name: str | None) -> AgentConfig:
+def _build_agent_cfg(
+    repo_root: Path,
+    *,
+    unsafe_mode: bool,
+    profile_name: str | None,
+    allow_interactive_tools: bool = True,
+) -> AgentConfig:
     profile = resolve_profile(profile_name, env_keys=("SWARM_PROFILE", "AUTO_PROFILE", "AGENT_PROFILE"))
     fs_anywhere = _bool_env("SWARM_FS_ANYWHERE", _bool_env("AUTO_FS_ANYWHERE", False))
     raw_roots = os.getenv("SWARM_FS_ALLOWED_ROOTS") or os.getenv("AUTO_FS_ALLOWED_ROOTS") or ""
@@ -116,6 +200,7 @@ def _build_agent_cfg(repo_root: Path, *, unsafe_mode: bool, profile_name: str | 
             "SWARM_ALLOW_USER_INFO_STORAGE", _bool_env("AUTO_ALLOW_USER_INFO_STORAGE", False)
         ),
         allow_human_ask=bool(profile.allow_interactive),
+        allow_interactive_tools=bool(allow_interactive_tools),
         allow_fs_anywhere=fs_anywhere,
         fs_allowed_roots=tuple(allowed_roots),
         profile=profile,
@@ -561,7 +646,12 @@ def mode_swarm(
         deps = f" (deps: {', '.join(s.depends_on)})" if s.depends_on else ""
         print(f"  - {s.id}: {s.goal}{deps}")
 
-    agent_cfg = _build_agent_cfg(repo_root, unsafe_mode=unsafe_mode, profile_name=profile)
+    agent_cfg = _build_agent_cfg(
+        repo_root,
+        unsafe_mode=unsafe_mode,
+        profile_name=profile,
+        allow_interactive_tools=False,
+    )
     runner_cfg = _build_runner_cfg(profile)
     write_run_manifest(
         run_root,

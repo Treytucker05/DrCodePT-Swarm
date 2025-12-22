@@ -14,6 +14,11 @@ class AgentConfig:
     enable_web_gui: bool = False
     enable_desktop: bool = False
     allow_user_info_storage: bool = False
+    allow_interactive_tools: bool = True
+    """Whether to allow interactive tools (human_ask, etc.).
+
+    In swarm mode, this should be False to prevent workers from blocking.
+    """
     memory_db_path: Optional[Path] = None
     pre_mortem_enabled: bool = False
     allow_human_ask: bool = False

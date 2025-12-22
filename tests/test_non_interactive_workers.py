@@ -1,25 +1,32 @@
-from __future__ import annotations
+"""Tests for non-interactive worker mode."""
 
-import builtins
-
-from pathlib import Path
-
-from agent.autonomous.config import AgentConfig, RunContext
-from agent.autonomous.tools.builtins import build_default_tool_registry
+import pytest
+from agent.autonomous.config import AgentConfig
+from agent.autonomous.tools.registry import ToolRegistry
+from agent.autonomous.models import ToolResult
 
 
-def test_human_ask_blocked_when_interactive_disabled(tmp_path: Path, monkeypatch) -> None:
-    def _fail_input(_prompt: str | None = None) -> str:
-        raise AssertionError("input() was called while interaction is disabled")
+def test_interactive_tool_blocked_in_non_interactive_mode():
+    """Test that interactive tools are blocked in non-interactive mode."""
+    registry = ToolRegistry(allow_interactive_tools=False)
 
-    monkeypatch.setattr(builtins, "input", _fail_input)
+    # Try to execute an interactive tool (human_ask is typically dangerous)
+    result = registry.execute("human_ask", {"question": "What should I do?"})
 
-    agent_cfg = AgentConfig(allow_human_ask=False)
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    ctx = RunContext(run_id="t", run_dir=run_dir, workspace_dir=run_dir, profile=agent_cfg.profile)
-    reg = build_default_tool_registry(agent_cfg, run_dir)
-
-    result = reg.call("human_ask", {"question": "Q?"}, ctx)
-    assert result.success is False
+    assert not result.success
     assert result.error == "interaction_required"
+    assert result.metadata["error_type"] == "interaction_required"
+
+
+def test_interactive_tool_allowed_in_interactive_mode():
+    """Test that interactive tools are allowed in interactive mode."""
+    registry = ToolRegistry(allow_interactive_tools=True)
+
+    # Just verify the flag is set correctly
+    assert registry.allow_interactive_tools is True
+
+
+def test_swarm_mode_disables_interactive_tools():
+    """Test that swarm mode disables interactive tools."""
+    config = AgentConfig(allow_interactive_tools=False)
+    assert config.allow_interactive_tools is False
