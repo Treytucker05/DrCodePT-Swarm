@@ -1,159 +1,127 @@
 from __future__ import annotations
 
+import logging
 import os
-import time
 import threading
+import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Optional
 
-from .state import AgentState
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class ResourceMetrics:
-    timestamp: float
-    pid: int
-    rss_bytes: Optional[int] = None
-    vms_bytes: Optional[int] = None
-    num_threads: Optional[int] = None
-    cpu_percent: Optional[float] = None
-    open_files: Optional[int] = None
-    psutil_available: bool = False
+    """Snapshot of resource usage.
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "timestamp": self.timestamp,
-            "pid": self.pid,
-            "rss_bytes": self.rss_bytes,
-            "vms_bytes": self.vms_bytes,
-            "num_threads": self.num_threads,
-            "cpu_percent": self.cpu_percent,
-            "open_files": self.open_files,
-            "psutil_available": self.psutil_available,
-        }
+    Example:
+        >>> metrics = ResourceMetrics(memory_mb=10.0, cpu_percent=1.0, open_files=5, threads=2)
+    """
 
-
-def _load_psutil(psutil_module):
-    if psutil_module is False:
-        return None
-    if psutil_module is not None:
-        return psutil_module
-    try:
-        import psutil  # type: ignore
-
-        return psutil
-    except Exception:
-        return None
+    memory_mb: float
+    cpu_percent: float
+    open_files: int
+    threads: int
 
 
 class ResourceMonitor:
+    """Monitor process resources with optional psutil support.
+
+    Example:
+        >>> monitor = ResourceMonitor()
+        >>> metrics = monitor.get_metrics()
+        >>> monitor.check_health(metrics)
+    """
+
     def __init__(
         self,
         *,
-        log_interval_s: float = 30.0,
-        health_check_steps: int = 10,
-        max_observations: int = 200,
-        keep_last_observations: int = 40,
+        max_memory_mb: float = 4096.0,
+        max_threads: int = 200,
+        max_open_files: int = 10_000,
         psutil_module=None,
-        time_fn=time.monotonic,
     ) -> None:
-        self.log_interval_s = max(0.0, float(log_interval_s))
-        self.health_check_steps = max(0, int(health_check_steps))
-        self.max_observations = max(1, int(max_observations))
-        self.keep_last_observations = max(1, int(keep_last_observations))
-        self._time_fn = time_fn
-        self._last_log = 0.0
-
-        self._psutil = _load_psutil(psutil_module)
+        self.max_memory_mb = max_memory_mb
+        self.max_threads = max_threads
+        self.max_open_files = max_open_files
+        self._psutil = self._load_psutil(psutil_module)
         self._process = None
         if self._psutil is not None:
             try:
                 self._process = self._psutil.Process(os.getpid())
-            except Exception:
+            except Exception as exc:
+                logger.warning("Failed to initialize psutil process: %s", exc)
                 self._process = None
 
-    @property
-    def psutil_available(self) -> bool:
-        return self._process is not None
+    @staticmethod
+    def _load_psutil(psutil_module):
+        if psutil_module is False:
+            return None
+        if psutil_module is not None:
+            return psutil_module
+        try:
+            import psutil  # type: ignore
 
-    def snapshot(self) -> ResourceMetrics:
-        pid = os.getpid()
-        now = time.time()
+            return psutil
+        except ImportError:
+            logger.info("psutil not installed; resource monitoring limited")
+            return None
+        except Exception as exc:
+            logger.warning("psutil import failed: %s", exc)
+            return None
+
+    def get_metrics(self) -> ResourceMetrics:
         if self._process is None:
             return ResourceMetrics(
-                timestamp=now,
-                pid=pid,
-                num_threads=threading.active_count(),
-                psutil_available=False,
+                memory_mb=0.0,
+                cpu_percent=0.0,
+                open_files=0,
+                threads=threading.active_count(),
             )
-        rss = vms = None
-        cpu = None
-        threads = None
-        open_files = None
+        memory_mb = 0.0
+        cpu_percent = 0.0
+        open_files = 0
+        threads = 0
         try:
-            mem = self._process.memory_info()
-            rss = int(getattr(mem, "rss", 0) or 0)
-            vms = int(getattr(mem, "vms", 0) or 0)
-        except Exception:
-            pass
+            mem_info = self._process.memory_info()
+            memory_mb = float(getattr(mem_info, "rss", 0)) / (1024 * 1024)
+        except Exception as exc:
+            logger.debug("Failed to read memory info: %s", exc)
         try:
-            threads = int(self._process.num_threads())
-        except Exception:
-            pass
-        try:
-            cpu = float(self._process.cpu_percent(interval=None))
-        except Exception:
-            pass
+            cpu_percent = float(self._process.cpu_percent(interval=None))
+        except Exception as exc:
+            logger.debug("Failed to read cpu percent: %s", exc)
         try:
             open_files = len(self._process.open_files())
-        except Exception:
-            open_files = None
+        except Exception as exc:
+            logger.debug("Failed to read open files: %s", exc)
+        try:
+            threads = int(self._process.num_threads())
+        except Exception as exc:
+            logger.debug("Failed to read thread count: %s", exc)
         return ResourceMetrics(
-            timestamp=now,
-            pid=pid,
-            rss_bytes=rss,
-            vms_bytes=vms,
-            num_threads=threads,
-            cpu_percent=cpu,
+            memory_mb=memory_mb,
+            cpu_percent=cpu_percent,
             open_files=open_files,
-            psutil_available=True,
+            threads=threads,
         )
 
-    def _should_log(self, now: float) -> bool:
-        if self.log_interval_s <= 0:
-            return True
-        return (now - self._last_log) >= self.log_interval_s
+    def check_health(self, metrics: Optional[ResourceMetrics] = None) -> bool:
+        metrics = metrics or self.get_metrics()
+        if metrics.memory_mb > self.max_memory_mb:
+            return False
+        if metrics.threads > self.max_threads:
+            return False
+        if metrics.open_files > self.max_open_files:
+            return False
+        return True
 
-    def _trim_observations(self, state: AgentState) -> Optional[Dict[str, int]]:
-        count = len(state.observations)
-        if count <= self.max_observations:
-            return None
-        state.compact(keep_last=self.keep_last_observations, max_total=self.max_observations)
-        return {"before": count, "after": len(state.observations)}
-
-    def tick(self, *, step_index: int, state: AgentState, tracer) -> None:
-        now = self._time_fn()
-        if self._should_log(now):
-            metrics = self.snapshot()
-            tracer.log(
-                {
-                    "type": "resource",
-                    "kind": "periodic",
-                    "step_index": step_index,
-                    "metrics": metrics.to_dict(),
-                }
-            )
-            self._last_log = now
-
-        if self.health_check_steps and step_index > 0 and step_index % self.health_check_steps == 0:
-            trimmed = self._trim_observations(state)
-            metrics = self.snapshot()
-            payload = {
-                "type": "resource",
-                "kind": "health_check",
-                "step_index": step_index,
-                "metrics": metrics.to_dict(),
-            }
-            if trimmed:
-                payload["trimmed_observations"] = trimmed
-            tracer.log(payload)
+    def log_metrics(self, metrics: Optional[ResourceMetrics] = None) -> None:
+        metrics = metrics or self.get_metrics()
+        logger.debug(
+            "resource_metrics memory_mb=%.2f cpu=%.2f open_files=%d threads=%d",
+            metrics.memory_mb,
+            metrics.cpu_percent,
+            metrics.open_files,
+            metrics.threads,
+        )
