@@ -13,3 +13,9 @@ repos:
       - id: mypy
         args: ["--ignore-missing-imports"]
         additional_dependencies: []
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.5.7
+    hooks:
+      - id: ruff
+        args: ["--exit-zero"]
+      - id: ruff-format
