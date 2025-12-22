@@ -6,6 +6,7 @@ from typing import Any, Callable, Dict, List, Optional, Type
 from pydantic import BaseModel, ValidationError
 
 from ..config import AgentConfig, RunContext
+from ..errors import InteractionRequiredError
 from ..models import ToolResult
 
 
@@ -65,6 +66,7 @@ class ToolRegistry:
         if name == "human_ask" and not self._agent_cfg.allow_human_ask:
             question = getattr(parsed, "question", None)
             questions = [question] if isinstance(question, str) and question else []
+            err = InteractionRequiredError("Interactive tools are disabled for this run.")
             return ToolResult(
                 success=False,
                 error="interaction_required",
@@ -73,7 +75,11 @@ class ToolRegistry:
                     "status": "interaction_required",
                     "questions": questions,
                 },
-                metadata={"interaction_required": True},
+                metadata={
+                    "interaction_required": True,
+                    "error_type": err.__class__.__name__,
+                    "message": str(err),
+                },
             )
         return spec.fn(ctx, parsed)
 

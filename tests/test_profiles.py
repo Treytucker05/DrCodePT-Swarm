@@ -90,6 +90,42 @@ def test_human_ask_blocked_when_interactive_disabled(tmp_path: Path) -> None:
     assert isinstance(result.output, dict)
 
 
+def test_human_ask_does_not_prompt_when_blocked(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import builtins
+
+    from agent.autonomous.config import AgentConfig, RunContext
+    from agent.autonomous.tools.builtins import build_default_tool_registry
+
+    def _fail_input(_prompt: str | None = None) -> str:
+        raise AssertionError("input() was called while interaction is disabled")
+
+    monkeypatch.setattr(builtins, "input", _fail_input)
+
+    profile = ProfileConfig(
+        name="fast",
+        workers=1,
+        plan_timeout_s=30,
+        plan_retry_timeout_s=10,
+        heartbeat_s=1,
+        max_files_to_read=5,
+        max_total_bytes_to_read=1024,
+        max_glob_results=10,
+        max_web_sources=1,
+        allow_interactive=False,
+        stage_checkpoints=False,
+    )
+    agent_cfg = AgentConfig(profile=profile, allow_human_ask=False)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    ctx = RunContext(run_id="t", run_dir=run_dir, workspace_dir=run_dir, profile=profile)
+    reg = build_default_tool_registry(agent_cfg, run_dir)
+
+    result = reg.call("human_ask", {"question": "Q?"}, ctx)
+    assert result.success is False
+    assert result.error == "interaction_required"
+    assert result.metadata.get("error_type") == "InteractionRequiredError"
+
+
 def test_file_read_caps(tmp_path: Path) -> None:
     from agent.autonomous.config import AgentConfig, RunContext
     from agent.autonomous.tools.builtins import file_read_factory
