@@ -20,6 +20,7 @@ import requests
 from pydantic import BaseModel, Field
 
 from ..config import AgentConfig, RunContext
+from agent.config.profile import ProfileConfig, RunUsage
 from ..memory.sqlite_store import MemoryKind, SqliteMemoryStore
 from ..models import ToolResult
 from .registry import ToolRegistry, ToolSpec
@@ -53,6 +54,20 @@ def _fs_allowed(path: Path, cfg: AgentConfig, ctx: RunContext) -> bool:
     return True
 
 
+def _get_profile(ctx: RunContext) -> Optional[ProfileConfig]:
+    return getattr(ctx, "profile", None)
+
+
+def _get_usage(ctx: RunContext) -> Optional[RunUsage]:
+    return getattr(ctx, "usage", None)
+
+
+def _cap_results(value: int, cap: Optional[int]) -> int:
+    if cap is None:
+        return value
+    return min(value, cap)
+
+
 class WebFetchArgs(BaseModel):
     url: str
     timeout_seconds: int = 15
@@ -62,6 +77,14 @@ class WebFetchArgs(BaseModel):
 
 
 def web_fetch(ctx: RunContext, args: WebFetchArgs) -> ToolResult:
+    profile = _get_profile(ctx)
+    usage = _get_usage(ctx)
+    if profile and usage and usage.web_sources >= profile.max_web_sources:
+        return ToolResult(
+            success=False,
+            error="web_sources_limit_reached",
+            metadata={"limit": profile.max_web_sources},
+        )
     try:
         resp = requests.get(
             args.url,
@@ -76,6 +99,8 @@ def web_fetch(ctx: RunContext, args: WebFetchArgs) -> ToolResult:
             text = content.decode("utf-8", errors="replace")
         if args.strip_html:
             text = _strip_html(text)
+        if usage:
+            usage.consume_web()
         return ToolResult(
             success=True,
             output={
@@ -117,6 +142,14 @@ def _decode_ddg_url(href: str) -> str:
 
 
 def web_search(ctx: RunContext, args: WebSearchArgs) -> ToolResult:
+    profile = _get_profile(ctx)
+    usage = _get_usage(ctx)
+    if profile and usage and usage.web_sources >= profile.max_web_sources:
+        return ToolResult(
+            success=False,
+            error="web_sources_limit_reached",
+            metadata={"limit": profile.max_web_sources},
+        )
     query = (args.query or "").strip()
     if not query:
         return ToolResult(success=False, error="query is required")
@@ -147,6 +180,8 @@ def web_search(ctx: RunContext, args: WebSearchArgs) -> ToolResult:
         snippet = snippets[idx] if idx < len(snippets) else ""
         results.append({"title": title, "url": url_out, "snippet": snippet})
 
+    if usage:
+        usage.consume_web()
     return ToolResult(
         success=True,
         output={
@@ -201,6 +236,8 @@ class FileReadArgs(BaseModel):
 
 def file_read_factory(agent_cfg: AgentConfig):
     def file_read(ctx: RunContext, args: FileReadArgs) -> ToolResult:
+        profile = _get_profile(ctx)
+        usage = _get_usage(ctx)
         path = Path(args.path)
         if not path.is_absolute():
             path = (Path.cwd() / path).resolve()
@@ -216,7 +253,26 @@ def file_read_factory(agent_cfg: AgentConfig):
             )
         if not path.exists():
             return ToolResult(success=False, error=f"File not found: {path}")
-        data = path.read_bytes()[: args.max_bytes]
+        if profile and usage:
+            if not usage.can_read_file(profile.max_files_to_read):
+                return ToolResult(
+                    success=False,
+                    error="file_read_limit_reached",
+                    metadata={"limit": profile.max_files_to_read},
+                )
+            remaining = usage.remaining_bytes(profile.max_total_bytes_to_read)
+            if remaining <= 0:
+                return ToolResult(
+                    success=False,
+                    error="file_read_bytes_limit_reached",
+                    metadata={"limit": profile.max_total_bytes_to_read},
+                )
+            read_cap = min(args.max_bytes, remaining)
+        else:
+            read_cap = args.max_bytes
+        data = path.read_bytes()[:read_cap]
+        if profile and usage:
+            usage.consume_file(len(data))
         return ToolResult(success=True, output={"path": str(path), "content": data.decode("utf-8", errors="replace")})
 
     return file_read
@@ -264,6 +320,7 @@ class ListDirArgs(BaseModel):
 
 def list_dir_factory(agent_cfg: AgentConfig):
     def list_dir(ctx: RunContext, args: ListDirArgs) -> ToolResult:
+        profile = _get_profile(ctx)
         path = Path(args.path)
         if not path.is_absolute():
             path = (Path.cwd() / path).resolve()
@@ -283,6 +340,9 @@ def list_dir_factory(agent_cfg: AgentConfig):
             return ToolResult(success=False, error=f"Not a directory: {path}")
         items: List[Dict[str, Any]] = []
         count = 0
+        effective_max = args.max_entries
+        if profile:
+            effective_max = _cap_results(effective_max, profile.max_glob_results)
         for entry in path.iterdir():
             if not args.include_hidden and entry.name.startswith("."):
                 continue
@@ -300,7 +360,7 @@ def list_dir_factory(agent_cfg: AgentConfig):
             except Exception:
                 items.append({"name": entry.name, "path": str(entry), "is_dir": entry.is_dir()})
             count += 1
-            if count >= max(1, args.max_entries):
+            if count >= max(1, effective_max):
                 break
         return ToolResult(success=True, output={"path": str(path), "entries": items})
 
@@ -315,6 +375,8 @@ class GlobArgs(BaseModel):
 
 def glob_paths_factory(agent_cfg: AgentConfig):
     def glob_paths(ctx: RunContext, args: GlobArgs) -> ToolResult:
+        profile = _get_profile(ctx)
+        usage = _get_usage(ctx)
         root = Path(args.root)
         if not root.is_absolute():
             root = (Path.cwd() / root).resolve()
@@ -331,10 +393,15 @@ def glob_paths_factory(agent_cfg: AgentConfig):
         if not root.exists():
             return ToolResult(success=False, error=f"Root not found: {root}")
         results: List[str] = []
+        effective_max = args.max_results
+        if profile:
+            effective_max = _cap_results(effective_max, profile.max_glob_results)
         for path in root.glob(args.pattern):
             results.append(str(path))
-            if len(results) >= max(1, args.max_results):
+            if len(results) >= max(1, effective_max):
                 break
+        if usage:
+            usage.consume_glob(len(results))
         return ToolResult(success=True, output={"root": str(root), "pattern": args.pattern, "results": results})
 
     return glob_paths
@@ -350,6 +417,8 @@ class FileSearchArgs(BaseModel):
 
 def file_search_factory(agent_cfg: AgentConfig):
     def file_search(ctx: RunContext, args: FileSearchArgs) -> ToolResult:
+        profile = _get_profile(ctx)
+        usage = _get_usage(ctx)
         root = Path(args.root)
         if not root.is_absolute():
             root = (Path.cwd() / root).resolve()
@@ -367,13 +436,26 @@ def file_search_factory(agent_cfg: AgentConfig):
             return ToolResult(success=False, error=f"Root not found: {root}")
         needle = args.query if args.case_sensitive else args.query.lower()
         hits: List[Dict[str, Any]] = []
+        scanned = 0
+        max_scan = profile.max_glob_results if profile else None
         for path in root.rglob("*"):
             if not path.is_file():
                 continue
+            if max_scan is not None and scanned >= max_scan:
+                break
             try:
                 if path.stat().st_size > args.max_bytes:
                     continue
-                data = path.read_text(encoding="utf-8", errors="replace")
+                if profile and usage:
+                    if not usage.can_read_file(profile.max_files_to_read):
+                        break
+                    remaining = usage.remaining_bytes(profile.max_total_bytes_to_read)
+                    if remaining <= 0:
+                        break
+                    data = path.read_text(encoding="utf-8", errors="replace")[:remaining]
+                    usage.consume_file(len(data))
+                else:
+                    data = path.read_text(encoding="utf-8", errors="replace")
             except Exception:
                 continue
             hay = data if args.case_sensitive else data.lower()
@@ -381,6 +463,7 @@ def file_search_factory(agent_cfg: AgentConfig):
                 hits.append({"path": str(path), "preview": data[:300]})
                 if len(hits) >= max(1, args.max_results):
                     break
+            scanned += 1
         return ToolResult(success=True, output={"root": str(root), "query": args.query, "matches": hits})
 
     return file_search

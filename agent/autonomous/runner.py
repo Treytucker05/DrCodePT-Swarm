@@ -4,6 +4,7 @@ import json
 import os
 import threading
 import time
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,7 @@ from agent.llm.base import LLMClient
 from agent.llm import schemas as llm_schemas
 
 from .config import AgentConfig, PlannerConfig, RunContext, RunnerConfig
+from agent.config.profile import RunUsage
 from .jsonio import dumps_compact
 from .loop_detection import LoopDetector
 from .memory.sqlite_store import SqliteMemoryStore
@@ -34,6 +36,16 @@ def _utc_ts_id() -> str:
 
 def _json_dumps(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _hash_tool_result(result: ToolResult) -> str:
+    payload = {
+        "success": result.success,
+        "error": result.error,
+        "output": result.output,
+    }
+    blob = _json_dumps(payload).encode("utf-8", errors="ignore")
+    return hashlib.sha256(blob).hexdigest()[:12]
 
 
 class TrackedLLM:
@@ -115,7 +127,15 @@ class AgentRunner:
         run_dir.mkdir(parents=True, exist_ok=True)
         workspace_dir = run_dir / "workspace"
         workspace_dir.mkdir(parents=True, exist_ok=True)
-        ctx = RunContext(run_id=run_id, run_dir=run_dir, workspace_dir=workspace_dir)
+        profile = self.agent_cfg.profile
+        usage = RunUsage()
+        ctx = RunContext(
+            run_id=run_id,
+            run_dir=run_dir,
+            workspace_dir=workspace_dir,
+            profile=profile,
+            usage=usage,
+        )
 
         # trace.jsonl/result.json are the authoritative execution artifacts; stdout is for humans.
         tracer = JsonlTracer(run_dir / "trace.jsonl")
@@ -130,6 +150,31 @@ class AgentRunner:
             pass
         tracked_llm = TrackedLLM(llm)
         reflector = Reflector(llm=tracked_llm, pre_mortem_enabled=self.agent_cfg.pre_mortem_enabled)
+
+        if profile and profile.stage_checkpoints:
+            try:
+                from .repo_scan import build_repo_index, build_repo_map, is_repo_review_task
+
+                if is_repo_review_task(task):
+                    repo_root = Path(__file__).resolve().parents[2]
+                    index = build_repo_index(
+                        repo_root,
+                        run_dir=run_dir,
+                        max_results=profile.max_glob_results,
+                    )
+                    repo_map = build_repo_map(index, run_dir=run_dir, profile=profile, usage=usage)
+                    tracer.log(
+                        {
+                            "type": "checkpoint",
+                            "name": "repo_scan",
+                            "data": {
+                                "index_count": len(index),
+                                "map_count": len(repo_map),
+                            },
+                        }
+                    )
+            except Exception as exc:
+                tracer.log({"type": "checkpoint_error", "name": "repo_scan", "error": str(exc)})
 
         memory_store = self.memory_store or self._open_default_memory_store()
         tools = self.tools or build_default_tool_registry(self.agent_cfg, run_dir, memory_store=memory_store)
@@ -615,6 +660,31 @@ class AgentRunner:
                 else:
                     tool_result = preempted_tool_result
 
+                if tool_result.metadata.get("interaction_required") or tool_result.error == "interaction_required":
+                    tracer.log(
+                        {
+                            "type": "stop",
+                            "reason": "interaction_required",
+                            "step_id": step.id,
+                            "action": {"tool_name": step.tool_name, "tool_args": step.tool_args},
+                            "tool_result": self._dump(tool_result),
+                        }
+                    )
+                    return self._stop(
+                        tracer=tracer,
+                        memory_store=memory_store,
+                        success=False,
+                        reason="interaction_required",
+                        steps=steps_executed,
+                        run_id=run_id,
+                        llm_stats=tracked_llm,
+                        task=task,
+                        state=state,
+                        run_dir=run_dir,
+                        started_at=started_at,
+                        started_monotonic=start,
+                    )
+
                 # Capture UI snapshot for web/desktop steps or on failure (once per step).
                 snapshot = self._maybe_capture_ui_snapshot(
                     tools=tools,
@@ -765,7 +835,8 @@ class AgentRunner:
 
                 self._memory_updates(memory_store, task, step, tool_result, obs, reflection, run_id, tracer)
 
-                action_signature = f"{step.tool_name}:{_json_dumps(step.tool_args)}"
+                output_hash = _hash_tool_result(tool_result)
+                action_signature = f"{step.tool_name}:{_json_dumps(step.tool_args)}:{output_hash}"
                 if loop_detector.update(action_signature, state.state_fingerprint()):
                     if self.planner_cfg.mode == "react" and not loop_nudge_used:
                         exploration_nudge_next = True

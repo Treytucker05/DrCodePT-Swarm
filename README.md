@@ -35,6 +35,15 @@ These are contractual guarantees (not suggestions):
 - Swarm correctness depends on artifacts, not terminal output.
 - Task execution uses the backend seam (LLMBackend.run). Internal helper calls may use CodexCliClient convenience methods directly.
 
+## Execution profiles
+Profiles tune budgets without ever disabling timeouts (all profiles remain finite):
+- fast (default): bounded, quick, low-risk
+- deep: higher budgets for staged repo reviews
+- audit: maximum rigor with checkpoints, still finite
+
+Use `--profile fast|deep|audit` on `python -m agent.run`. Swarm reads `SWARM_PROFILE`/`AUTO_PROFILE`/`AGENT_PROFILE`.
+Swarm workers are non-interactive; if a question is required they return `interaction_required` instead of prompting.
+
 ## Key paths
 - `agent/run.py` - autonomous agent CLI entrypoint.
 - `agent/autonomous/` - orchestrator + planning + reflection + memory + tools.

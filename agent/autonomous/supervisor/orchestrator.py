@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
 
 from agent.autonomous.config import AgentConfig, RunContext
+from agent.config.profile import RunUsage
 from agent.autonomous.loop_detection import LoopDetector
 from agent.autonomous.memory.reflexion import ReflexionEntry, retrieve_reflexions, write_reflexion
 from agent.autonomous.tools.builtins import build_default_tool_registry
@@ -205,6 +206,8 @@ class SupervisorOrchestrator:
             run_id=self.run_dir.name,
             run_dir=self.run_dir,
             workspace_dir=self.run_dir / "workspace",
+            profile=self.agent_cfg.profile,
+            usage=RunUsage(),
         )
         self.ctx.workspace_dir.mkdir(parents=True, exist_ok=True)
 

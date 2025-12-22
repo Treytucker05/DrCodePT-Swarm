@@ -62,6 +62,19 @@ class ToolRegistry:
             parsed = spec.args_model(**(args or {}))
         except ValidationError as exc:
             return ToolResult(success=False, error=f"Tool args validation failed: {exc}")
+        if name == "human_ask" and not self._agent_cfg.allow_human_ask:
+            question = getattr(parsed, "question", None)
+            questions = [question] if isinstance(question, str) and question else []
+            return ToolResult(
+                success=False,
+                error="interaction_required",
+                output={
+                    "ok": False,
+                    "error_type": "interaction_required",
+                    "questions": questions,
+                },
+                metadata={"interaction_required": True},
+            )
         return spec.fn(ctx, parsed)
 
     def requires_approval(self, name: str) -> bool:

@@ -103,6 +103,7 @@ def mode_autonomous(task: str, *, unsafe_mode: bool = False) -> None:
     _load_dotenv()
 
     from agent.autonomous.config import AgentConfig, PlannerConfig, RunnerConfig
+    from agent.config.profile import resolve_profile
     from agent.autonomous.runner import AgentRunner
     from agent.llm import CodexCliAuthError, CodexCliClient, CodexCliNotFoundError
 
@@ -126,6 +127,7 @@ def mode_autonomous(task: str, *, unsafe_mode: bool = False) -> None:
     raw_roots = os.getenv("AUTO_FS_ALLOWED_ROOTS", "").strip()
     allowed_roots = _split_paths(raw_roots) if raw_roots else desktop_default
 
+    profile = resolve_profile(None, env_keys=("AUTO_PROFILE", "AGENT_PROFILE"))
     agent_cfg = AgentConfig(
         unsafe_mode=bool(unsafe_mode),
         enable_web_gui=_bool_env("AUTO_ENABLE_WEB_GUI", True),
@@ -135,10 +137,14 @@ def mode_autonomous(task: str, *, unsafe_mode: bool = False) -> None:
         allow_human_ask=_bool_env("AUTO_ALLOW_HUMAN_ASK", True),
         allow_fs_anywhere=fs_anywhere,
         fs_allowed_roots=tuple(allowed_roots),
+        profile=profile,
     )
     runner_cfg = RunnerConfig(
         max_steps=_int_env("AUTO_MAX_STEPS", 30),
         timeout_seconds=_int_env("AUTO_TIMEOUT_SECONDS", 600),
+        llm_heartbeat_seconds=_int_env("AUTO_LLM_HEARTBEAT_SECONDS", profile.heartbeat_s),
+        llm_plan_timeout_seconds=_int_env("AUTO_LLM_PLAN_TIMEOUT_SECONDS", profile.plan_timeout_s),
+        llm_plan_retry_timeout_seconds=_int_env("AUTO_LLM_PLAN_RETRY_TIMEOUT_SECONDS", profile.plan_retry_timeout_s),
     )
     planner_cfg = PlannerConfig(
         mode=planner_mode,  # type: ignore[arg-type]

@@ -18,6 +18,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m agent.run", description="Run the autonomous agent loop.")
     p.add_argument("--task", required=True, help="Goal/task for the agent to accomplish.")
     p.add_argument("--mode", choices=["runner", "team", "think"], default="runner")
+    p.add_argument("--profile", choices=["fast", "deep", "audit"], default="fast")
     p.add_argument("--planner-mode", choices=["react", "plan_first"], default="react")
     p.add_argument("--num-candidates", type=int, default=1, help="Plan-first: number of candidate plans to generate.")
     p.add_argument("--max-plan-steps", type=int, default=6, help="Plan-first: max steps per plan.")
@@ -41,21 +42,27 @@ def main(argv: list[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
 
     from agent.autonomous.config import AgentConfig, PlannerConfig, RunnerConfig
+    from agent.config.profile import resolve_profile
     from agent.autonomous.llm.stub import StubLLM
     from agent.autonomous.runner import AgentRunner
     from agent.llm import CodexCliAuthError, CodexCliClient, CodexCliNotFoundError
 
+    profile = resolve_profile(args.profile, env_keys=("AUTO_PROFILE", "AGENT_PROFILE"))
     agent_cfg = AgentConfig(
         unsafe_mode=bool(args.unsafe_mode),
         enable_web_gui=bool(args.enable_web_gui),
         enable_desktop=bool(args.enable_desktop),
         pre_mortem_enabled=bool(args.pre_mortem),
         memory_db_path=Path(args.memory_db) if args.memory_db else None,
+        profile=profile,
     )
     runner_cfg = RunnerConfig(
         max_steps=int(args.max_steps),
         timeout_seconds=int(args.timeout_seconds),
         cost_budget_usd=args.cost_budget_usd,
+        llm_heartbeat_seconds=profile.heartbeat_s,
+        llm_plan_timeout_seconds=profile.plan_timeout_s,
+        llm_plan_retry_timeout_seconds=profile.plan_retry_timeout_s,
     )
     planner_cfg = PlannerConfig(
         mode=str(args.planner_mode),

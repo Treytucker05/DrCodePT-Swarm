@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from agent.autonomous.config import AgentConfig, PlannerConfig, RunnerConfig
+from agent.config.profile import resolve_profile
 from agent.autonomous.runner import AgentRunner
 from agent.llm import CodexCliAuthError, CodexCliClient, CodexCliNotFoundError
 from agent.llm import schemas as llm_schemas
@@ -92,7 +93,8 @@ def _default_allowed_roots(repo_root: Path) -> Tuple[Path, ...]:
     return tuple(roots)
 
 
-def _build_agent_cfg(repo_root: Path, *, unsafe_mode: bool) -> AgentConfig:
+def _build_agent_cfg(repo_root: Path, *, unsafe_mode: bool, profile_name: str | None) -> AgentConfig:
+    profile = resolve_profile(profile_name, env_keys=("SWARM_PROFILE", "AUTO_PROFILE", "AGENT_PROFILE"))
     fs_anywhere = _bool_env("SWARM_FS_ANYWHERE", _bool_env("AUTO_FS_ANYWHERE", False))
     raw_roots = os.getenv("SWARM_FS_ALLOWED_ROOTS") or os.getenv("AUTO_FS_ALLOWED_ROOTS") or ""
     allowed_roots = _split_paths(raw_roots) if raw_roots.strip() else list(_default_allowed_roots(repo_root))
@@ -104,18 +106,20 @@ def _build_agent_cfg(repo_root: Path, *, unsafe_mode: bool) -> AgentConfig:
         allow_user_info_storage=_bool_env(
             "SWARM_ALLOW_USER_INFO_STORAGE", _bool_env("AUTO_ALLOW_USER_INFO_STORAGE", False)
         ),
-        allow_human_ask=_bool_env("SWARM_ALLOW_HUMAN_ASK", _bool_env("AUTO_ALLOW_HUMAN_ASK", True)),
+        allow_human_ask=bool(profile.allow_interactive),
         allow_fs_anywhere=fs_anywhere,
         fs_allowed_roots=tuple(allowed_roots),
+        profile=profile,
     )
 
 
-def _build_runner_cfg() -> RunnerConfig:
+def _build_runner_cfg(profile_name: str | None) -> RunnerConfig:
+    profile = resolve_profile(profile_name, env_keys=("SWARM_PROFILE", "AUTO_PROFILE", "AGENT_PROFILE"))
     max_steps = _int_env("SWARM_MAX_STEPS", _int_env("AUTO_MAX_STEPS", 30))
     timeout_seconds = _int_env("SWARM_TIMEOUT_SECONDS", _int_env("AUTO_TIMEOUT_SECONDS", 600))
-    heartbeat = _int_env("SWARM_LLM_HEARTBEAT_SECONDS", _int_env("AUTO_LLM_HEARTBEAT_SECONDS", 5))
-    plan_timeout = _int_env("SWARM_LLM_PLAN_TIMEOUT_SECONDS", _int_env("AUTO_LLM_PLAN_TIMEOUT_SECONDS", 360))
-    retry_timeout = _int_env("SWARM_LLM_PLAN_RETRY_TIMEOUT_SECONDS", _int_env("AUTO_LLM_PLAN_RETRY_TIMEOUT_SECONDS", 90))
+    heartbeat = _int_env("SWARM_LLM_HEARTBEAT_SECONDS", profile.heartbeat_s)
+    plan_timeout = _int_env("SWARM_LLM_PLAN_TIMEOUT_SECONDS", profile.plan_timeout_s)
+    retry_timeout = _int_env("SWARM_LLM_PLAN_RETRY_TIMEOUT_SECONDS", profile.plan_retry_timeout_s)
     return RunnerConfig(
         max_steps=max_steps,
         timeout_seconds=timeout_seconds,
@@ -150,6 +154,8 @@ def _decompose(llm: CodexCliClient, objective: str, *, max_items: int) -> List[S
     prompt = (
         "You are a swarm coordinator. Decompose the objective into 2-4 parallelizable subtasks.\n"
         "Only add dependencies when truly required. Use short IDs like A, B, C.\n"
+        "If the objective is a repo review, require a repo_index/repo_map stage and review only selected files.\n"
+        "Never ask to read the entire repo; cap reviews to the repo_map selection.\n"
         f"Objective: {objective}\n"
         "Return JSON only."
     )
@@ -241,7 +247,7 @@ def _run_subagent(
     return subtask, status, result.stop_reason or "", run_dir
 
 
-def mode_swarm(objective: str, *, unsafe_mode: bool = False) -> None:
+def mode_swarm(objective: str, *, unsafe_mode: bool = False, profile: str | None = None) -> None:
     _load_dotenv()
     try:
         llm = CodexCliClient.from_env()
@@ -257,7 +263,8 @@ def mode_swarm(objective: str, *, unsafe_mode: bool = False) -> None:
     run_root.mkdir(parents=True, exist_ok=True)
 
     max_subtasks = max(1, _int_env("SWARM_MAX_SUBTASKS", 3))
-    workers = max(1, _int_env("SWARM_MAX_WORKERS", 2))
+    profile_cfg = resolve_profile(profile, env_keys=("SWARM_PROFILE", "AUTO_PROFILE", "AGENT_PROFILE"))
+    workers = max(1, _int_env("SWARM_MAX_WORKERS", profile_cfg.workers))
 
     llm = llm.with_context(workdir=repo_root, log_dir=run_root)
     subtasks = _decompose(llm, objective, max_items=max_subtasks)
@@ -274,8 +281,8 @@ def mode_swarm(objective: str, *, unsafe_mode: bool = False) -> None:
         deps = f" (deps: {', '.join(s.depends_on)})" if s.depends_on else ""
         print(f"  - {s.id}: {s.goal}{deps}")
 
-    agent_cfg = _build_agent_cfg(repo_root, unsafe_mode=unsafe_mode)
-    runner_cfg = _build_runner_cfg()
+    agent_cfg = _build_agent_cfg(repo_root, unsafe_mode=unsafe_mode, profile_name=profile)
+    runner_cfg = _build_runner_cfg(profile)
     if not agent_cfg.enable_web_gui and not agent_cfg.enable_desktop:
         print("[SWARM] MCP-based tools disabled (web_gui/desktop). Using local file/Python/web_fetch tools only.")
 
