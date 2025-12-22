@@ -4,6 +4,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from agent.autonomous.startup_flow import StartupFlow
+
 
 def _load_dotenv() -> None:
     try:
@@ -17,7 +19,6 @@ def _load_dotenv() -> None:
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m agent.run", description="Run the autonomous agent loop.")
     p.add_argument("--task", required=True, help="Goal/task for the agent to accomplish.")
-    p.add_argument("--mode", choices=["runner", "team", "think"], default="runner")
     p.add_argument("--profile", choices=["fast", "deep", "audit"], default="fast")
     p.add_argument("--planner-mode", choices=["react", "plan_first"], default="react")
     p.add_argument("--num-candidates", type=int, default=1, help="Plan-first: number of candidate plans to generate.")
@@ -41,13 +42,33 @@ def main(argv: list[str] | None = None) -> int:
     _load_dotenv()
     args = build_arg_parser().parse_args(argv)
 
+    # Use intelligent startup flow if no mode specified
+    if not hasattr(args, 'mode') or args.mode is None:
+        flow = StartupFlow()
+        result = flow.run(args.task)
+        
+        if result["status"] == "cancelled":
+            print("Execution cancelled.")
+            return
+        
+        plan = result["plan"]
+        mode = plan["mode"]
+        depth = plan["depth"]
+        specialists = plan["specialists"]
+    else:
+        mode = args.mode
+        depth = getattr(args, 'depth', 'deep')
+        specialists = []
+    
+    # Continue with existing execution code using mode, depth, and specialists
+
     from agent.autonomous.config import AgentConfig, PlannerConfig, RunnerConfig
     from agent.config.profile import resolve_profile
     from agent.autonomous.llm.stub import StubLLM
     from agent.autonomous.runner import AgentRunner
     from agent.llm import CodexCliAuthError, CodexCliClient, CodexCliNotFoundError
 
-    profile = resolve_profile(args.profile, env_keys=("AUTO_PROFILE", "AGENT_PROFILE"))
+    profile = resolve_profile(depth, env_keys=("AUTO_PROFILE", "AGENT_PROFILE"))
     agent_cfg = AgentConfig(
         unsafe_mode=bool(args.unsafe_mode),
         enable_web_gui=bool(args.enable_web_gui),
@@ -111,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
             print(str(exc), file=sys.stderr)
             return 2
 
-    if args.mode == "team":
+    if mode == "team":
         from agent.autonomous.supervisor.orchestrator import run_team
 
         return run_team(
@@ -120,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
             run_dir=run_dir,
             llm=llm,
         )
-    if args.mode == "think":
+    if mode == "think":
         from agent.autonomous.planning.think_loop import run_think_loop
 
         return run_think_loop(args.task, run_dir=run_dir, llm=llm)
