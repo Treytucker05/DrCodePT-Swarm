@@ -145,6 +145,114 @@ def task_succeeded() -> Callable[[Dict], bool]:
         return ctx.get("agent_success", False)
     return check
 
+
+def _stub_plan_for(task_spec: EvalTask) -> Dict[str, Any]:
+    if task_spec.name == "file_write_read":
+        return {
+            "goal": "Write hello.txt",
+            "steps": [
+                {
+                    "id": "step_1",
+                    "goal": "Write hello.txt",
+                    "rationale_short": "Stubbed plan for file write",
+                    "tool_name": "file_write",
+                    "tool_args": [
+                        {"key": "path", "value": "hello.txt"},
+                        {"key": "content", "value": "Hello, World!"},
+                        {"key": "mode", "value": "overwrite"},
+                    ],
+                    "success_criteria": [],
+                    "preconditions": [],
+                    "postconditions": [],
+                }
+            ],
+        }
+    if task_spec.name == "python_calculation":
+        code = (
+            "import math\n"
+            "with open('factorial.txt', 'w', encoding='utf-8') as f:\n"
+            "    f.write(str(math.factorial(10)))\n"
+        )
+        return {
+            "goal": "Compute factorial",
+            "steps": [
+                {
+                    "id": "step_1",
+                    "goal": "Compute factorial of 10",
+                    "rationale_short": "Stubbed plan using python_exec",
+                    "tool_name": "python_exec",
+                    "tool_args": [{"key": "code", "value": code}],
+                    "success_criteria": [],
+                    "preconditions": [],
+                    "postconditions": [],
+                }
+            ],
+        }
+    if task_spec.name == "shell_command":
+        return {
+            "goal": "Create marker file",
+            "steps": [
+                {
+                    "id": "step_1",
+                    "goal": "Create test_dir/marker.txt",
+                    "rationale_short": "Stubbed plan using file_write",
+                    "tool_name": "file_write",
+                    "tool_args": [
+                        {"key": "path", "value": "test_dir/marker.txt"},
+                        {"key": "content", "value": ""},
+                        {"key": "mode", "value": "overwrite"},
+                    ],
+                    "success_criteria": [],
+                    "preconditions": [],
+                    "postconditions": [],
+                }
+            ],
+        }
+    return {
+        "goal": "Finish",
+        "steps": [
+            {
+                "id": "step_1",
+                "goal": "Finish quickly",
+                "rationale_short": "Stubbed plan default",
+                "tool_name": "finish",
+                "tool_args": [{"key": "summary", "value": "stub"}],
+                "success_criteria": [],
+                "preconditions": [],
+                "postconditions": [],
+            }
+        ],
+    }
+
+
+def _stub_reflection() -> Dict[str, Any]:
+    return {
+        "status": "success",
+        "explanation_short": "stub",
+        "next_hint": "",
+        "failure_type": "none",
+        "lesson": "",
+        "memory_write": None,
+    }
+
+
+def _stub_finish_plan() -> Dict[str, Any]:
+    return {
+        "goal": "Finish",
+        "steps": [
+            {
+                "id": "step_finish",
+                "goal": "Finish",
+                "rationale_short": "Stubbed finish step",
+                "tool_name": "finish",
+                "tool_args": [{"key": "summary", "value": "stub"}],
+                "success_criteria": [],
+                "preconditions": [],
+                "postconditions": [],
+            }
+        ],
+    }
+
 # =============================================================================
 # Eval Tasks
 # =============================================================================
@@ -376,7 +484,7 @@ class EvalRunner:
         verbose: bool = True,
         use_stub_llm: bool = False,
     ):
-        self.eval_dir = eval_dir or Path("runs/eval") / datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.eval_dir = (eval_dir or Path("runs/eval") / datetime.now().strftime("%Y%m%d_%H%M%S")).resolve()
         self.eval_dir.mkdir(parents=True, exist_ok=True)
         self.verbose = verbose
         self.use_stub_llm = use_stub_llm
@@ -399,6 +507,8 @@ class EvalRunner:
         run_dir = self.eval_dir / task_spec.name / "run"
         workspace.mkdir(parents=True, exist_ok=True)
         run_dir.mkdir(parents=True, exist_ok=True)
+        workspace = workspace.resolve()
+        run_dir = run_dir.resolve()
         
         # Run setup if provided
         if task_spec.setup_fn:
@@ -426,16 +536,21 @@ class EvalRunner:
                 memory_db_path=self.eval_dir / task_spec.name / "memory.sqlite3",
                 enable_web_gui=False,
                 enable_desktop=False,
+                fs_allowed_roots=(REPO_ROOT,),
             )
             planner_cfg = PlannerConfig(mode="react")
             
             # Get LLM
             if self.use_stub_llm:
                 from agent.autonomous.llm.stub import StubLLM
-                llm = StubLLM(responses=[
-                    {"goal": "stub", "steps": [{"tool_name": "finish", "tool_args": [{"key": "summary", "value": "stub"}]}]},
-                    {"status": "success", "explanation_short": "stub", "next_hint": ""},
-                ])
+                llm = StubLLM(
+                    responses=[
+                        _stub_plan_for(task_spec),
+                        _stub_reflection(),
+                        _stub_finish_plan(),
+                        _stub_reflection(),
+                    ]
+                )
             else:
                 llm = CodexCliClient.from_env()
             
