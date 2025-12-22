@@ -34,6 +34,7 @@ No `OPENAI_API_KEY` is required; the agent uses your local Codex CLI login.
 
 ## Dev checks
 - Schema lint: `python scripts/check_codex_schemas.py`
+- Concurrency guard: `rg -n "os\\.chdir\\(" agent/`
 
 ## Legacy
 The older YAML supervisor and launcher scripts remain under `agent/` and `launchers/`.
