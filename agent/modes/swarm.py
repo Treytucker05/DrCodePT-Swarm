@@ -228,22 +228,18 @@ def _ensure_repo_scan_subtask(subtasks: List[Subtask], *, objective: str, max_it
         a_task.goal = f"{repo_goal}\n\n{a_task.goal}".strip()
 
 
-def _ask_blocking_questions(questions: List[Dict[str, Any]]) -> Dict[str, str]:
-    answers: Dict[str, str] = {}
+def _ask_blocking_questions(questions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    prompts: List[str] = []
     for q in questions:
         question = str(q.get("question") or "").strip()
         if not question:
             continue
-        default = q.get("default")
-        prompt = f"{question}"
-        if default:
-            prompt += f" (default: {default})"
-        prompt += "\n> "
-        resp = input(prompt).strip()
-        if not resp and default:
-            resp = str(default)
-        answers[str(q.get("id") or question)] = resp
-    return answers
+        prompts.append(question)
+    return {
+        "error": "interaction_required",
+        "questions": prompts,
+        "context": "swarm_initialization",
+    }
 
 
 def _format_answers(answers: Dict[str, str]) -> str:
@@ -514,6 +510,22 @@ def mode_swarm(
     if not clarify.ready_to_run and clarify.blocking_questions:
         print("\n[SWARM] Clarification needed before starting workers:")
         answers = _ask_blocking_questions(clarify.blocking_questions)
+        if isinstance(answers, dict) and answers.get("error") == "interaction_required":
+            _write_result(
+                run_root,
+                {
+                    "ok": False,
+                    "mode": "swarm",
+                    "run_id": run_root.name,
+                    "error": {
+                        "type": "interaction_required",
+                        "message": "interaction_required",
+                        "data": answers,
+                    },
+                },
+            )
+            print("[SWARM] interaction_required:", answers.get("questions"))
+            return
         if answers:
             augmented = objective + "\n\nUser answers:\n" + _format_answers(answers)
             clarify = run_clarifier(
