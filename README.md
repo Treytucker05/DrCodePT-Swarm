@@ -29,9 +29,11 @@ No `OPENAI_API_KEY` is required; the agent uses your local Codex CLI login.
 ## Concurrency & Execution Invariants
 These are contractual guarantees (not suggestions):
 - Threaded code paths MUST NOT mutate process-global state (cwd, env vars, event loops).
-- Every subprocess call MUST pass an explicit `cwd`.
+- Concurrent execution paths (swarm/subagents) MUST pass an explicit `cwd` to subprocesses.
+- Codex CLI subprocess calls always pass an explicit `cwd`.
 - Every agent/subagent run MUST emit structured artifacts (`trace.jsonl`, and `result.json` when present).
 - Swarm correctness depends on artifacts, not terminal output.
+- Task execution uses the backend seam (LLMBackend.run). Internal helper calls may use CodexCliClient convenience methods directly.
 
 ## Key paths
 - `agent/run.py` - autonomous agent CLI entrypoint.
@@ -42,6 +44,11 @@ These are contractual guarantees (not suggestions):
 ## Dev checks
 - Schema lint: `python scripts/check_codex_schemas.py`
 - Concurrency guard: `rg -n "os\\.chdir\\(" agent/`
+
+## Verification
+- Swarm cwd smoke test: `tests/test_swarm_cwd.py` blocks `os.chdir`, asserts `subprocess.run` receives explicit `cwd`, and requires ≥2 calls with workers=2.
+- Run tests: `python -m pytest -q`
+- Static guard: `rg -n "os\\.chdir\\(" agent/`
 
 ## Legacy
 The older YAML supervisor and launcher scripts remain under `agent/` and `launchers/`.
