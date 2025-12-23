@@ -1,11 +1,11 @@
 # Continuity Ledger
 
-- Goal (incl. success criteria): Confirm Phase 0.5 startup flow integration matches requested behavior; address any remaining deltas (emoji prompts, swarm handling) if the user confirms.
-- Constraints/Assumptions: Follow AGENTS.md (minimal scoped changes; keep ASCII unless explicitly requested). approval_policy=never.
-- Key decisions: Current code already integrates StartupFlow and uses runner/team/swarm/auto; prompts are ASCII-only to avoid Windows console encoding errors.
+- Goal (incl. success criteria): Maintain current safer Phase 0.5 behavior (ASCII prompts + swarm routed to mode_swarm); confirm status truthfully when asked.
+- Constraints/Assumptions: Follow AGENTS.md (minimal scoped changes; keep ASCII). approval_policy=never.
+- Key decisions: Keep ASCII prompts and dedicated swarm routing; no further code changes requested.
 - State:
-  - Done: Phase 0.5 startup flow integration completed; tests pass in `.venv`. Emoji removed from startup flow prompts; changes committed and pushed.
-  - Now: Await user confirmation on whether to reintroduce emoji and/or change swarm dispatch to think_loop per new instructions.
-  - Next: If confirmed, apply requested diffs, verify, commit, push.
-- Open questions (UNCONFIRMED if needed): Do they want emoji prompts back despite Windows encoding issues? Do they want swarm routed to think_loop (per prompt) or keep dedicated swarm mode?
-- Working set (files/ids/commands): agent/autonomous/startup_flow.py; agent/run.py
+  - Done: Phase 0.5 startup flow integration completed; tests pass in `.venv`. Emoji removed from startup flow prompts; changes committed and pushed. User confirmed to keep safer behavior.
+  - Now: Verify repo state if asked; no changes pending.
+  - Next: None.
+- Open questions (UNCONFIRMED if needed): None.
+- Working set (files/ids/commands): agent/autonomous/startup_flow.py; agent/run.py; git log/status commands if verification is requested
