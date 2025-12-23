@@ -4,9 +4,6 @@ import argparse
 import sys
 from pathlib import Path
 
-from agent.autonomous.startup_flow import StartupFlow
-
-
 def _load_dotenv() -> None:
     try:
         from dotenv import load_dotenv
@@ -42,22 +39,27 @@ def main(argv: list[str] | None = None) -> int:
     _load_dotenv()
     args = build_arg_parser().parse_args(argv)
 
+    # Import startup flow
+    from agent.autonomous.startup_flow import StartupFlow
+
+    mode_arg = getattr(args, "mode", None)
+
     # Use intelligent startup flow if no mode specified
-    if not hasattr(args, 'mode') or args.mode is None:
+    if mode_arg is None:
         flow = StartupFlow()
         result = flow.run(args.task)
-        
+
         if result["status"] == "cancelled":
             print("Execution cancelled.")
             return
-        
+
         plan = result["plan"]
         mode = plan["mode"]
         depth = plan["depth"]
         specialists = plan["specialists"]
     else:
-        mode = args.mode
-        depth = getattr(args, 'depth', 'deep')
+        mode = mode_arg or "runner"
+        depth = getattr(args, "profile", "deep")
         specialists = []
     
     # Continue with existing execution code using mode, depth, and specialists
@@ -132,6 +134,16 @@ def main(argv: list[str] | None = None) -> int:
             print(str(exc), file=sys.stderr)
             return 2
 
+    if mode == "auto":
+        from agent.modes.autonomous import mode_autonomous
+
+        mode_autonomous(args.task, unsafe_mode=bool(args.unsafe_mode))
+        return 0
+    if mode == "swarm":
+        from agent.modes.swarm import mode_swarm
+
+        mode_swarm(args.task, unsafe_mode=bool(args.unsafe_mode), profile=depth)
+        return 0
     if mode == "team":
         from agent.autonomous.supervisor.orchestrator import run_team
 
@@ -141,10 +153,6 @@ def main(argv: list[str] | None = None) -> int:
             run_dir=run_dir,
             llm=llm,
         )
-    if mode == "think":
-        from agent.autonomous.planning.think_loop import run_think_loop
-
-        return run_think_loop(args.task, run_dir=run_dir, llm=llm)
 
     runner = AgentRunner(
         cfg=runner_cfg,

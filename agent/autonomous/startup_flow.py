@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 class ExecutionMode(Enum):
     """Execution modes for the agent."""
-    SOLO = "solo"
+    RUNNER = "runner"
     TEAM = "team"
     SWARM = "swarm"
     AUTO = "auto"
@@ -64,14 +64,14 @@ class StartupFlow:
     def _ask_execution_mode(self) -> ExecutionMode:
         """Ask about execution mode."""
         print("\n⚙️ How should I work?")
-        print("  a) Solo - Fast, single agent (5-10 min)")
+        print("  a) Runner - Fast, single agent (5-10 min)")
         print("  b) Team - Multiple specialists (10-20 min)")
         print("  c) Swarm - Parallel workers (15-30 min)")
         print("  d) Auto - Let me decide")
         
         choice = input("\nYour choice (a-d): ").strip().lower()
         mode_map = {
-            "a": ExecutionMode.SOLO,
+            "a": ExecutionMode.RUNNER,
             "b": ExecutionMode.TEAM,
             "c": ExecutionMode.SWARM,
             "d": ExecutionMode.AUTO,
@@ -129,7 +129,7 @@ class StartupFlow:
     
     def _select_specialists(self, focus_areas: list, mode: ExecutionMode) -> list:
         """Select specialists based on focus areas."""
-        if mode == ExecutionMode.SOLO:
+        if mode == ExecutionMode.RUNNER:
             return ["general_analyst"]
         
         specialists = []
@@ -145,9 +145,9 @@ class StartupFlow:
     def _estimate_time(self, mode: ExecutionMode, depth: AnalysisDepth) -> str:
         """Estimate execution time."""
         time_map = {
-            (ExecutionMode.SOLO, AnalysisDepth.FAST): "5-10 min",
-            (ExecutionMode.SOLO, AnalysisDepth.DEEP): "10-15 min",
-            (ExecutionMode.SOLO, AnalysisDepth.AUDIT): "20-30 min",
+            (ExecutionMode.RUNNER, AnalysisDepth.FAST): "5-10 min",
+            (ExecutionMode.RUNNER, AnalysisDepth.DEEP): "10-15 min",
+            (ExecutionMode.RUNNER, AnalysisDepth.AUDIT): "20-30 min",
             (ExecutionMode.TEAM, AnalysisDepth.FAST): "10-15 min",
             (ExecutionMode.TEAM, AnalysisDepth.DEEP): "15-25 min",
             (ExecutionMode.TEAM, AnalysisDepth.AUDIT): "25-40 min",
@@ -160,9 +160,9 @@ class StartupFlow:
     def _estimate_cost(self, mode: ExecutionMode, depth: AnalysisDepth) -> str:
         """Estimate execution cost."""
         cost_map = {
-            (ExecutionMode.SOLO, AnalysisDepth.FAST): "$0.10-0.20",
-            (ExecutionMode.SOLO, AnalysisDepth.DEEP): "$0.20-0.40",
-            (ExecutionMode.SOLO, AnalysisDepth.AUDIT): "$0.40-0.80",
+            (ExecutionMode.RUNNER, AnalysisDepth.FAST): "$0.10-0.20",
+            (ExecutionMode.RUNNER, AnalysisDepth.DEEP): "$0.20-0.40",
+            (ExecutionMode.RUNNER, AnalysisDepth.AUDIT): "$0.40-0.80",
             (ExecutionMode.TEAM, AnalysisDepth.FAST): "$0.30-0.50",
             (ExecutionMode.TEAM, AnalysisDepth.DEEP): "$0.50-1.00",
             (ExecutionMode.TEAM, AnalysisDepth.AUDIT): "$1.00-2.00",

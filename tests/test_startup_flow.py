@@ -32,7 +32,7 @@ def test_specialist_selection():
     """Test specialist selection."""
     flow = StartupFlow()
     
-    specialists = flow._select_specialists(["quality"], ExecutionMode.SOLO)
+    specialists = flow._select_specialists(["quality"], ExecutionMode.RUNNER)
     assert specialists == ["general_analyst"]
     
     specialists = flow._select_specialists(
@@ -47,7 +47,7 @@ def test_time_estimation():
     """Test time estimation."""
     flow = StartupFlow()
     
-    time_est = flow._estimate_time(ExecutionMode.SOLO, AnalysisDepth.FAST)
+    time_est = flow._estimate_time(ExecutionMode.RUNNER, AnalysisDepth.FAST)
     assert "5-10 min" in time_est
     
     time_est = flow._estimate_time(ExecutionMode.TEAM, AnalysisDepth.AUDIT)
@@ -57,7 +57,7 @@ def test_cost_estimation():
     """Test cost estimation."""
     flow = StartupFlow()
     
-    cost_est = flow._estimate_cost(ExecutionMode.SOLO, AnalysisDepth.FAST)
+    cost_est = flow._estimate_cost(ExecutionMode.RUNNER, AnalysisDepth.FAST)
     assert "$" in cost_est
     
     cost_est = flow._estimate_cost(ExecutionMode.SWARM, AnalysisDepth.AUDIT)
