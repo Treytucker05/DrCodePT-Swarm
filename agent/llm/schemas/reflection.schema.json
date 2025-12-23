@@ -23,7 +23,7 @@
             "kind": { "type": "string", "enum": ["experience", "procedure", "knowledge", "user_info"] },
             "key": { "type": "string" },
             "content": { "type": "string" },
-            "metadata": { "type": "object" }
+            "metadata": { "type": "object", "additionalProperties": false }
           }
         }
       ]

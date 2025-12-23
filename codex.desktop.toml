@@ -1,15 +1,5 @@
 sandbox_mode = "danger-full-access"
 
 [features]
-rmcp_client = true
+rmcp_client = false
 web_search_request = true
-
-[mcp_servers.desktop]
-command = "python"
-args = ["C:\\Users\\treyt\\OneDrive\\Desktop\\DrCodePT-Swarm\\desktop_mcp_wrapper.py"]
-
-[mcp_servers.playwright]
-command = "npx"
-args = ["-y", "mcp-playwright"]
-startup_timeout_sec = 90
-tool_timeout_sec = 60
