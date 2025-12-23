@@ -675,12 +675,14 @@ Instructions:
 
     print(f"{YELLOW}[SYNTHESIS]{RESET} Combining results...")
     _log_event(log, "SYNTH", "Initial synthesis")
-    synth_prompt = f"""Synthesize the following notes into a coherent report.
-Include citations as raw URLs. Do not invent sources.
-
-NOTES:
-{("\n\n".join(parts))[:12000]}
-"""
+    notes_blob = "\n\n".join(parts)
+    synth_prompt = (
+        "Synthesize the following notes into a coherent report.\n"
+        "Include citations as raw URLs. Do not invent sources.\n"
+        "\n"
+        "NOTES:\n"
+        f"{notes_blob[:12000]}\n"
+    )
     synth = _call_codex(
         synth_prompt,
         allow_tools=False,
