@@ -63,7 +63,7 @@ class StartupFlow:
     
     def _ask_execution_mode(self) -> ExecutionMode:
         """Ask about execution mode."""
-        print("\n⚙️ How should I work?")
+        print("\nHow should I work?")
         print("  a) Runner - Fast, single agent (5-10 min)")
         print("  b) Team - Multiple specialists (10-20 min)")
         print("  c) Swarm - Parallel workers (15-30 min)")
@@ -187,7 +187,7 @@ class StartupFlow:
     
     def get_confirmation(self) -> bool:
         """Get user confirmation to proceed."""
-        response = input("\n✅ Ready to proceed? (yes/no): ").strip().lower()
+        response = input("\nReady to proceed? (yes/no): ").strip().lower()
         return response in ["yes", "y"]
     
     def run(self, task: str) -> Dict[str, Any]:
