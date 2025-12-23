@@ -14,6 +14,22 @@ Perception -> Reasoning/Planning -> Action/Execution -> Feedback -> Reflection -
 5) Traces: `runs/autonomous/<run_id>/trace.jsonl` (printed at end)
 
 No `OPENAI_API_KEY` is required; the agent uses your local Codex CLI login.
+Codex access is provided through ChatGPT Pro, so `codex login` will prompt for your ChatGPT account instead of an API key.
+
+## Documentation map (source of truth)
+This README is a high-level entrypoint. The authoritative docs live in:
+- `START_HERE.md` - onboarding and first-run flow.
+- `ARCHITECTURE.md` - how the system works end-to-end.
+- `ENHANCEMENT_SUMMARY.md` - full feature inventory.
+- `USAGE_EXAMPLES.md` - real workflows and patterns.
+- `QUICK_REFERENCE.md` - command cheat sheet.
+- `TROUBLESHOOTING.md` - common issues + fixes.
+- `AGENT_SETUP_GUIDE.md` - environment setup and prerequisites.
+
+## Codex operating rules (must read)
+When Codex is working in this repo, these files are the required rules:
+- `AGENTS.md` - operating constraints and workflow rules.
+- `CONTINUITY.md` - the continuity ledger Codex must maintain.
 
 ## Execution defaults
 - LLM calls use `codex exec` with `--dangerously-bypass-approvals-and-sandbox` and `--search` (mandatory flags for this repo); prompts enforce JSON-only structured outputs.

@@ -14,8 +14,21 @@ Prereqs:
 - `codex login`
 
 No `OPENAI_API_KEY` is required; the agent uses your local Codex CLI login.
+Codex access is provided through ChatGPT Pro, so `codex login` will prompt for your ChatGPT account instead of an API key.
 
 LLM inference uses `codex exec` under the hood (with `--dangerously-bypass-approvals-and-sandbox` + `--search`) and always requests structured JSON outputs via `--output-schema`.
+
+## Documentation map (source of truth)
+This package README is a summary. For full documentation:
+- `README.md` (repo root) - overview + entrypoint.
+- `ARCHITECTURE.md` - how the system works.
+- `ENHANCEMENT_SUMMARY.md` - feature inventory.
+- `USAGE_EXAMPLES.md` - workflow examples.
+- `TROUBLESHOOTING.md` - common issues.
+
+## Codex operating rules (must read)
+- `AGENTS.md` - operating constraints and workflow rules.
+- `CONTINUITY.md` - the continuity ledger Codex must maintain.
 
 ## Key modules
 - `agent/run.py` - CLI entrypoint.

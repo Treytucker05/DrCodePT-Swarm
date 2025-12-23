@@ -1,11 +1,11 @@
 # Continuity Ledger
 
-- Goal (incl. success criteria): Verify reported test/syntax issues (research.py line 683) and, if confirmed, fix the syntax error. Provide test guidance for dependencies.
-- Constraints/Assumptions: Follow AGENTS.md (minimal scoped changes; keep ASCII; run relevant pytest if requested). approval_policy=never.
-- Key decisions: Inspect file before editing; only change if error is real.
+- Goal (incl. success criteria): Add authoritative documentation map + Codex operating rules to README files; include ChatGPT Pro login/no API key note.
+- Constraints/Assumptions: Follow AGENTS.md (minimal scoped changes; keep ASCII). approval_policy=never.
+- Key decisions: Add a single ASCII sentence to each README in the most relevant section.
 - State:
-  - Done: Phase 0.5 startup flow integration completed; tests pass in `.venv`. Emoji removed from startup flow prompts; changes committed and pushed.
-  - Now: Fix confirmed f-string backslash issue in `agent/modes/research.py` and run py_compile.
-  - Next: Commit and push the fix if user approves; suggest dependency install/tests.
+  - Done: Fixed research.py f-string syntax error and pushed. Phase 0.5 work completed previously.
+  - Now: Added documentation map + Codex operating rules to README.md, README_NEW_FEATURES.md, and agent/README.md; added ChatGPT Pro/no API key note where missing.
+  - Next: Commit and push README updates if user approves.
 - Open questions (UNCONFIRMED if needed): None.
-- Working set (files/ids/commands): agent/modes/research.py; `python -m py_compile agent/modes/research.py`
+- Working set (files/ids/commands): README.md; README_NEW_FEATURES.md; agent/README.md; CONTINUITY.md

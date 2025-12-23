@@ -14,6 +14,21 @@ I've transformed your agent into a **self-healing, planning, learning system** t
 
 ---
 
+## Documentation map (source of truth)
+This file is a feature highlight. For complete docs:
+- `README.md` - overview + entrypoint.
+- `START_HERE.md` - onboarding and first-run flow.
+- `ARCHITECTURE.md` - how the system works.
+- `ENHANCEMENT_SUMMARY.md` - full feature inventory.
+- `USAGE_EXAMPLES.md` - workflow examples.
+- `TROUBLESHOOTING.md` - common issues.
+
+## Codex operating rules (must read)
+- `AGENTS.md` - operating constraints and workflow rules.
+- `CONTINUITY.md` - the continuity ledger Codex must maintain.
+
+---
+
 ## 🚀 Quick Start
 
 ### 1. Install Dependencies
@@ -179,6 +194,9 @@ If it fails, the agent:
 ```powershell
 pip install -r requirements.txt
 ```
+
+### Codex Login (No API Key)
+Codex access is provided through ChatGPT Pro, so `codex login` will prompt for your ChatGPT account. No API key is required.
 
 ### 2FA Support
 Agent pauses for:
