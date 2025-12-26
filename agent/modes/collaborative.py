@@ -74,6 +74,65 @@ def _fallback_questions(asked: set[str]) -> List[str]:
     return _sanitize_questions(defaults, asked)[:2]
 
 
+def _needs_clarification(goal: str, context: str) -> bool:
+    goal_text = (goal or "").strip()
+    if not goal_text:
+        return True
+
+    lower = goal_text.lower()
+    context_text = (context or "").strip()
+
+    vague_markers = [
+        "help",
+        "something",
+        "stuff",
+        "things",
+        "whatever",
+        "anything",
+        "not sure",
+        "unsure",
+        "maybe",
+        "idk",
+        "tbd",
+        "???",
+    ]
+    if any(marker in lower for marker in vague_markers):
+        return True
+
+    words = lower.split()
+    if context_text:
+        return False
+    if len(words) <= 1:
+        return True
+
+    concrete_verbs = {
+        "list",
+        "show",
+        "read",
+        "open",
+        "run",
+        "execute",
+        "install",
+        "update",
+        "add",
+        "remove",
+        "delete",
+        "create",
+        "build",
+        "test",
+        "implement",
+        "write",
+        "generate",
+        "summarize",
+        "search",
+        "find",
+    }
+    if len(words) <= 2 and words[0] not in concrete_verbs:
+        return True
+
+    return False
+
+
 def _normalize_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
     raw_steps = plan.get("plan_steps") or []
     normalized: List[Dict[str, Any]] = []
@@ -110,10 +169,10 @@ def _generate_questions(goal: str, context: str, history: List[Dict]) -> Dict:
         "You are in SIMPLE COLLABORATIVE PLANNING mode (NOT Team mode).\n"
         "DO NOT mention CONTINUITY.md, Ledger Snapshots, or AGENTS.md conventions.\n"
         "DO NOT use OBSERVE/RESEARCH/PLAN/EXECUTE/VERIFY/REFLECT phases.\n"
-        "Ask ONLY 2-3 critical questions about the user's actual task.\n"
+        "Ask 0-3 questions ONLY if the request is ambiguous.\n"
         "Use reasonable defaults for minor details.\n"
         "Return STRICT JSON that matches the schema. No prose.\n"
-        "If you have enough info to plan, set ready_to_plan=true and return an empty questions array.\n"
+        "If the request is clear, set ready_to_plan=true and questions=[].\n"
         "Do not repeat questions already asked.\n"
         "IMPORTANT: Always include plan_steps as an empty array [] when asking questions.\n\n"
         f"Goal:\n{goal}\n\n"
@@ -200,13 +259,15 @@ def mode_collaborative(goal: str, context: str = "") -> Dict[str, Any]:
         questions = result.get("questions") or []
         ready_to_plan = bool(result.get("ready_to_plan"))
         questions = _sanitize_questions(list(questions), asked)
+        if ready_to_plan:
+            questions = []
         
         # Limit questions to stay under max_total_questions
         remaining_quota = max_total_questions - total_questions_asked
         if len(questions) > remaining_quota:
             questions = questions[:remaining_quota]
         
-        if not questions and not ready_to_plan:
+        if not questions and not ready_to_plan and _needs_clarification(goal, context):
             questions = _fallback_questions(asked)[:min(2, remaining_quota)]
 
         if not questions:

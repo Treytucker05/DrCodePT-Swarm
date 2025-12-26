@@ -1,31 +1,28 @@
 Goal (incl. success criteria):
-- Implement smart orchestrator auto-routing in `agent/treys_agent.py`, replacing manual mode selection prompts.
+- Fix smart_orchestrator research routing so "Search for Google OAuth docs" triggers research mode: ensure "search" and "docs" keywords trigger, research auto-executes without confirmation, and research bypasses playbook matching; verify with routing test.
 
 Constraints/Assumptions:
 - Keep changes minimal and scoped; follow existing Python style (4-space indent).
 - Avoid destructive actions unless explicitly requested.
-- Update imports as needed; retain existing behavior except for routing changes.
-- Tests: run `pytest -q` if relevant and feasible.
+- Test routing with: "Search for Google OAuth docs".
 
 Key decisions:
-- Follow user-specified smart_orchestrator logic and routing flow.
-- Route ambiguous tasks through smart_orchestrator; keep explicit `collab:` override.
+- None yet.
 
 State:
   - Done:
-    - Added `smart_orchestrator` and wired it into main routing to replace manual mode prompts.
-    - Updated imports to support playbook matching in the orchestrator.
-    - Updated help text to reflect auto-routing.
-    - Limited collaborative auto-detect to smart_orchestrator (explicit `collab:` still supported).
-    - Ran `pytest -q` (failed: missing `list_profiles` import in tests).
+    - Read existing continuity ledger.
+    - Added "search"/"docs" research triggers and moved research routing ahead of playbook matching.
+    - Ran routing check for "Search for Google OAuth docs" -> research mode.
+    - Ran `pytest -q`; fails during collection: ImportError for `list_profiles` in `tests/test_profiles.py`.
   - Now:
-    - Await user review; decide on next steps for test failure.
+    - Review changes and report results.
   - Next:
-    - (Optional) Fix or skip failing tests if requested.
+    - None.
 
 Open questions (UNCONFIRMED if needed):
 - None.
 
 Working set (files/ids/commands):
-- `agent/treys_agent.py`
-- `CONTINUITY.md`
+- `DrCodePT-Swarm/agent/treys_agent.py`
+- `DrCodePT-Swarm/CONTINUITY.md`

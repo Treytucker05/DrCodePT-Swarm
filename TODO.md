@@ -1,36 +1,81 @@
 # DrCodePT-Swarm TODO List
 
-## High Priority
+## High Priority - STRATEGIC THINKING PARTNER FOCUS 🎯
 
-### 1. Google Calendar + Tasks + Memory MCP Integration 🎯 **PRIORITY #1**
-**Status:** Ready to implement  
+### 1. Fix Collaborative Over-Questioning **⚡ DO THIS NOW**
+**Status:** Audit complete, ready to implement  
 **Added:** 2025-12-26  
-**Description:** Core productivity automation for PT school management
-- Google Calendar MCP - schedule management, conflict detection, free/busy queries
-- Google Tasks MCP - task creation, tracking, completion
-- Memory MCP - persistent knowledge graph across sessions
+**Time:** 30 minutes  
+**Description:** Implement 4 fixes from Codex audit to stop unnecessary questions
 
-**Why This First:**
-- Biggest immediate time saver (10-15 hrs/week)
-- Foundation for Blackboard automation (Phase 3)
-- Enables automated PT deadline tracking
-- Critical for managing PT school + gym + family schedule
+**Issues identified:**
+1. Question prompt forces 2-3 questions even when request is clear
+2. ready_to_plan flag is ignored
+3. Fallback questions trigger for clear requests
+4. Swarm routing too broad (triggers on "research")
 
-**Implementation Plan:**
-- See `PHASE1_CALENDAR_TASKS_MEMORY.md` for detailed setup
-- Week 1: Setup all 3 MCP servers + authentication
-- Week 2: Build PT-specific workflows
-- Week 3: Production deployment
+**Implementation:**
+- Apply all 4 fixes from audit report
+- Test with: "Search for Google OAuth docs and extract steps"
+- Should execute immediately without questions
 
-**Expected Outcomes:**
-- Zero missed PT assignment deadlines
-- Automated calendar conflict detection
-- Persistent memory of study preferences
-- Tasks auto-created from conversations
+**Why First:** Blocks all other collaborative work until fixed
 
 ---
 
-### 2. Implement Smart Orchestrator Router
+### 2. Build Multi-Agent Strategic Thinking System **CORE GOAL**
+**Status:** New architecture needed  
+**Added:** 2025-12-26  
+**Description:** Transform agent from task executor to strategic thinking partner
+
+**Core capabilities needed:**
+- **Socratic Questioning Mode:** Helps clarify fuzzy goals through probing questions
+- **Multi-Agent Research:** Spawns specialist agents (Research/Analysis/Critic/Synthesis)
+- **Assumption Challenge Mode:** Detects contradictions, gaps in logic, unrealistic plans
+- **Gap Analysis:** Identifies missing pieces in your systems/thinking
+- **Synthesis Mode:** Combines findings into actionable recommendations
+
+**Example workflow:**
+```
+You: "I want to improve my study system"
+Agent: Socratic mode → "What outcome are you optimizing for?"
+You: "Long-term retention"
+Agent: Gap analysis → "Your SOP focuses on encoding. Where's retrieval practice?"
+Agent: Research mode → Spawns 3 agents to find retrieval methods
+Agent: Synthesis → "Here are 5 approaches. I recommend spaced repetition because..."
+Agent: Challenge mode → "You said you'd study 2hr/day. Where does that time come from?"
+```
+
+**Phases:**
+- Phase 1: Socratic questioning workflow
+- Phase 2: Multi-agent research spawning
+- Phase 3: Critical analysis/assumption detector
+- Phase 4: Systems mapping and gap analysis
+
+---
+
+### 3. OpenRouter Uncensored API Integration
+**Status:** New  
+**Added:** 2025-12-26  
+**Time:** 2-3 hours  
+**Description:** Add fallback to uncensored model when primary LLM refuses
+
+**Use cases:**
+- Medical questions triggering safety filters
+- Security/hacking research for legitimate purposes
+- Edge case queries that get blocked
+
+**Implementation:**
+- Add OpenRouter client to agent/llm/
+- Try primary model first (OpenAI/Anthropic)
+- Auto-fallback to venice/uncensored:free on refusal
+- Add OPENROUTER_API_KEY to .env
+
+**Priority:** After collaborative fixes working
+
+---
+
+### 4. Implement Smart Orchestrator Router
 **Status:** Ready to implement  
 **Description:** Replace manual mode selection with intelligent auto-routing
 - Add `smart_orchestrator()` function to `agent/treys_agent.py`
@@ -95,9 +140,32 @@
 
 ---
 
-## Medium Priority
+## Medium Priority - Automation & Productivity
 
-### 4. Phase 2: Self-Monitoring Execution
+### 5. Google Calendar + Tasks + Memory MCP Integration
+**Status:** Designed, not yet critical  
+**Added:** 2025-12-26  
+**Description:** Productivity automation for PT school + gym management
+- Google Calendar MCP - schedule management
+- Google Tasks MCP - task tracking
+- Memory MCP - persistent context
+
+**Why Deprioritized:** 
+- Strategic thinking system more valuable
+- Calendar/tasks are nice-to-have, not core mission
+- Can add later once thinking partner works
+
+**Keep in backlog for:**
+- Study schedule automation (integrate with Study SOP)
+- Client workout tracking for gym
+- PT assignment deadline tracking
+
+**Implementation Plan:**
+- See `PHASE1_CALENDAR_TASKS_MEMORY.md` when ready
+
+---
+
+### 6. Expand MCP Tool Coverage
 **Status:** Planned  
 **Description:** Add pause-on-uncertainty during execution
 - Monitor confidence scores during MCP tool execution

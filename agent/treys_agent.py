@@ -158,6 +158,7 @@ def show_help() -> None:
 
 _RESEARCH_KEYWORDS = {
     "research",
+    "search",
     "compare",
     "comparison",
     "overview",
@@ -181,6 +182,8 @@ _RESEARCH_KEYWORDS = {
     "guide",
     "tutorial",
     "learn",
+    "docs",
+    "documentation",
 }
 
 _RESEARCH_PHRASES = {
@@ -1035,7 +1038,27 @@ def smart_orchestrator(user_input: str) -> Dict[str, Any]:
             "auto_execute": True,
         }
 
-    # TIER 2: Playbook matches (if score high enough, use it)
+    # TIER 2: Research tasks (auto-execute research mode)
+    research_keywords = [
+        "research",
+        "search",
+        "investigate",
+        "look up",
+        "find sources",
+        "gather sources",
+        "citations",
+        "sources",
+        "docs",
+        "documentation",
+    ]
+    if any(kw in lower for kw in research_keywords):
+        return {
+            "mode": "research",
+            "reason": "Research request",
+            "auto_execute": True,
+        }
+
+    # TIER 3: Playbook matches (if score high enough, use it)
     playbook_name, playbook_data = find_matching_playbook(
         user_input, load_playbooks()
     )
@@ -1047,18 +1070,14 @@ def smart_orchestrator(user_input: str) -> Dict[str, Any]:
             "playbook": playbook_name,
         }
 
-    # TIER 3: Deep analysis/research tasks (swarm mode)
+    # TIER 4: Deep analysis tasks (swarm mode)
     swarm_keywords = [
         "audit",
-        "analyze",
-        "research",
-        "investigate",
-        "compare",
-        "find improvements",
-        "identify gaps",
-        "review code",
         "deep dive",
         "comprehensive analysis",
+        "identify gaps",
+        "review code",
+        "root cause analysis",
     ]
     if any(kw in lower for kw in swarm_keywords):
         return {
@@ -1067,7 +1086,7 @@ def smart_orchestrator(user_input: str) -> Dict[str, Any]:
             "auto_execute": False,  # Ask for swarm confirmation
         }
 
-    # TIER 4: Ambiguous tasks (collaborative planning)
+    # TIER 5: Ambiguous tasks (collaborative planning)
     ambiguous_keywords = [
         "organize",
         "clean up",
@@ -1084,7 +1103,7 @@ def smart_orchestrator(user_input: str) -> Dict[str, Any]:
             "auto_execute": True,
         }
 
-    # TIER 5: Action requests (default to execute)
+    # TIER 6: Action requests (default to execute)
     if _looks_like_action_request(user_input):
         return {
             "mode": "execute",
@@ -1092,7 +1111,7 @@ def smart_orchestrator(user_input: str) -> Dict[str, Any]:
             "auto_execute": True,
         }
 
-    # TIER 6: Conversational (chat only)
+    # TIER 7: Conversational (chat only)
     return {
         "mode": "chat",
         "reason": "Conversational query",
@@ -1518,6 +1537,10 @@ def main() -> None:
                         mode_execute(user_input, context=result)
                 else:
                     mode_execute(user_input, context=result)
+            continue
+
+        if routing["mode"] == "research":
+            mode_research(user_input)
             continue
 
         if routing["mode"] == "swarm":
