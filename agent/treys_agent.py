@@ -10,6 +10,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import Any, Dict
 
 try:
     from colorama import Fore, Style, init as color_init
@@ -31,6 +32,8 @@ REPO_ROOT = BASE_DIR.parent
 # Ensure imports resolve to the repo-root `agent` package when run from `...\\agent`.
 sys.path.insert(0, str(REPO_ROOT))
 
+from agent.modes.execute import find_matching_playbook, load_playbooks
+
 
 def banner() -> None:
     print(f"\n{CYAN}{'=' * 44}")
@@ -48,7 +51,7 @@ def show_help() -> None:
   Just type what you want to say.
   The agent will respond conversationally without running tools.
   To run tools, use Execute:, Auto:, Plan:, Team:, Swarm:, Mail:, or Learn: prefixes.
-  Or ask for a task and then reply "execute", "team", "auto", or "swarm" to proceed.
+  Or just ask for a task and the agent will auto-route to the best mode.
   Examples:
     - clean my yahoo spam
     - download school files
@@ -1017,6 +1020,86 @@ def assess_task_complexity(user_input: str) -> str:
     return "collaborative"
 
 
+def smart_orchestrator(user_input: str) -> Dict[str, Any]:
+    """
+    Intelligent router that decides execution mode autonomously.
+    Returns: {"mode": str, "reason": str, "auto_execute": bool}
+    """
+    lower = user_input.lower().strip()
+
+    # TIER 1: Simple read-only queries (auto-execute immediately)
+    if _is_simple_filesystem_query(user_input):
+        return {
+            "mode": "execute",
+            "reason": "Simple filesystem query",
+            "auto_execute": True,
+        }
+
+    # TIER 2: Playbook matches (if score high enough, use it)
+    playbook_name, playbook_data = find_matching_playbook(
+        user_input, load_playbooks()
+    )
+    if playbook_name and playbook_data:
+        return {
+            "mode": "execute",
+            "reason": f"Matched playbook: {playbook_name}",
+            "auto_execute": True,
+            "playbook": playbook_name,
+        }
+
+    # TIER 3: Deep analysis/research tasks (swarm mode)
+    swarm_keywords = [
+        "audit",
+        "analyze",
+        "research",
+        "investigate",
+        "compare",
+        "find improvements",
+        "identify gaps",
+        "review code",
+        "deep dive",
+        "comprehensive analysis",
+    ]
+    if any(kw in lower for kw in swarm_keywords):
+        return {
+            "mode": "swarm",
+            "reason": "Complex analysis requiring parallel research",
+            "auto_execute": False,  # Ask for swarm confirmation
+        }
+
+    # TIER 4: Ambiguous tasks (collaborative planning)
+    ambiguous_keywords = [
+        "organize",
+        "clean up",
+        "improve",
+        "optimize",
+        "fix",
+        "better way",
+        "help me with",
+    ]
+    if any(kw in lower for kw in ambiguous_keywords):
+        return {
+            "mode": "collaborative",
+            "reason": "Ambiguous task needs clarification",
+            "auto_execute": True,
+        }
+
+    # TIER 5: Action requests (default to execute)
+    if _looks_like_action_request(user_input):
+        return {
+            "mode": "execute",
+            "reason": "Standard action request",
+            "auto_execute": True,
+        }
+
+    # TIER 6: Conversational (chat only)
+    return {
+        "mode": "chat",
+        "reason": "Conversational query",
+        "auto_execute": True,
+    }
+
+
 def _is_simple_filesystem_query(user_input: str) -> bool:
     """Detect simple read-only filesystem queries that don't need confirmation."""
     lower = user_input.lower()
@@ -1381,31 +1464,18 @@ def main() -> None:
         if _maybe_route_mail(user_input):
             continue
 
-        # Check for explicit mode override
         if lower.startswith("collab:"):
-            detected_mode = "collaborative"
-            user_input = user_input.split(":", 1)[1].strip()
-            explicit_collab = True
-        else:
-            detected_mode = assess_task_complexity(user_input)
-            explicit_collab = False
-
-        if detected_mode == "collaborative":
-            task = user_input
+            task = user_input.split(":", 1)[1].strip()
             if not task:
                 print(f"{YELLOW}[INFO]{RESET} Provide a goal after 'Collab:'.")
                 continue
-            if not explicit_collab:
-                print(
-                    f"{CYAN}[AUTO-DETECT]{RESET} Using collaborative planning mode..."
-                )
             from agent.context_loader import format_context_for_llm
             from agent.modes.collaborative import mode_collaborative
             from agent.modes.execute_plan import execute_plan_direct
 
             context = format_context_for_llm()
             result = mode_collaborative(task, context=context)
-            
+
             if result.get("approved"):
                 plan_steps = result.get("plan_steps", [])
                 if plan_steps:
@@ -1429,19 +1499,49 @@ def main() -> None:
             mode_execute(user_input)
             continue
 
-        if _looks_like_action_request(user_input):
-            pending_task = user_input
-            pending_mode = default_action_mode
-            print(
-                f"{YELLOW}[READY]{RESET} I can do that. Reply with 'execute', 'team', 'auto', or 'swarm' to run it, "
-                f"or 'cancel' to stop. (default: {pending_mode})"
-            )
+        # Smart orchestrator decides mode automatically
+        routing = smart_orchestrator(user_input)
+
+        if routing["mode"] == "collaborative":
+            from agent.context_loader import format_context_for_llm
+            from agent.modes.collaborative import mode_collaborative
+            from agent.modes.execute_plan import execute_plan_direct
+
+            context = format_context_for_llm()
+            result = mode_collaborative(user_input, context=context)
+
+            if result.get("approved"):
+                plan_steps = result.get("plan_steps", [])
+                if plan_steps:
+                    success = execute_plan_direct(plan_steps)
+                    if not success:
+                        mode_execute(user_input, context=result)
+                else:
+                    mode_execute(user_input, context=result)
             continue
 
-        # Default behavior: chat-only (no tools).
-        chat_history.append(("user", user_input))
-        _run_chat(user_input, chat_history)
-        continue
+        if routing["mode"] == "swarm":
+            from agent.modes.swarm import mode_swarm
+
+            # Ask for swarm confirmation (complex tasks warrant it)
+            print(f"{YELLOW}[SWARM RECOMMENDED]{RESET} {routing['reason']}")
+            print("This task benefits from parallel analysis. Proceed with swarm mode? (y/n): ", end="")
+            confirm = input().strip().lower()
+            if confirm in {"y", "yes"}:
+                mode_swarm(user_input, unsafe_mode=unsafe_mode)
+            else:
+                mode_execute(user_input)  # Fallback to single-agent
+            continue
+
+        if routing["mode"] == "execute":
+            if routing.get("auto_execute"):
+                mode_execute(user_input)
+                continue
+
+        if routing["mode"] == "chat":
+            chat_history.append(("user", user_input))
+            _run_chat(user_input, chat_history)
+            continue
 
 if __name__ == "__main__":
     main()

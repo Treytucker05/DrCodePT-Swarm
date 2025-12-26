@@ -2,7 +2,35 @@
 
 ## High Priority
 
-### 1. Implement Smart Orchestrator Router
+### 1. Google Calendar + Tasks + Memory MCP Integration 🎯 **PRIORITY #1**
+**Status:** Ready to implement  
+**Added:** 2025-12-26  
+**Description:** Core productivity automation for PT school management
+- Google Calendar MCP - schedule management, conflict detection, free/busy queries
+- Google Tasks MCP - task creation, tracking, completion
+- Memory MCP - persistent knowledge graph across sessions
+
+**Why This First:**
+- Biggest immediate time saver (10-15 hrs/week)
+- Foundation for Blackboard automation (Phase 3)
+- Enables automated PT deadline tracking
+- Critical for managing PT school + gym + family schedule
+
+**Implementation Plan:**
+- See `PHASE1_CALENDAR_TASKS_MEMORY.md` for detailed setup
+- Week 1: Setup all 3 MCP servers + authentication
+- Week 2: Build PT-specific workflows
+- Week 3: Production deployment
+
+**Expected Outcomes:**
+- Zero missed PT assignment deadlines
+- Automated calendar conflict detection
+- Persistent memory of study preferences
+- Tasks auto-created from conversations
+
+---
+
+### 2. Implement Smart Orchestrator Router
 **Status:** Ready to implement  
 **Description:** Replace manual mode selection with intelligent auto-routing
 - Add `smart_orchestrator()` function to `agent/treys_agent.py`

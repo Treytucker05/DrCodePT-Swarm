@@ -9,14 +9,19 @@ Constraints/Assumptions:
 
 Key decisions:
 - Follow user-specified smart_orchestrator logic and routing flow.
+- Route ambiguous tasks through smart_orchestrator; keep explicit `collab:` override.
 
 State:
   - Done:
-    - Read AGENTS.md and existing CONTINUITY.md.
+    - Added `smart_orchestrator` and wired it into main routing to replace manual mode prompts.
+    - Updated imports to support playbook matching in the orchestrator.
+    - Updated help text to reflect auto-routing.
+    - Limited collaborative auto-detect to smart_orchestrator (explicit `collab:` still supported).
+    - Ran `pytest -q` (failed: missing `list_profiles` import in tests).
   - Now:
-    - Inspect `agent/treys_agent.py` for assess_task_complexity and pending_task flow.
+    - Await user review; decide on next steps for test failure.
   - Next:
-    - Implement `smart_orchestrator`, replace manual prompt flow, update imports.
+    - (Optional) Fix or skip failing tests if requested.
 
 Open questions (UNCONFIRMED if needed):
 - None.
