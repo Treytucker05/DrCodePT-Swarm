@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import html as html_lib
 import logging
 import json
@@ -26,7 +27,7 @@ from agent.config.profile import ProfileConfig, RunUsage
 from ..memory.sqlite_store import MemoryKind, SqliteMemoryStore
 from ..models import ToolResult
 from ..retry_utils import WEB_RETRY_CONFIG, retry_with_backoff
-from .registry import ToolRegistry, ToolSpec
+from .registry import ToolRegistry, ToolSpec, register_calendar_tasks_tools
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +141,15 @@ def web_fetch(ctx: RunContext, args: WebFetchArgs) -> ToolResult:
             error="web_sources_limit_reached",
             metadata={"limit": profile.max_web_sources},
         )
+    policy = _domain_policy_from_env()
+    if policy and not _url_allowed(args.url, policy):
+        host = _normalize_host(args.url)
+        return ToolResult(
+            success=False,
+            error="domain_blocked",
+            metadata={"domain": host, "policy": policy, "untrusted": True},
+            retryable=False,
+        )
     try:
         resp = requests.get(
             args.url,
@@ -198,6 +208,96 @@ def _decode_ddg_url(href: str) -> str:
     return href
 
 
+def _normalize_host(value: str) -> str:
+    if not value:
+        return ""
+    value = value.strip().lower()
+    if "://" in value:
+        try:
+            value = urlparse(value).netloc
+        except Exception:
+            pass
+    if "@" in value:
+        value = value.split("@")[-1]
+    if ":" in value:
+        value = value.split(":", 1)[0]
+    if value.startswith("www."):
+        value = value[4:]
+    return value.strip(".")
+
+
+def _split_domains(raw: str) -> List[str]:
+    if not raw:
+        return []
+    items: List[str] = []
+    for token in re.split(r"[,\s]+", raw):
+        if not token:
+            continue
+        host = _normalize_host(token)
+        if host and host not in items:
+            items.append(host)
+    return items
+
+
+def _split_suffixes(raw: str) -> List[str]:
+    if not raw:
+        return []
+    items: List[str] = []
+    for token in re.split(r"[,\s]+", raw):
+        tok = token.strip().lower()
+        if not tok:
+            continue
+        if not tok.startswith("."):
+            tok = "." + tok
+        if tok not in items:
+            items.append(tok)
+    return items
+
+
+def _match_domain(host: str, domain: str) -> bool:
+    if not host or not domain:
+        return False
+    return host == domain or host.endswith("." + domain)
+
+
+def _domain_policy_from_env() -> Optional[Dict[str, List[str]]]:
+    allow_domains = _split_domains(os.getenv("TREYS_AGENT_WEB_ALLOWLIST", ""))
+    allow_suffixes = _split_suffixes(os.getenv("TREYS_AGENT_WEB_ALLOW_SUFFIXES", ""))
+    block_domains = _split_domains(os.getenv("TREYS_AGENT_WEB_BLOCKLIST", ""))
+    block_suffixes = _split_suffixes(os.getenv("TREYS_AGENT_WEB_BLOCK_SUFFIXES", ""))
+    if not (allow_domains or allow_suffixes or block_domains or block_suffixes):
+        return None
+    return {
+        "allow_domains": allow_domains,
+        "allow_suffixes": allow_suffixes,
+        "block_domains": block_domains,
+        "block_suffixes": block_suffixes,
+    }
+
+
+def _url_allowed(url: str, policy: Dict[str, List[str]]) -> bool:
+    host = _normalize_host(url)
+    if not host:
+        return False
+    for blocked in policy.get("block_domains", []):
+        if _match_domain(host, blocked):
+            return False
+    for blocked_suffix in policy.get("block_suffixes", []):
+        if host.endswith(blocked_suffix):
+            return False
+    allow_domains = policy.get("allow_domains", [])
+    allow_suffixes = policy.get("allow_suffixes", [])
+    if allow_domains or allow_suffixes:
+        for allowed in allow_domains:
+            if _match_domain(host, allowed):
+                return True
+        for allowed_suffix in allow_suffixes:
+            if host.endswith(allowed_suffix):
+                return True
+        return False
+    return True
+
+
 def web_search(ctx: RunContext, args: WebSearchArgs) -> ToolResult:
     profile = _get_profile(ctx)
     usage = _get_usage(ctx)
@@ -253,14 +353,28 @@ def web_search(ctx: RunContext, args: WebSearchArgs) -> ToolResult:
         snippet = snippets[idx] if idx < len(snippets) else ""
         results.append({"title": title, "url": url_out, "snippet": snippet})
 
+    policy = _domain_policy_from_env()
+    filtered_out = 0
+    if policy:
+        filtered: List[Dict[str, Any]] = []
+        for item in results:
+            url_out = (item or {}).get("url") or ""
+            if _url_allowed(url_out, policy):
+                filtered.append(item)
+            else:
+                filtered_out += 1
+        results = filtered
+
     warning = None
     if not results:
-        warning = "no_results"
+        warning = "filtered_no_results" if filtered_out else "no_results"
     elif len(results) < max(1, args.max_results // 2):
         warning = "weak_results"
+    elif filtered_out:
+        warning = "filtered_results"
     if usage:
         usage.consume_web()
-    if warning == "no_results":
+    if warning in {"no_results", "filtered_no_results"}:
         return ToolResult(
             success=False,
             error="no_results",
@@ -270,7 +384,8 @@ def web_search(ctx: RunContext, args: WebSearchArgs) -> ToolResult:
                 "result_count": len(results),
                 "results": results,
                 "source": "duckduckgo_html",
-                "warning": "no_results",
+                "warning": warning,
+                "filtered_out": filtered_out,
                 "untrusted": True,
             },
             metadata={"untrusted": True},
@@ -284,6 +399,7 @@ def web_search(ctx: RunContext, args: WebSearchArgs) -> ToolResult:
             "results": results,
             "source": "duckduckgo_html",
             "warning": warning,
+            "filtered_out": filtered_out,
             "untrusted": True,
         },
         metadata={"untrusted": True},
@@ -1874,6 +1990,29 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
         )
     except Exception:
         pass
+
+    try:
+        from agent.mcp.client import MCPClient
+        from agent.integrations.calendar_helper import CalendarHelper
+        from agent.integrations.tasks_helper import TasksHelper
+
+        mcp_client = MCPClient()
+        try:
+            asyncio.run(mcp_client.initialize(["google-calendar", "google-tasks"]))
+        except RuntimeError:
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(
+                        mcp_client.initialize(["google-calendar", "google-tasks"])
+                    )
+            except Exception:
+                pass
+        calendar_helper = CalendarHelper(mcp_client)
+        tasks_helper = TasksHelper(mcp_client)
+        register_calendar_tasks_tools(reg, calendar_helper, tasks_helper)
+    except Exception as exc:
+        logger.warning("Calendar/Tasks tools unavailable: %s", exc)
 
     if cfg.enable_web_gui:
         reg.register(

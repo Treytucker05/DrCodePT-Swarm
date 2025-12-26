@@ -10,6 +10,7 @@ sentence-transformers
 faiss-cpu
 colorama
 pytest
+pytest-asyncio
 google-auth
 google-auth-oauthlib
 google-auth-httplib2

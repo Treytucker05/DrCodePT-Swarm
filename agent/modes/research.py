@@ -12,7 +12,8 @@ import threading
 import time
 from tempfile import TemporaryDirectory
 from datetime import datetime
-from contextlib import nullcontext
+from contextlib import nullcontext, contextmanager
+from urllib.parse import urlparse
 from pathlib import Path
 
 try:
@@ -76,6 +77,344 @@ def _extract_bullets(text: str, *, limit: int = 5) -> list[str]:
 _URL_RE = re.compile(r"https?://[^\s)>\"]+")
 _CODEX_UNSUPPORTED_FLAGS: set[str] = set()
 
+_SCIENTIFIC_SOURCE_HINTS = {
+    "scientific",
+    "peer-reviewed",
+    "peer reviewed",
+    "academic",
+    "scholarly",
+    "journal",
+    "journals",
+    "study",
+    "studies",
+    "systematic review",
+    "meta-analysis",
+    "clinical trial",
+}
+
+_PRIMARY_DOMAINS = [
+    "pubmed.ncbi.nlm.nih.gov",
+    "pmc.ncbi.nlm.nih.gov",
+    "ncbi.nlm.nih.gov",
+    "scholar.google.com",
+    "nih.gov",
+    "cdc.gov",
+    "who.int",
+    "ama-assn.org",
+    "nature.com",
+    "science.org",
+    "sciencemag.org",
+    "cell.com",
+    "thelancet.com",
+    "nejm.org",
+    "jamanetwork.com",
+    "bmj.com",
+    "pnas.org",
+    "annualreviews.org",
+    "springer.com",
+    "link.springer.com",
+    "sciencedirect.com",
+    "wiley.com",
+    "onlinelibrary.wiley.com",
+    "tandfonline.com",
+    "academic.oup.com",
+    "cambridge.org",
+    "ieee.org",
+    "ieeexplore.ieee.org",
+    "acm.org",
+    "dl.acm.org",
+    "doi.org",
+]
+
+_PREPRINT_DOMAINS = [
+    "arxiv.org",
+    "biorxiv.org",
+    "medrxiv.org",
+]
+
+_SECONDARY_DOMAINS = [
+    "aamc.org",
+    "mededportal.org",
+    "acgme.org",
+    "health.gov",
+    "hhs.gov",
+    "medpagetoday.com",
+    "statnews.com",
+]
+
+_SCIENTIFIC_ALLOWED_SUFFIXES = [
+    ".gov",
+    ".edu",
+    ".mil",
+    ".int",
+    ".ac.uk",
+    ".ac.jp",
+    ".ac.in",
+    ".ac.nz",
+    ".ac.au",
+    ".ac.za",
+    ".ac.kr",
+    ".ac.cn",
+    ".ac.id",
+]
+
+_ACADEMIC_SUFFIXES = [
+    ".edu",
+    ".ac.uk",
+    ".ac.jp",
+    ".ac.in",
+    ".ac.nz",
+    ".ac.au",
+    ".ac.za",
+    ".ac.kr",
+    ".ac.cn",
+    ".ac.id",
+]
+
+_BASE_BLOCKED_DOMAINS = [
+    "wikipedia.org",
+    "wikimedia.org",
+]
+
+_MEDIUM_REPUTATION_DOMAINS = [
+    "nytimes.com",
+    "bbc.com",
+    "bbc.co.uk",
+    "reuters.com",
+    "apnews.com",
+    "theguardian.com",
+    "washingtonpost.com",
+    "economist.com",
+    "ft.com",
+]
+
+_COMMUNITY_DOMAINS = [
+    "reddit.com",
+    "quora.com",
+    "medium.com",
+    "blogspot.com",
+    "wordpress.com",
+    "substack.com",
+    "tumblr.com",
+    "facebook.com",
+    "x.com",
+    "twitter.com",
+    "tiktok.com",
+    "instagram.com",
+    "pinterest.com",
+    "fandom.com",
+    "answers.com",
+    "wikihow.com",
+    "stackexchange.com",
+    "stackoverflow.com",
+]
+
+_MEDICAL_TOPIC_KEYWORDS = {
+    "medical",
+    "medicine",
+    "clinical",
+    "patient",
+    "med school",
+    "medschool",
+    "residency",
+    "physician",
+    "nursing",
+    "pharmacy",
+    "healthcare",
+    "public health",
+    "epidemiology",
+    "surgery",
+    "biomedical",
+}
+
+_BLOG_PATH_HINTS = (
+    "/blog",
+    "/blogs",
+    "/forum",
+    "/forums",
+    "/community",
+    "/question",
+    "/questions",
+    "/answer",
+    "/answers",
+    "/thread",
+    "/threads",
+)
+
+_SOURCE_POLICIES: dict[str, dict[str, list[str]]] = {
+    "scientific": {
+        "allow_domains": [],
+        "allow_suffixes": [],
+        "block_domains": _BASE_BLOCKED_DOMAINS,
+        "block_suffixes": [],
+    },
+    "reputable": {
+        "allow_domains": [],
+        "allow_suffixes": [],
+        "block_domains": _BASE_BLOCKED_DOMAINS,
+        "block_suffixes": [],
+    },
+}
+
+
+def _merge_env_list(existing: str | None, additions: list[str]) -> str | None:
+    items = {
+        item.strip().lower()
+        for item in re.split(r"[,\s]+", existing or "")
+        if item.strip()
+    }
+    for item in additions:
+        if item:
+            items.add(item.strip().lower())
+    if not items:
+        return None
+    return ",".join(sorted(items))
+
+
+def _select_source_policy(constraints: str | None) -> tuple[str, dict[str, list[str]]]:
+    env_policy = (os.getenv("TREYS_AGENT_RESEARCH_SOURCE_POLICY") or "").strip().lower()
+    if env_policy in _SOURCE_POLICIES:
+        return env_policy, _SOURCE_POLICIES[env_policy]
+    lowered = (constraints or "").lower()
+    if any(hint in lowered for hint in _SCIENTIFIC_SOURCE_HINTS):
+        return "scientific", _SOURCE_POLICIES["scientific"]
+    return "reputable", _SOURCE_POLICIES["reputable"]
+
+
+def _policy_env_overrides(policy: dict[str, list[str]]) -> dict[str, str | None]:
+    return {
+        "TREYS_AGENT_WEB_ALLOWLIST": _merge_env_list(
+            os.getenv("TREYS_AGENT_WEB_ALLOWLIST"), policy.get("allow_domains", [])
+        ),
+        "TREYS_AGENT_WEB_ALLOW_SUFFIXES": _merge_env_list(
+            os.getenv("TREYS_AGENT_WEB_ALLOW_SUFFIXES"), policy.get("allow_suffixes", [])
+        ),
+        "TREYS_AGENT_WEB_BLOCKLIST": _merge_env_list(
+            os.getenv("TREYS_AGENT_WEB_BLOCKLIST"), policy.get("block_domains", [])
+        ),
+        "TREYS_AGENT_WEB_BLOCK_SUFFIXES": _merge_env_list(
+            os.getenv("TREYS_AGENT_WEB_BLOCK_SUFFIXES"), policy.get("block_suffixes", [])
+        ),
+    }
+
+
+@contextmanager
+def _temporary_env(overrides: dict[str, str | None]):
+    previous = {key: os.environ.get(key) for key in overrides}
+    for key, value in overrides.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _normalize_host(url: str) -> str:
+    if not url:
+        return ""
+    try:
+        host = urlparse(url).netloc or ""
+    except Exception:
+        host = ""
+    host = host.lower().strip()
+    if host.startswith("www."):
+        host = host[4:]
+    if ":" in host:
+        host = host.split(":", 1)[0]
+    return host.strip(".")
+
+
+def _host_matches(host: str, domain: str) -> bool:
+    if not host or not domain:
+        return False
+    return host == domain or host.endswith("." + domain)
+
+
+def _host_in_list(host: str, domains: list[str]) -> bool:
+    for domain in domains:
+        if _host_matches(host, domain):
+            return True
+    return False
+
+
+def _is_medical_topic(topic: str, constraints: str | None) -> bool:
+    blob = f"{topic} {constraints or ''}".lower()
+    return any(keyword in blob for keyword in _MEDICAL_TOPIC_KEYWORDS)
+
+
+def _classify_source(item: dict, *, medical: bool) -> dict:
+    url = (item or {}).get("url") or ""
+    title = ((item or {}).get("title") or "").lower()
+    snippet = ((item or {}).get("snippet") or "").lower()
+    host = _normalize_host(url)
+    if not host:
+        return {"tier": "low", "score": -10, "preprint": False}
+
+    if _host_in_list(host, _COMMUNITY_DOMAINS):
+        return {"tier": "community", "score": 20, "preprint": False}
+
+    parsed = urlparse(url)
+    path = (parsed.path or "").lower()
+
+    preprint = _host_in_list(host, _PREPRINT_DOMAINS)
+    if _host_in_list(host, _PRIMARY_DOMAINS):
+        tier = "primary"
+        score = 90
+    elif preprint:
+        tier = "secondary"
+        score = 60
+    elif _host_in_list(host, _SECONDARY_DOMAINS):
+        tier = "secondary"
+        score = 70
+    elif _host_in_list(host, _MEDIUM_REPUTATION_DOMAINS):
+        tier = "secondary"
+        score = 55
+    else:
+        if host.endswith(".edu") or any(host.endswith(suffix) for suffix in _ACADEMIC_SUFFIXES):
+            if any(token in path for token in ("/research", "/publications", "/repository", "/scholar", "/lab", "/labs")):
+                tier = "primary"
+                score = 80
+            elif medical and any(token in path for token in ("/medicine", "/medical", "/med", "/health")):
+                tier = "secondary"
+                score = 60
+            else:
+                tier = "secondary"
+                score = 50
+        elif host.endswith(".gov") or host.endswith(".int") or host.endswith(".mil"):
+            if medical or "health" in host or "/health" in path:
+                tier = "secondary"
+                score = 60
+            else:
+                tier = "secondary"
+                score = 50
+        elif host.startswith("docs.") or "/docs" in path or "documentation" in url:
+            tier = "secondary"
+            score = 50
+        else:
+            tier = "low"
+            score = 5
+
+    if tier != "low" and any(tag in path for tag in _BLOG_PATH_HINTS):
+        if _host_in_list(host, _PRIMARY_DOMAINS) or _host_in_list(host, _SECONDARY_DOMAINS):
+            score -= 10
+        else:
+            tier = "low"
+            score = 5
+
+    if tier != "low" and ("journal" in host or "journal" in title or "journal" in snippet):
+        score += 2
+    if tier != "low" and "doi.org" in host:
+        score += 2
+
+    return {"tier": tier, "score": score, "preprint": preprint}
+
 
 def _short_label(text: str, *, max_words: int = 6, max_chars: int = 40) -> str:
     words = re.findall(r"\S+", text or "")
@@ -137,19 +476,116 @@ def _build_sources_block(sources: list[dict], *, max_chars: int = 8000) -> str:
     return "\n".join(lines).strip()
 
 
-def _research_agent_sources(topic: str, ctx: "RunContext") -> list[dict]:
+def _research_agent_sources(
+    topic: str,
+    ctx: "RunContext",
+    *,
+    constraints: str | None = None,
+    max_results: int = 15,
+) -> list[dict]:
     from agent.autonomous.tools.builtins import WebFetchArgs, WebSearchArgs, web_fetch, web_search
 
-    search = web_search(ctx, WebSearchArgs(query=topic, max_results=6))
-    if not search.success:
+    base_query = topic.strip()
+    if constraints:
+        base_query = f"{base_query} {constraints}".strip()
+
+    def _search(query: str) -> list[dict]:
+        search = web_search(ctx, WebSearchArgs(query=query, max_results=max_results))
+        if not search.success:
+            return []
+        output = search.output or {}
+        return output.get("results") or []
+
+    def _dedupe(items: list[dict]) -> list[dict]:
+        seen: set[str] = set()
+        unique: list[dict] = []
+        for item in items:
+            url = (item or {}).get("url") or ""
+            title = (item or {}).get("title") or ""
+            host = _normalize_host(url)
+            key = url or f"{host}|{title}"
+            if key in seen:
+                continue
+            seen.add(key)
+            unique.append(item)
+        return unique
+
+    def _rank(
+        items: list[dict], *, medical: bool
+    ) -> tuple[
+        list[tuple[int, int, dict]],
+        list[tuple[int, int, dict]],
+        list[tuple[int, int, dict]],
+        list[tuple[int, int, dict]],
+    ]:
+        primary: list[tuple[int, int, dict]] = []
+        secondary: list[tuple[int, int, dict]] = []
+        community: list[tuple[int, int, dict]] = []
+        low: list[tuple[int, int, dict]] = []
+        for idx, item in enumerate(items):
+            info = _classify_source(item or {}, medical=medical)
+            entry = (int(info["score"]), idx, {**(item or {}), "_tier": info["tier"], "_preprint": info["preprint"]})
+            if info["tier"] == "primary":
+                primary.append(entry)
+            elif info["tier"] == "secondary":
+                secondary.append(entry)
+            elif info["tier"] == "community":
+                community.append(entry)
+            else:
+                low.append(entry)
+        primary.sort(key=lambda row: (-row[0], row[1]))
+        secondary.sort(key=lambda row: (-row[0], row[1]))
+        community.sort(key=lambda row: (-row[0], row[1]))
+        low.sort(key=lambda row: (-row[0], row[1]))
+        return primary, secondary, community, low
+
+    is_medical = _is_medical_topic(topic, constraints)
+
+    primary_query = f"{base_query} \"peer reviewed\" OR pubmed OR study".strip()
+    results = _search(primary_query)
+    results = _dedupe(results)
+
+    primary, secondary, community, low = _rank(results, medical=is_medical)
+
+    if len(primary) < 5:
+        if is_medical:
+            secondary_hint = (
+                "preprint OR medrxiv OR biorxiv OR arxiv OR AAMC OR MedEdPORTAL OR "
+                "medical education OR med school OR residency"
+            )
+        else:
+            secondary_hint = "preprint OR arxiv OR biorxiv OR medrxiv OR report OR guideline"
+        secondary_query = f"{base_query} {secondary_hint}".strip()
+        more = _search(secondary_query)
+        if more:
+            results = _dedupe(results + more)
+            primary, secondary, community, low = _rank(results, medical=is_medical)
+
+    selected_entries: list[tuple[int, int, dict]] = []
+    if len(primary) >= 5:
+        selected_entries = primary[:5]
+    else:
+        need = 5 - len(primary)
+        selected_entries = primary + secondary[:max(0, need)]
+        if len(selected_entries) < 5:
+            need = 5 - len(selected_entries)
+            selected_entries += community[:max(0, need)]
+        if len(selected_entries) < 5:
+            need = 5 - len(selected_entries)
+            selected_entries += low[:max(0, need)]
+
+    if len(selected_entries) < 3:
+        print(f"{YELLOW}[WARN]{RESET} Insufficient sources found (need >=3).")
         return []
-    output = search.output or {}
-    results = output.get("results") or []
+
     sources: list[dict] = []
-    for item in results:
+    for _, _, item in selected_entries:
         title = (item or {}).get("title") or "Untitled"
         url = (item or {}).get("url") or ""
         snippet = (item or {}).get("snippet") or ""
+        if item.get("_preprint"):
+            note = "Preprint (not peer-reviewed)."
+            snippet = f"{snippet} NOTE: {note}".strip()
         excerpt = ""
         if url:
             fetched = web_fetch(ctx, WebFetchArgs(url=url, strip_html=True))
@@ -167,12 +603,15 @@ def _research_agent_sources(topic: str, ctx: "RunContext") -> list[dict]:
     return sources
 
 
-def _analysis_agent(topic: str, sources: list[dict]) -> str:
+def _analysis_agent(topic: str, sources: list[dict], *, constraints: str | None = None) -> str:
     sources_block = _build_sources_block(sources)
+    constraints_block = f"User constraints: {constraints}\n" if constraints else ""
     prompt = f"""You are the Analysis Agent.
 Topic: {topic}
+{constraints_block}
 
 Use ONLY the sources below. Extract key findings with citations (raw URLs).
+If a source is marked as a preprint (not peer-reviewed), call that out.
 Return bullets under headings:
 - Key Findings
 - Evidence Gaps (if any)
@@ -183,10 +622,14 @@ Sources:
     return _call_codex(prompt, allow_tools=False, label="ANALYSIS", context=topic)
 
 
-def _synthesis_agent(topic: str, sources: list[dict], analysis: str) -> str:
+def _synthesis_agent(
+    topic: str, sources: list[dict], analysis: str, *, constraints: str | None = None
+) -> str:
     sources_block = _build_sources_block(sources)
+    constraints_block = f"User constraints: {constraints}\n" if constraints else ""
     prompt = f"""You are the Synthesis Agent.
 Topic: {topic}
+{constraints_block}
 
 Combine the analysis into a comprehensive, actionable report.
 Include sections:
@@ -194,6 +637,7 @@ Include sections:
 2) Key Findings (with citations)
 3) Recommendations (actionable)
 4) Sources (raw URLs)
+If any sources are preprints, label them as not peer-reviewed.
 
 Analysis:
 {analysis[:6000]}
@@ -811,9 +1255,11 @@ NOTES:
     return report
 
 
-def mode_research(topic: str) -> None:
+def mode_research(topic: str, *, constraints: str | None = None) -> None:
     print(f"\n{CYAN}[RESEARCH MODE]{RESET} Topic: {topic}")
     print(f"{CYAN}[SPAWN]{RESET} Research Agent, Analysis Agent, Synthesis Agent\n")
+    if constraints:
+        print(f"{YELLOW}[CONSTRAINTS]{RESET} {constraints}")
 
     from agent.autonomous.config import RunContext
 
@@ -827,22 +1273,30 @@ def mode_research(topic: str) -> None:
             usage=None,
         )
 
-        print(f"{YELLOW}[RESEARCH AGENT]{RESET} Gathering sources...")
-        sources = _research_agent_sources(topic, ctx)
-        if not sources:
-            print(f"{RED}[ERROR]{RESET} No sources found.")
-            return
+        policy_name, policy = _select_source_policy(constraints)
+        overrides = _policy_env_overrides(policy)
+        with _temporary_env(overrides):
+            print(f"{YELLOW}[RESEARCH AGENT]{RESET} Gathering sources...")
+            sources = _research_agent_sources(topic, ctx, constraints=constraints)
+            if not sources:
+                print(f"{RED}[ERROR]{RESET} No sources found under the current source policy.")
+                print(
+                    f"{YELLOW}[INFO]{RESET} Policy: {policy_name}. "
+                    "Adjust allowlists via TREYS_AGENT_RESEARCH_SOURCE_POLICY or "
+                    "TREYS_AGENT_WEB_ALLOWLIST/TREYS_AGENT_WEB_ALLOW_SUFFIXES."
+                )
+                return
 
-        print(f"{YELLOW}[ANALYSIS AGENT]{RESET} Extracting key findings...")
-        analysis = _analysis_agent(topic, sources)
-        if analysis.startswith("[CODEX ERROR]"):
-            print(f"{RED}{analysis}{RESET}")
-            return
+            print(f"{YELLOW}[ANALYSIS AGENT]{RESET} Extracting key findings...")
+            analysis = _analysis_agent(topic, sources, constraints=constraints)
+            if analysis.startswith("[CODEX ERROR]"):
+                print(f"{RED}{analysis}{RESET}")
+                return
 
-        print(f"{YELLOW}[SYNTHESIS AGENT]{RESET} Producing report...")
-        report = _synthesis_agent(topic, sources, analysis)
-        if report.startswith("[CODEX ERROR]"):
-            print(f"{RED}{report}{RESET}")
-            return
+            print(f"{YELLOW}[SYNTHESIS AGENT]{RESET} Producing report...")
+            report = _synthesis_agent(topic, sources, analysis, constraints=constraints)
+            if report.startswith("[CODEX ERROR]"):
+                print(f"{RED}{report}{RESET}")
+                return
 
     print(f"\n{CYAN}[REPORT]{RESET}\n{report}")

@@ -8,5 +8,19 @@
     "command": "mcp-server-github",
     "args": [],
     "env": {}
+  },
+  "google-calendar": {
+    "command": "C:\\Program Files\\nodejs\\npx.cmd",
+    "args": ["-y", "@cocal/google-calendar-mcp"],
+    "env": {
+      "GOOGLE_OAUTH_CREDENTIALS": "C:\\Users\\treyt\\OneDrive\\Desktop\\DrCodePT-Swarm\\credentials\\gcp-oauth-credentials.json"
+    }
+  },
+  "google-tasks": {
+    "command": "C:\\Program Files\\nodejs\\npx.cmd",
+    "args": ["-y", "@zcaceres/gtasks"],
+    "env": {
+      "GOOGLE_OAUTH_CREDENTIALS": "C:\\Users\\treyt\\OneDrive\\Desktop\\DrCodePT-Swarm\\credentials\\gcp-oauth-credentials.json"
+    }
   }
 }

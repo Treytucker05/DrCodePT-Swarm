@@ -1,70 +1,43 @@
 from __future__ import annotations
 
-"""Lightweight research tool using simple HTTP fetch + Codex CLI summarization (optional)."""
+"""Lightweight research tool using web_search + web_fetch and Codex CLI summarization (optional)."""
 
 import json
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 
-import requests
-
+from agent.autonomous.config import RunContext
+from agent.autonomous.tools.builtins import WebFetchArgs, WebSearchArgs, web_fetch, web_search
 from agent.llm import CodexCliClient, schemas as llm_schemas
 from .base import ToolAdapter, ToolResult
 
 
-def _fetch_wikipedia(query: str) -> Dict[str, Any]:
-    try:
-        resp = requests.get(
-            f"https://en.wikipedia.org/api/rest_v1/page/summary/{query}",
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            data = resp.json()
-            return {
-                "title": data.get("title"),
-                "url": data.get("content_urls", {}).get("desktop", {}).get("page"),
-                "content": data.get("extract"),
-                "source": "wikipedia",
+def _gather_sources(query: str, ctx: RunContext, *, max_results: int = 6) -> List[Dict[str, Any]]:
+    search = web_search(ctx, WebSearchArgs(query=query, max_results=max_results))
+    if not search.success:
+        return []
+    output = search.output or {}
+    results = output.get("results") or []
+    sources: List[Dict[str, Any]] = []
+    for item in results:
+        title = (item or {}).get("title") or "Untitled"
+        url = (item or {}).get("url") or ""
+        snippet = (item or {}).get("snippet") or ""
+        excerpt = ""
+        if url:
+            fetched = web_fetch(ctx, WebFetchArgs(url=url, strip_html=True))
+            if fetched.success:
+                text = (fetched.output or {}).get("text") or ""
+                excerpt = text.strip()[:1500]
+        sources.append(
+            {
+                "title": title,
+                "url": url,
+                "snippet": snippet,
+                "excerpt": excerpt,
             }
-    except Exception:
-        pass
-    return {}
-
-
-def _fetch_duckduckgo(query: str) -> Dict[str, Any]:
-    try:
-        resp = requests.get("https://duckduckgo.com/html/", params={"q": query}, timeout=10)
-        if resp.status_code == 200:
-            return {
-                "title": "DuckDuckGo results",
-                "url": resp.url,
-                "content": resp.text[:4000],
-                "source": "duckduckgo",
-            }
-    except Exception:
-        pass
-    return {}
-
-
-def _fetch_wikipedia_search(query: str) -> Dict[str, Any]:
-    try:
-        resp = requests.get(
-            "https://en.wikipedia.org/w/api.php",
-            params={"action": "opensearch", "search": query, "limit": 1, "format": "json"},
-            timeout=10,
         )
-        if resp.status_code == 200:
-            data = resp.json()
-            if data[1]:
-                return {
-                    "title": data[1][0],
-                    "url": data[3][0] if data[3] else "",
-                    "content": "; ".join(data[1]),
-                    "source": "wikipedia-search",
-                }
-    except Exception:
-        pass
-    return {}
+    return sources
 
 
 class ResearchTool(ToolAdapter):
@@ -73,15 +46,23 @@ class ResearchTool(ToolAdapter):
     def execute(self, task, inputs: Dict[str, Any]) -> ToolResult:
         query = inputs.get("query") or getattr(task, "goal", None) or getattr(task, "name", None)
         run_path = Path(inputs.get("run_path") or Path("runs") / "research")
+        max_results = inputs.get("max_results") or 6
+        try:
+            max_results = int(max_results)
+        except Exception:
+            max_results = 6
 
         if not query:
             return ToolResult(False, error="No research query provided")
 
-        sources: List[Dict[str, Any]] = []
-        for fetcher in (_fetch_duckduckgo, _fetch_wikipedia, _fetch_wikipedia_search):
-            result = fetcher(query)
-            if result:
-                sources.append(result)
+        ctx = RunContext(
+            run_id="manual",
+            run_dir=run_path,
+            workspace_dir=run_path,
+            profile=None,
+            usage=None,
+        )
+        sources = _gather_sources(query, ctx, max_results=max_results)
 
         if not sources:
             return ToolResult(False, error="No sources fetched")
@@ -100,12 +81,14 @@ class ResearchTool(ToolAdapter):
                 summary = {
                     "summary_md": "\n".join(
                         [
-                            f"- {s.get('title')}: {s.get('url')}\n  - {str(s.get('content') or '')[:400]}..."
+                            f"- {s.get('title')}: {s.get('url')}\n  - {str(s.get('excerpt') or s.get('snippet') or '')[:400]}..."
                             for s in sources
                         ]
                     ),
                     "key_findings": [],
-                    "citations": [{"url": s.get("url"), "title": s.get("title")} for s in sources if s.get("url")],
+                    "citations": [
+                        {"url": s.get("url"), "title": s.get("title")} for s in sources if s.get("url")
+                    ],
                     "model_used": None,
                 }
 

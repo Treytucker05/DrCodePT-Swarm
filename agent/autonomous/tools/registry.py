@@ -5,6 +5,25 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Type
 
+from .calendar_tasks_tools import (
+    CalendarTasksTools,
+    CheckConflictsArgs,
+    CompleteTaskArgs,
+    CreateCalendarEventArgs,
+    CreateTaskArgs,
+    DeleteCalendarEventArgs,
+    DeleteTaskArgs,
+    GetTaskDetailsArgs,
+    GetFreeTimeArgs,
+    ListAllTasksArgs,
+    ListCalendarEventsArgs,
+    SearchTasksArgs,
+    UpdateCalendarEventArgs,
+    UpdateTaskArgs,
+)
+from agent.integrations.calendar_helper import CalendarHelper
+from agent.integrations.tasks_helper import TasksHelper
+
 from pydantic import BaseModel, ValidationError
 
 from ..config import AgentConfig, RunContext
@@ -184,3 +203,115 @@ class ToolRegistry:
     def requires_approval(self, name: str) -> bool:
         return False
 
+
+def register_calendar_tasks_tools(
+    registry: ToolRegistry,
+    calendar_helper: CalendarHelper,
+    tasks_helper: TasksHelper,
+) -> None:
+    tools = CalendarTasksTools(calendar_helper, tasks_helper)
+
+    registry.register(
+        ToolSpec(
+            name="get_free_time",
+            args_model=GetFreeTimeArgs,
+            fn=tools.get_free_time,
+            description="Find free time slots in your calendar for scheduling",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="check_calendar_conflicts",
+            args_model=CheckConflictsArgs,
+            fn=tools.check_calendar_conflicts,
+            description="Check if a proposed event conflicts with existing calendar events",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="create_calendar_event",
+            args_model=CreateCalendarEventArgs,
+            fn=tools.create_calendar_event,
+            description="Create a new calendar event",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="list_calendar_events",
+            args_model=ListCalendarEventsArgs,
+            fn=tools.list_calendar_events,
+            description="List calendar events in a time range",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="update_calendar_event",
+            args_model=UpdateCalendarEventArgs,
+            fn=tools.update_calendar_event,
+            description="Update an existing calendar event",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="delete_calendar_event",
+            args_model=DeleteCalendarEventArgs,
+            fn=tools.delete_calendar_event,
+            description="Delete a calendar event",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="list_all_tasks",
+            args_model=ListAllTasksArgs,
+            fn=tools.list_all_tasks,
+            description="List all tasks",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="create_task",
+            args_model=CreateTaskArgs,
+            fn=tools.create_task,
+            description="Create a new task",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="complete_task",
+            args_model=CompleteTaskArgs,
+            fn=tools.complete_task,
+            description="Mark a task as complete",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="search_tasks",
+            args_model=SearchTasksArgs,
+            fn=tools.search_tasks,
+            description="Search for tasks by title or notes",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="update_task",
+            args_model=UpdateTaskArgs,
+            fn=tools.update_task,
+            description="Update an existing task",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="delete_task",
+            args_model=DeleteTaskArgs,
+            fn=tools.delete_task,
+            description="Delete a task",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="get_task_details",
+            args_model=GetTaskDetailsArgs,
+            fn=tools.get_task_details,
+            description="Get details for a specific task",
+        )
+    )

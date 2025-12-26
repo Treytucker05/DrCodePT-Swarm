@@ -6,6 +6,9 @@ Modes: Execute, Learn, Research, Auto, Plan, Team, Swarm, Think, Mail.
 
 from __future__ import annotations
 
+import atexit
+import asyncio
+import logging
 import os
 import re
 import sys
@@ -33,6 +36,15 @@ REPO_ROOT = BASE_DIR.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from agent.modes.execute import load_playbooks
+from agent.mcp.client import MCPClient
+from agent.integrations.calendar_helper import CalendarHelper
+from agent.integrations.tasks_helper import TasksHelper
+
+logger = logging.getLogger(__name__)
+
+_mcp_client: MCPClient | None = None
+_calendar_helper: CalendarHelper | None = None
+_tasks_helper: TasksHelper | None = None
 
 
 def banner() -> None:
@@ -193,6 +205,40 @@ _RESEARCH_PHRASES = {
     "what's",
     "pros and cons",
     "pros & cons",
+}
+
+_RESEARCH_REFINEMENT_VERBS = {
+    "use",
+    "avoid",
+    "exclude",
+    "omit",
+    "prefer",
+    "limit",
+    "focus",
+    "cite",
+    "citing",
+    "only",
+    "no ",
+    "not ",
+    "without",
+}
+
+_RESEARCH_SOURCE_QUALITY_HINTS = {
+    "scientific",
+    "peer-reviewed",
+    "peer reviewed",
+    "academic",
+    "scholarly",
+    "journal",
+    "journals",
+    "study",
+    "studies",
+    "primary sources",
+    "credible",
+    "reputable",
+    "wikipedia",
+    "blog",
+    "blogs",
 }
 
 _COLLAB_KEYWORDS = {
@@ -435,6 +481,36 @@ def _is_simple_question(text: str) -> bool:
         return True
 
     return False
+
+
+def _looks_like_research_refinement(text: str) -> bool:
+    lowered = text.lower().strip()
+    if not lowered:
+        return False
+    if lowered.endswith("?") or lowered.startswith(
+        ("what ", "how ", "why ", "when ", "where ", "who ", "which ")
+    ):
+        return False
+    if "wikipedia" in lowered:
+        return True
+    has_quality_hint = any(hint in lowered for hint in _RESEARCH_SOURCE_QUALITY_HINTS)
+    has_refine_verb = any(verb in lowered for verb in _RESEARCH_REFINEMENT_VERBS)
+    if has_quality_hint and has_refine_verb:
+        return True
+    if lowered.startswith(("also", "and", "but", "except")):
+        return True
+    return False
+
+
+def _merge_research_constraints(existing: str | None, new: str) -> str:
+    new_clean = (new or "").strip()
+    if not new_clean:
+        return existing or ""
+    if not existing:
+        return new_clean
+    if new_clean.lower() in existing.lower():
+        return existing
+    return existing.rstrip() + "\n" + new_clean
 
 
 def _is_capability_query(text: str) -> bool:
@@ -1118,6 +1194,31 @@ def _prompt_startup_credentials() -> None:
         save_memory(memory)
 
 
+async def startup() -> None:
+    """Initialize MCP servers and helpers."""
+    global _mcp_client, _calendar_helper, _tasks_helper
+    _mcp_client = MCPClient()
+    await _mcp_client.initialize(
+        ["google-calendar", "google-tasks", "filesystem", "github"]
+    )
+    _calendar_helper = CalendarHelper(_mcp_client)
+    _tasks_helper = TasksHelper(_mcp_client)
+    logger.info("Google Calendar and Tasks integration initialized")
+
+
+async def shutdown() -> None:
+    """Cleanup MCP servers."""
+    if _mcp_client is not None:
+        await _mcp_client.shutdown()
+
+
+def _shutdown_handler() -> None:
+    try:
+        asyncio.run(shutdown())
+    except Exception:
+        pass
+
+
 def assess_task_complexity(user_input: str) -> str:
     """
     Analyze user input to determine if collaborative planning is needed.
@@ -1305,10 +1406,17 @@ def main() -> None:
     if default_action_mode not in {"execute", "team", "auto", "swarm", "plan", "mail", "research", "collab", "think"}:
         default_action_mode = "execute"
     _prompt_startup_credentials()
+    try:
+        asyncio.run(startup())
+    except Exception as exc:
+        logger.warning("Failed to initialize MCP integrations: %s", exc)
+    atexit.register(_shutdown_handler)
 
     chat_history: list[tuple[str, str]] = []
     pending_task: str | None = None
     pending_mode: str | None = None
+    last_research_topic: str | None = None
+    last_research_constraints: str | None = None
 
     while True:
         try:
@@ -1422,6 +1530,8 @@ def main() -> None:
                 elif requested_mode == "mail":
                     _run_mail_guided(pending_task)
                 elif requested_mode == "research":
+                    last_research_topic = pending_task
+                    last_research_constraints = None
                     mode_research(pending_task)
                 elif requested_mode == "execute":
                     mode_execute(pending_task)
@@ -1446,6 +1556,8 @@ def main() -> None:
                 elif chosen == "mail":
                     _run_mail_guided(pending_task)
                 elif chosen == "research":
+                    last_research_topic = pending_task
+                    last_research_constraints = None
                     mode_research(pending_task)
                 elif chosen == "execute":
                     mode_execute(pending_task)
@@ -1529,6 +1641,8 @@ def main() -> None:
             if not topic:
                 print(f"{YELLOW}[INFO]{RESET} Provide a topic after 'Research:'.")
                 continue
+            last_research_topic = topic
+            last_research_constraints = None
             mode_research(topic)
             continue
 
@@ -1678,7 +1792,17 @@ def main() -> None:
             continue
 
         if routing["mode"] == "research":
-            mode_research(user_input)
+            if last_research_topic and _looks_like_research_refinement(user_input):
+                merged = _merge_research_constraints(last_research_constraints, user_input)
+                print(
+                    f"{YELLOW}[INFO]{RESET} Applying follow-up constraints to: {last_research_topic}"
+                )
+                last_research_constraints = merged
+                mode_research(last_research_topic, constraints=merged)
+            else:
+                last_research_topic = user_input
+                last_research_constraints = None
+                mode_research(user_input)
             continue
 
         if routing["mode"] == "swarm":
