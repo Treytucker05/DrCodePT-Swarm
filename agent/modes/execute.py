@@ -34,7 +34,8 @@ PLAYBOOKS_DIR = BASE_DIR / "playbooks"
 PLAYBOOKS_INDEX = PLAYBOOKS_DIR / "index.json"
 RUNS_DIR = BASE_DIR / "runs" / "treys_agent"
 
-_OPEN_ALIAS_STOPWORDS = {"my", "the", "a", "an", "folder", "directory", "dir"}
+_OPEN_ALIAS_STOPWORDS = {"my", "the", "a", "an", "folder", "directory", "dir"}  
+GENERIC_TOKENS = {"list", "show", "get", "find", "read", "check", "test", "run", "start", "stop"}
 
 
 def _ensure_dirs() -> None:
@@ -106,12 +107,14 @@ def find_matching_playbook(command: str, playbooks: dict) -> Tuple[Optional[str]
         return [p for p in parts if len(p) > 3]
 
     cmd_tokens = set(_tokens(command_lower))
+    cmd_tokens_specific = cmd_tokens - GENERIC_TOKENS
 
     best: Tuple[int, Optional[str], Optional[dict]] = (0, None, None)
 
     for pb_id, pb_data in playbooks.items():
         pb = pb_data or {}
         score = 0
+        has_specific_trigger_overlap = False
 
         name = str(pb.get("name") or "").lower()
         desc = str(pb.get("description") or "").lower()
@@ -124,17 +127,27 @@ def find_matching_playbook(command: str, playbooks: dict) -> Tuple[Optional[str]
                 t = str(trigger).lower().strip()
                 if not t:
                     continue
+                trigger_tokens = set(_tokens(t))
+                trigger_tokens_specific = trigger_tokens - GENERIC_TOKENS
+                specific_overlap = cmd_tokens_specific.intersection(trigger_tokens_specific)
+                if not specific_overlap:
+                    continue
+                has_specific_trigger_overlap = True
                 if t == command_lower:
                     score = max(score, 1000)
                     continue
                 if t in command_lower:
                     score = max(score, 800 + min(len(t), 80))
                 elif command_lower in t:
-                    score = max(score, 650 + min(len(command_lower), 80))
+                    score = max(score, 650 + min(len(command_lower), 80))       
 
                 # Token overlap with trigger text
-                overlap = cmd_tokens.intersection(_tokens(t))
+                overlap = cmd_tokens.intersection(trigger_tokens)
                 score += 15 * len(overlap)
+
+        if not has_specific_trigger_overlap:
+            score = 0
+            continue
 
         # Fuzzy score on name/description tokens
         overlap_meta = cmd_tokens.intersection(meta_tokens)

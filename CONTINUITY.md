@@ -1,24 +1,26 @@
 Goal (incl. success criteria):
-- Organize Downloads folder by date (MM/YYYY) using shortcut target; move files only.
+- Implement smart orchestrator auto-routing in `agent/treys_agent.py`, replacing manual mode selection prompts.
 
 Constraints/Assumptions:
-- Use shortcut target path from user; no deletions.
-- Minimal, scoped changes; avoid unrelated files.
-- Tests: run pytest -q for relevant changes (likely N/A).
+- Keep changes minimal and scoped; follow existing Python style (4-space indent).
+- Avoid destructive actions unless explicitly requested.
+- Update imports as needed; retain existing behavior except for routing changes.
+- Tests: run `pytest -q` if relevant and feasible.
 
 Key decisions:
-- Date-based organization in MM/YYYY folders using file modified date.
+- Follow user-specified smart_orchestrator logic and routing flow.
 
 State:
   - Done:
-    - Read existing ledger.
+    - Read AGENTS.md and existing CONTINUITY.md.
   - Now:
-    - Produce deterministic playbook JSON for organizing Downloads.
+    - Inspect `agent/treys_agent.py` for assess_task_complexity and pending_task flow.
   - Next:
-    - Return JSON response only.
+    - Implement `smart_orchestrator`, replace manual prompt flow, update imports.
 
 Open questions (UNCONFIRMED if needed):
 - None.
 
 Working set (files/ids/commands):
-- CONTINUITY.md
+- `agent/treys_agent.py`
+- `CONTINUITY.md`

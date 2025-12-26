@@ -1017,6 +1017,37 @@ def assess_task_complexity(user_input: str) -> str:
     return "collaborative"
 
 
+def _is_simple_filesystem_query(user_input: str) -> bool:
+    """Detect simple read-only filesystem queries that don't need confirmation."""
+    lower = user_input.lower()
+
+    # Read-only filesystem operations
+    readonly_patterns = [
+        "list files",
+        "show files",
+        "list directories",
+        "show directories",
+        "read file",
+        "show file",
+        "search for files",
+        "find files",
+    ]
+
+    # Path indicators (if present, likely filesystem query)
+    has_path = any(
+        p in lower
+        for p in [":\\", "downloads", "documents", "desktop", "/users/", "/home/"]
+    )
+
+    # If has read-only pattern OR (has "list"/"show" AND has path)
+    if any(pattern in lower for pattern in readonly_patterns):
+        return True
+    if has_path and any(word in lower for word in ["list", "show", "find", "search"]):
+        return True
+
+    return False
+
+
 def main() -> None:
     from agent.modes.autonomous import mode_autonomous
     from agent.modes.execute import find_matching_playbook, list_playbooks, load_playbooks, mode_execute
@@ -1391,6 +1422,11 @@ def main() -> None:
 
         if _is_simple_question(user_input):
             _handle_simple_question(user_input)
+            continue
+
+        # Auto-execute simple filesystem queries
+        if _is_simple_filesystem_query(user_input):
+            mode_execute(user_input)
             continue
 
         if _looks_like_action_request(user_input):
