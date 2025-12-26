@@ -121,12 +121,10 @@ def show_help() -> None:
   The agent will ask questions, understand your goals, and execute actions as needed.
   {YELLOW}Advanced:{RESET} Set MAIL_USE_WORKFLOW=1 for the structured workflow mode.
 
-{GREEN}Collab (interactive planning):{RESET}
-  Natural language that includes "plan", "organize", "strategy", etc. will route here automatically.
-  You can still force it with:
-    Collab: [goal]
+{GREEN}Collaborative Planning:{RESET}
+  Collab: [goal]  - Interactive planning with Q&A before execution
   Example:
-    - I want a plan to reorganize my Yahoo folders and clean rules
+    - Collab: organize my downloads folder
 
 {GREEN}Smart mode selection:{RESET}
   If a request could be either research or execution, the agent will ask which you want.
@@ -970,6 +968,55 @@ def _prompt_startup_credentials() -> None:
         save_memory(memory)
 
 
+def assess_task_complexity(user_input: str) -> str:
+    """
+    Analyze user input to determine if collaborative planning is needed.
+    Returns: "collaborative" or "execute"
+    """
+    user_lower = user_input.lower().strip()
+
+    # High ambiguity signals - needs collaboration
+    ambiguous_keywords = [
+        "organize",
+        "clean",
+        "improve",
+        "optimize",
+        "fix up",
+        "better way",
+        "help me with",
+        "figure out",
+        "plan",
+    ]
+
+    # Clear/specific signals - can execute directly
+    clear_keywords = [
+        "search for",
+        "find",
+        "list",
+        "show me",
+        "calculate",
+        "what is",
+        "how many",
+        "tell me",
+        "explain",
+    ]
+
+    # Check for ambiguous signals
+    if any(keyword in user_lower for keyword in ambiguous_keywords):
+        return "collaborative"
+
+    # Check for clear signals
+    if any(keyword in user_lower for keyword in clear_keywords):
+        return "execute"
+
+    # Default: if user input is short and specific, execute
+    # If longer and open-ended, collaborate
+    word_count = len(user_input.split())
+    if word_count <= 5:
+        return "execute"
+    return "collaborative"
+
+
 def main() -> None:
     from agent.modes.autonomous import mode_autonomous
     from agent.modes.execute import find_matching_playbook, list_playbooks, load_playbooks, mode_execute
@@ -1303,14 +1350,43 @@ def main() -> None:
         if _maybe_route_mail(user_input):
             continue
 
+        # Check for explicit mode override
         if lower.startswith("collab:"):
-            task = user_input.split(":", 1)[1].strip()
+            detected_mode = "collaborative"
+            user_input = user_input.split(":", 1)[1].strip()
+            explicit_collab = True
+        else:
+            detected_mode = assess_task_complexity(user_input)
+            explicit_collab = False
+
+        if detected_mode == "collaborative":
+            task = user_input
             if not task:
                 print(f"{YELLOW}[INFO]{RESET} Provide a goal after 'Collab:'.")
                 continue
-            from agent.modes.collab import run_collab_session
+            if not explicit_collab:
+                print(
+                    f"{CYAN}[AUTO-DETECT]{RESET} Using collaborative planning mode..."
+                )
+            from agent.context_loader import format_context_for_llm
+            from agent.modes.collaborative import mode_collaborative
+            from agent.modes.execute_plan import execute_plan_direct
 
-            run_collab_session(task)
+            context = format_context_for_llm()
+            result = mode_collaborative(task, context=context)
+            
+            if result.get("approved"):
+                plan_steps = result.get("plan_steps", [])
+                if plan_steps:
+                    # Use direct MCP tool execution (fast path!)
+                    success = execute_plan_direct(plan_steps)
+                    if not success:
+                        print(f"{RED}[FALLBACK]{RESET} Direct execution failed, trying execute mode...")
+                        mode_execute(task, context=result)
+                else:
+                    # No plan steps, fall back to execute mode
+                    print(f"{YELLOW}[FALLBACK]{RESET} No plan steps, using execute mode...")
+                    mode_execute(task, context=result)
             continue
 
         if _is_simple_question(user_input):

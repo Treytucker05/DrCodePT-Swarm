@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["questions", "ready_to_plan", "plan_steps"],
+  "properties": {
+    "questions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "maxItems": 4
+    },
+    "ready_to_plan": { "type": "boolean" },
+    "plan_steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["step_number", "description", "tool_name", "confidence", "needs_clarification"],
+        "properties": {
+          "step_number": { "type": "integer" },
+          "description": { "type": "string" },
+          "tool_name": { "type": "string" },
+          "confidence": { "type": "integer", "minimum": 0, "maximum": 100 },
+          "needs_clarification": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}

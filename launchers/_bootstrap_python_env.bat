@@ -18,7 +18,7 @@ echo [SETUP] Checking Python environment...
 rem Create venv if missing
 if not exist "%PY%" (
   echo [SETUP] Creating venv at %VENV%
-  python -m venv "%VENV%"
+  py -m venv "%VENV%"
   if errorlevel 1 (
     echo [ERROR] Failed to create venv. Ensure Python is installed and on PATH.
     exit /b 1

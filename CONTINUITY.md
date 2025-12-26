@@ -1,11 +1,24 @@
-# Continuity Ledger
+Goal (incl. success criteria):
+- Organize Downloads folder by date (MM/YYYY) using shortcut target; move files only.
 
-- Goal (incl. success criteria): Add authoritative documentation map + Codex operating rules to README files; include ChatGPT Pro login/no API key note.
-- Constraints/Assumptions: Follow AGENTS.md (minimal scoped changes; keep ASCII). approval_policy=never.
-- Key decisions: Add a single ASCII sentence to each README in the most relevant section.
-- State:
-  - Done: Fixed research.py f-string syntax error and pushed. Phase 0.5 work completed previously.
-  - Now: Added documentation map + Codex operating rules to README.md, README_NEW_FEATURES.md, and agent/README.md; added ChatGPT Pro/no API key note where missing.
-  - Next: Commit and push README updates if user approves.
-- Open questions (UNCONFIRMED if needed): None.
-- Working set (files/ids/commands): README.md; README_NEW_FEATURES.md; agent/README.md; CONTINUITY.md
+Constraints/Assumptions:
+- Use shortcut target path from user; no deletions.
+- Minimal, scoped changes; avoid unrelated files.
+- Tests: run pytest -q for relevant changes (likely N/A).
+
+Key decisions:
+- Date-based organization in MM/YYYY folders using file modified date.
+
+State:
+  - Done:
+    - Read existing ledger.
+  - Now:
+    - Produce deterministic playbook JSON for organizing Downloads.
+  - Next:
+    - Return JSON response only.
+
+Open questions (UNCONFIRMED if needed):
+- None.
+
+Working set (files/ids/commands):
+- CONTINUITY.md

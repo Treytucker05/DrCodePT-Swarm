@@ -1,4 +1,9 @@
 {
+  "filesystem": {
+    "command": "C:\\Program Files\\nodejs\\npx.cmd",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\Users\\treyt"],
+    "env": {}
+  },
   "github": {
     "command": "mcp-server-github",
     "args": [],

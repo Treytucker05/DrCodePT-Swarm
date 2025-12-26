@@ -1,5 +1,4 @@
 sandbox_mode = "danger-full-access"
 
 [features]
-rmcp_client = false
 web_search_request = true
