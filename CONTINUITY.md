@@ -1,28 +1,29 @@
 Goal (incl. success criteria):
-- Fix smart_orchestrator research routing so "Search for Google OAuth docs" triggers research mode: ensure "search" and "docs" keywords trigger, research auto-executes without confirmation, and research bypasses playbook matching; verify with routing test.
+- Fix BrokenPipeError by switching _call_codex to non-interactive subprocess.run (stdin input, stdout output) and removing streaming writes.
 
 Constraints/Assumptions:
 - Keep changes minimal and scoped; follow existing Python style (4-space indent).
 - Avoid destructive actions unless explicitly requested.
-- Test routing with: "Search for Google OAuth docs".
 
 Key decisions:
 - None yet.
 
 State:
   - Done:
-    - Read existing continuity ledger.
-    - Added "search"/"docs" research triggers and moved research routing ahead of playbook matching.
-    - Ran routing check for "Search for Google OAuth docs" -> research mode.
-    - Ran `pytest -q`; fails during collection: ImportError for `list_profiles` in `tests/test_profiles.py`.
+    - Added direct web_search routing for "search for" queries.
+    - Added "search for" to execute phrases.
+    - Updated _run_web_search to call web_search directly with a temporary RunContext.
+    - Added web_fetch follow-up to extract steps from the selected result.
+    - Added HTML cleaning, main/article focus, stricter step filtering, and noisy extraction guard.
+    - Updated _call_codex to use Codex CLI --non-interactive with subprocess.run and removed streaming stdin writes.
   - Now:
-    - Review changes and report results.
+    - Summarize changes.
   - Next:
-    - None.
+    - (Optional) Run a quick manual research run if requested.
 
 Open questions (UNCONFIRMED if needed):
 - None.
 
 Working set (files/ids/commands):
-- `DrCodePT-Swarm/agent/treys_agent.py`
+- `DrCodePT-Swarm/agent/modes/research.py`
 - `DrCodePT-Swarm/CONTINUITY.md`

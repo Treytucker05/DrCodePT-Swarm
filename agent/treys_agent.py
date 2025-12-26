@@ -32,7 +32,7 @@ REPO_ROOT = BASE_DIR.parent
 # Ensure imports resolve to the repo-root `agent` package when run from `...\\agent`.
 sys.path.insert(0, str(REPO_ROOT))
 
-from agent.modes.execute import find_matching_playbook, load_playbooks
+from agent.modes.execute import load_playbooks
 
 
 def banner() -> None:
@@ -268,6 +268,7 @@ _EXEC_PHRASES = {
     "sign in",
     "check my",
     "check the",
+    "search for",
 }
 
 _MAIL_KEYWORDS = {
@@ -754,6 +755,149 @@ def _handle_simple_question(text: str) -> None:
         print(f"{YELLOW}[INFO]{RESET} For detailed answers, try 'Research: {text.rstrip('?')}'")
 
 
+def _extract_search_query(text: str) -> str:
+    match = re.search(r"\bsearch for\b[:\s]+(.+)", text, flags=re.IGNORECASE)
+    if match:
+        return match.group(1).strip()
+    return ""
+
+
+def _run_web_search(text: str) -> None:
+    query = _extract_search_query(text)
+    if not query:
+        print(f"{YELLOW}[INFO]{RESET} Provide a query after 'Search for'.")
+        return
+
+    from tempfile import TemporaryDirectory
+    from agent.autonomous.config import RunContext
+    from agent.autonomous.tools.builtins import WebFetchArgs, WebSearchArgs, web_fetch, web_search
+
+    with TemporaryDirectory(prefix="web_search_") as tmp_dir:
+        run_dir = Path(tmp_dir)
+        ctx = RunContext(
+            run_id="manual",
+            run_dir=run_dir,
+            workspace_dir=run_dir,
+            profile=None,
+            usage=None,
+        )
+        result = web_search(ctx, WebSearchArgs(query=query))
+
+        if not result.success:
+            print(f"{RED}[ERROR]{RESET} Web search failed: {result.error or 'unknown error'}")
+            return
+
+        output = result.output or {}
+        results = output.get("results") or []
+        print(f"{CYAN}[SEARCH]{RESET} {query}")
+        if not results:
+            print(f"{YELLOW}[INFO]{RESET} No results found.")
+            return
+        for idx, item in enumerate(results, 1):
+            title = (item or {}).get("title") or "Untitled"
+            url = (item or {}).get("url") or ""
+            snippet = (item or {}).get("snippet") or ""
+            print(f"{idx}. {title}")
+            if url:
+                print(f"   {url}")
+            if snippet:
+                print(f"   {snippet}")
+
+        target_idx = 3 if len(results) >= 4 else 0
+        target = results[target_idx] if results else {}
+        target_url = (target or {}).get("url") or ""
+        target_title = (target or {}).get("title") or "Selected result"
+
+        if not target_url:
+            return
+
+        def _strip_html_local(text: str) -> str:
+            if not text:
+                return ""
+            cleaned = re.sub(r"<[^>]+>", " ", text)
+            cleaned = cleaned.replace("&nbsp;", " ")
+            cleaned = re.sub(r"\s+", " ", cleaned)
+            return cleaned.strip()
+
+        def _clean_html(text: str) -> str:
+            if not text:
+                return ""
+            cleaned = re.sub(r"<(script|style|nav)[^>]*>.*?</\1>", " ", text, flags=re.IGNORECASE | re.DOTALL)
+            return cleaned
+
+        def _extract_main_section(text: str) -> str:
+            if not text:
+                return ""
+            for pattern in (
+                r"<main[^>]*>.*?</main>",
+                r"<article[^>]*>.*?</article>",
+                r"<[^>]*\srole=[\"']main[\"'][^>]*>.*?</[^>]+>",
+            ):
+                match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+                if match:
+                    return match.group(0)
+            return text
+
+        def _looks_like_instruction(line: str) -> bool:
+            if not line:
+                return False
+            if re.search(r"[{};]", line):
+                return False
+            if len(line) < 6:
+                return False
+            return bool(re.search(r"[A-Za-z]", line))
+
+        def _extract_steps_from_html(html: str, *, limit: int = 12) -> list[str]:
+            if not html:
+                return []
+            items = re.findall(r"<li[^>]*>(.*?)</li>", html, flags=re.IGNORECASE | re.DOTALL)
+            steps: list[str] = []
+            for raw in items:
+                cleaned = _strip_html_local(raw)
+                if not cleaned or not _looks_like_instruction(cleaned):
+                    continue
+                steps.append(cleaned)
+                if len(steps) >= limit:
+                    break
+            return steps
+
+        def _extract_steps_from_text(text: str, *, limit: int = 12) -> list[str]:
+            if not text:
+                return []
+            lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+            steps: list[str] = []
+            for line in lines:
+                if not re.match(r"^(?:\d+[\).\s]+|[-*•]\s+)", line):
+                    continue
+                if not _looks_like_instruction(line):
+                    continue
+                steps.append(line[:280].rstrip())
+                if len(steps) >= limit:
+                    break
+            return steps
+
+        fetch = web_fetch(ctx, WebFetchArgs(url=target_url, strip_html=False))
+        if not fetch.success:
+            print(f"{YELLOW}[INFO]{RESET} Could not fetch details from {target_url}")
+            return
+
+        raw_html = (fetch.output or {}).get("text") or ""
+        cleaned_html = _clean_html(raw_html)
+        focused_html = _extract_main_section(cleaned_html)
+        steps = _extract_steps_from_html(focused_html)
+        if not steps:
+            steps = _extract_steps_from_text(_strip_html_local(focused_html))
+
+        if steps and sum(len(step) for step in steps) > 5000:
+            print(f"{YELLOW}[INFO]{RESET} Extracted steps look noisy; skipping.")
+            return
+
+        if steps:
+            print(f"\n{CYAN}[STEPS]{RESET} {target_title}")
+            for idx, step in enumerate(steps, 1):
+                print(f"{idx}. {step}")
+
+
 def _score_intent(text: str, keywords: set[str], phrases: set[str]) -> int:
     lowered = text.lower()
     score = 0
@@ -1038,6 +1182,13 @@ def smart_orchestrator(user_input: str) -> Dict[str, Any]:
             "auto_execute": True,
         }
 
+    if "search for" in lower:
+        return {
+            "mode": "web_search",
+            "reason": "Direct web search request",
+            "auto_execute": True,
+        }
+
     # TIER 2: Research tasks (auto-execute research mode)
     research_keywords = [
         "research",
@@ -1058,19 +1209,7 @@ def smart_orchestrator(user_input: str) -> Dict[str, Any]:
             "auto_execute": True,
         }
 
-    # TIER 3: Playbook matches (if score high enough, use it)
-    playbook_name, playbook_data = find_matching_playbook(
-        user_input, load_playbooks()
-    )
-    if playbook_name and playbook_data:
-        return {
-            "mode": "execute",
-            "reason": f"Matched playbook: {playbook_name}",
-            "auto_execute": True,
-            "playbook": playbook_name,
-        }
-
-    # TIER 4: Deep analysis tasks (swarm mode)
+    # TIER 3: Deep analysis tasks (swarm mode)
     swarm_keywords = [
         "audit",
         "deep dive",
@@ -1086,7 +1225,7 @@ def smart_orchestrator(user_input: str) -> Dict[str, Any]:
             "auto_execute": False,  # Ask for swarm confirmation
         }
 
-    # TIER 5: Ambiguous tasks (collaborative planning)
+    # TIER 4: Ambiguous tasks (collaborative planning)
     ambiguous_keywords = [
         "organize",
         "clean up",
@@ -1103,7 +1242,7 @@ def smart_orchestrator(user_input: str) -> Dict[str, Any]:
             "auto_execute": True,
         }
 
-    # TIER 6: Action requests (default to execute)
+    # TIER 5: Action requests (default to execute)
     if _looks_like_action_request(user_input):
         return {
             "mode": "execute",
@@ -1111,7 +1250,7 @@ def smart_orchestrator(user_input: str) -> Dict[str, Any]:
             "auto_execute": True,
         }
 
-    # TIER 7: Conversational (chat only)
+    # TIER 6: Conversational (chat only)
     return {
         "mode": "chat",
         "reason": "Conversational query",
@@ -1152,7 +1291,7 @@ def _is_simple_filesystem_query(user_input: str) -> bool:
 
 def main() -> None:
     from agent.modes.autonomous import mode_autonomous
-    from agent.modes.execute import find_matching_playbook, list_playbooks, load_playbooks, mode_execute
+    from agent.modes.execute import list_playbooks, load_playbooks, mode_execute
     from agent.modes.learn import mode_learn
     from agent.modes.research import mode_research
 
@@ -1513,12 +1652,7 @@ def main() -> None:
             _handle_simple_question(user_input)
             continue
 
-        # Auto-execute simple filesystem queries
-        if _is_simple_filesystem_query(user_input):
-            mode_execute(user_input)
-            continue
-
-        # Smart orchestrator decides mode automatically
+        # Smart orchestrator decides mode automatically (before playbook matching)
         routing = smart_orchestrator(user_input)
 
         if routing["mode"] == "collaborative":
@@ -1537,6 +1671,10 @@ def main() -> None:
                         mode_execute(user_input, context=result)
                 else:
                     mode_execute(user_input, context=result)
+            continue
+
+        if routing["mode"] == "web_search":
+            _run_web_search(user_input)
             continue
 
         if routing["mode"] == "research":

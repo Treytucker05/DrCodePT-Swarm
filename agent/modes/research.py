@@ -8,8 +8,8 @@ import re
 import shutil
 import subprocess
 import sys
-import threading
 import time
+from tempfile import TemporaryDirectory
 from datetime import datetime
 from contextlib import nullcontext
 from pathlib import Path
@@ -118,6 +118,89 @@ def _append_sources_section(markdown: str) -> str:
         return base
     section = "\n\n## Sources\n" + "\n".join(f"- {u}" for u in urls)
     return base.rstrip() + section
+
+
+def _build_sources_block(sources: list[dict], *, max_chars: int = 8000) -> str:
+    lines: list[str] = []
+    total = 0
+    for idx, src in enumerate(sources, 1):
+        title = src.get("title") or "Untitled"
+        url = src.get("url") or ""
+        snippet = src.get("snippet") or ""
+        excerpt = src.get("excerpt") or ""
+        block = f"[{idx}] {title}\nURL: {url}\nSnippet: {snippet}\nExcerpt: {excerpt}\n"
+        if total + len(block) > max_chars:
+            break
+        lines.append(block)
+        total += len(block)
+    return "\n".join(lines).strip()
+
+
+def _research_agent_sources(topic: str, ctx: "RunContext") -> list[dict]:
+    from agent.autonomous.tools.builtins import WebFetchArgs, WebSearchArgs, web_fetch, web_search
+
+    search = web_search(ctx, WebSearchArgs(query=topic, max_results=6))
+    if not search.success:
+        return []
+    output = search.output or {}
+    results = output.get("results") or []
+    sources: list[dict] = []
+    for item in results:
+        title = (item or {}).get("title") or "Untitled"
+        url = (item or {}).get("url") or ""
+        snippet = (item or {}).get("snippet") or ""
+        excerpt = ""
+        if url:
+            fetched = web_fetch(ctx, WebFetchArgs(url=url, strip_html=True))
+            if fetched.success:
+                text = (fetched.output or {}).get("text") or ""
+                excerpt = text.strip()[:1500]
+        sources.append(
+            {
+                "title": title,
+                "url": url,
+                "snippet": snippet,
+                "excerpt": excerpt,
+            }
+        )
+    return sources
+
+
+def _analysis_agent(topic: str, sources: list[dict]) -> str:
+    sources_block = _build_sources_block(sources)
+    prompt = f"""You are the Analysis Agent.
+Topic: {topic}
+
+Use ONLY the sources below. Extract key findings with citations (raw URLs).
+Return bullets under headings:
+- Key Findings
+- Evidence Gaps (if any)
+
+Sources:
+{sources_block}
+"""
+    return _call_codex(prompt, allow_tools=False, label="ANALYSIS", context=topic)
+
+
+def _synthesis_agent(topic: str, sources: list[dict], analysis: str) -> str:
+    sources_block = _build_sources_block(sources)
+    prompt = f"""You are the Synthesis Agent.
+Topic: {topic}
+
+Combine the analysis into a comprehensive, actionable report.
+Include sections:
+1) Executive Summary
+2) Key Findings (with citations)
+3) Recommendations (actionable)
+4) Sources (raw URLs)
+
+Analysis:
+{analysis[:6000]}
+
+Sources:
+{sources_block}
+"""
+    return _call_codex(prompt, allow_tools=False, label="SYNTHESIS", context=topic)
 
 
 def _has_citations(text: str) -> bool:
@@ -283,8 +366,13 @@ def _call_codex(
     heartbeat_seconds = _int_env("TREYS_AGENT_HEARTBEAT_SECONDS", 20)
     context_label = _short_label(context or "")
 
+    def _error(reason: str) -> str:
+        msg = f"{label} failed: {reason}"
+        print(f"{RED}[ERROR]{RESET} {msg}")
+        return f"[CODEX ERROR] {msg}"
+
     # Note: `--search` is a global flag (must appear before the `exec` subcommand).
-    cmd: list[str] = _codex_command() + ["--dangerously-bypass-approvals-and-sandbox"]
+    cmd: list[str] = _codex_command() + ["--non-interactive", "--dangerously-bypass-approvals-and-sandbox"]
     if allow_tools:
         cmd += ["--search"]
     cmd += ["exec"]
@@ -321,13 +409,10 @@ def _call_codex(
                     timeout=timeout_seconds or int(os.getenv("CODEX_TIMEOUT_SECONDS", "600")),
                 )
         except FileNotFoundError:
-            return "[CODEX ERROR] Codex CLI not found on PATH."
+            return _error("Codex CLI not found on PATH")
         except subprocess.TimeoutExpired:
             timeout_s = timeout_seconds or int(os.getenv("CODEX_TIMEOUT_SECONDS", "600"))
-            return (
-                f"[CODEX ERROR] Codex CLI timed out after {timeout_s}s. "
-                "Try setting CODEX_TIMEOUT_SECONDS=900 and retry."
-            )
+            return _error(f"timed out after {timeout_s}s")
 
         if proc.returncode != 0:
             error = proc.stderr.strip() if proc.stderr else "Unknown error"
@@ -345,37 +430,19 @@ def _call_codex(
                     show_progress=show_progress,
                     retry_on_unknown_feature=False,
                 )
-            return f"[CODEX ERROR] {error}"
+            return _error(error)
 
         return proc.stdout.strip() if proc.stdout else ""
 
-    # Progress / event mode (best-effort, avoids exposing chain-of-thought).
-    start_time = time.time()
+    # Progress / event mode (non-interactive; parse output after completion).
     timeout_s = timeout_seconds or int(os.getenv("CODEX_TIMEOUT_SECONDS", "600"))
-    stdout_lines: list[str] = []
-    stderr_lines: list[str] = []
     final_parts: list[str] = []
-    stop_event = threading.Event()
-    status_lock = threading.Lock()
-    last_status: list[str] = [""]
 
     def _status(msg: str) -> None:
-        with status_lock:
-            if context_label:
-                msg = f"{msg} ({context_label})"
-            if msg and msg != last_status[0]:
-                print(f"{YELLOW}[{label}]{RESET} {msg}")
-                last_status[0] = msg
-
-    def _heartbeat() -> None:
-        if heartbeat_seconds <= 0:
-            return
-        while not stop_event.wait(heartbeat_seconds):
-            elapsed = int(time.time() - start_time)
-            if context_label:
-                print(f"{YELLOW}[{label}]{RESET} still working... {elapsed}s ({context_label})")
-            else:
-                print(f"{YELLOW}[{label}]{RESET} still working... {elapsed}s")
+        if context_label:
+            msg = f"{msg} ({context_label})"
+        if msg:
+            print(f"{YELLOW}[{label}]{RESET} {msg}")
 
     def _handle_json_event(obj: dict) -> None:
         event_type = str(obj.get("type") or "").lower()
@@ -401,86 +468,25 @@ def _call_codex(
                 _status("using tools...")
                 return
 
-    def _read_stream(stream, sink, *, parse_json: bool) -> None:
-        try:
-            for line in iter(stream.readline, ""):
-                if not line:
-                    break
-                sink.append(line)
-                if parse_json:
-                    try:
-                        obj = json.loads(line.strip())
-                        if isinstance(obj, dict):
-                            _handle_json_event(obj)
-                    except Exception:
-                        continue
-        finally:
-            try:
-                stream.close()
-            except Exception:
-                pass
-
     try:
-        proc = subprocess.Popen(
+        proc = subprocess.run(
             cmd,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            input=prompt,
             text=True,
             encoding="utf-8",
             errors="ignore",
+            capture_output=True,
             env=env,
             cwd=str(REPO_ROOT),
-            bufsize=1,
+            timeout=timeout_s,
         )
     except FileNotFoundError:
-        return "[CODEX ERROR] Codex CLI not found on PATH."
-
-    hb = threading.Thread(target=_heartbeat, daemon=True)
-    hb.start()
-
-    threads: list[threading.Thread] = []
-    if proc.stdout is not None:
-        t_out = threading.Thread(
-            target=_read_stream,
-            args=(proc.stdout, stdout_lines),
-            kwargs={"parse_json": use_json_events},
-            daemon=True,
-        )
-        t_out.start()
-        threads.append(t_out)
-    if proc.stderr is not None:
-        t_err = threading.Thread(
-            target=_read_stream,
-            args=(proc.stderr, stderr_lines),
-            kwargs={"parse_json": False},
-            daemon=True,
-        )
-        t_err.start()
-        threads.append(t_err)
-
-    try:
-        if proc.stdin is not None:
-            proc.stdin.write(prompt)
-            proc.stdin.close()
-        proc.wait(timeout=timeout_s)
+        return _error("Codex CLI not found on PATH")
     except subprocess.TimeoutExpired:
-        proc.kill()
-        stop_event.set()
-        elapsed = int(time.time() - start_time)
-        return (
-            f"[CODEX ERROR] Codex CLI timed out after {elapsed}s. "
-            "Try setting CODEX_TIMEOUT_SECONDS=900 and retry."
-        )
-    finally:
-        stop_event.set()
-
-    for t in threads:
-        t.join(timeout=1)
-    hb.join(timeout=1)
+        return _error(f"timed out after {timeout_s}s")
 
     if proc.returncode != 0:
-        err = "".join(stderr_lines).strip() or "Unknown error"
+        err = proc.stderr.strip() if proc.stderr else "Unknown error"
         if (
             retry_on_unknown_feature
             and "Unknown feature flag: rmcp_client" in err
@@ -495,15 +501,20 @@ def _call_codex(
                 show_progress=show_progress,
                 retry_on_unknown_feature=False,
             )
-        return f"[CODEX ERROR] {err}"
+        return _error(err)
 
+    stdout_text = proc.stdout or ""
     if use_json_events:
+        for line in stdout_text.splitlines():
+            try:
+                obj = json.loads(line.strip())
+            except Exception:
+                continue
+            if isinstance(obj, dict):
+                _handle_json_event(obj)
         if final_parts:
             return "\n".join(final_parts).strip()
-        # Fallback to raw output if parsing failed.
-        return "".join(stdout_lines).strip()
-
-    return "".join(stdout_lines).strip()
+    return stdout_text.strip()
 
 
 def _research_staged(topic: str, answers: str, profile: dict, log: list[str]) -> str:
@@ -752,110 +763,36 @@ NOTES:
 
 def mode_research(topic: str) -> None:
     print(f"\n{CYAN}[RESEARCH MODE]{RESET} Topic: {topic}")
-    print("I'll ask a few quick questions to focus the research.\n")
+    print(f"{CYAN}[SPAWN]{RESET} Research Agent, Analysis Agent, Synthesis Agent\n")
 
-    log: list[str] = []
-    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_slug = topic[:32].replace(" ", "_")
-    run_dir = BASE_DIR / "research_runs" / f"{run_id}_{run_slug}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-    profile = _select_research_profile()
-    _log_event(log, "PROFILE", profile.get("name", "balanced"))
+    from agent.autonomous.config import RunContext
 
-    questions_prompt = f"""User wants to research: {topic}
+    with TemporaryDirectory(prefix="research_multi_") as tmp_dir:
+        run_dir = Path(tmp_dir)
+        ctx = RunContext(
+            run_id="manual",
+            run_dir=run_dir,
+            workspace_dir=run_dir,
+            profile=None,
+            usage=None,
+        )
 
-Ask 2-3 targeted questions to clarify:
-1) what aspect matters most,
-2) what it's for (decision, implementation, learning),
-3) constraints (time/budget/stack).
+        print(f"{YELLOW}[RESEARCH AGENT]{RESET} Gathering sources...")
+        sources = _research_agent_sources(topic, ctx)
+        if not sources:
+            print(f"{RED}[ERROR]{RESET} No sources found.")
+            return
 
-Be concise. Output questions only."""
+        print(f"{YELLOW}[ANALYSIS AGENT]{RESET} Extracting key findings...")
+        analysis = _analysis_agent(topic, sources)
+        if analysis.startswith("[CODEX ERROR]"):
+            print(f"{RED}{analysis}{RESET}")
+            return
 
-    questions = _call_codex(questions_prompt, allow_tools=False, label="QUESTIONS", context=topic)
-    if questions.startswith("[CODEX ERROR]"):
-        print(f"{RED}{questions}{RESET}")
-        return
+        print(f"{YELLOW}[SYNTHESIS AGENT]{RESET} Producing report...")
+        report = _synthesis_agent(topic, sources, analysis)
+        if report.startswith("[CODEX ERROR]"):
+            print(f"{RED}{report}{RESET}")
+            return
 
-    print(f"{CYAN}[QUESTIONS]{RESET}\n{questions}")
-    answers = input(f"\n{GREEN}[YOU]{RESET} ").strip()
-
-    topic_label = _short_label(topic)
-    if topic_label:
-        print(f"\n{YELLOW}[RESEARCHING]{RESET} {topic_label} - gathering sources")
-    else:
-        print(f"\n{YELLOW}[RESEARCHING]{RESET} Gathering sources and synthesizing...")
-    research_prompt = f"""Research topic: {topic}
-User clarifications: {answers}
-
-Instructions:
-- Do real web research (use shell/python to fetch sources if helpful).
-- Compare multiple credible sources.
-- Iterate: refine your answer as you discover better sources.
-- Return a structured, comprehensive answer.
-- Include citations as raw URLs (one per bullet or sentence as needed).
-- Do not include any private data from this machine; do not modify files.
-"""
-
-    staged = _bool_env("TREYS_AGENT_STAGED_RESEARCH", True)
-    if staged:
-        findings = _research_staged(topic, answers, profile, log)
-    else:
-        findings = _call_codex(research_prompt, allow_tools=True, label="RESEARCH", context=topic)
-        if findings.startswith("[CODEX ERROR]") and "timed out" in findings.lower():
-            print(f"{YELLOW}[INFO]{RESET} Research timed out. Retrying in staged mode...")
-            _log_event(log, "WARN", "Initial research timed out; retrying staged")
-            findings = _research_staged(topic, answers, profile, log)
-    if findings.startswith("[CODEX ERROR]"):
-        print(f"{RED}{findings}{RESET}")
-        return
-
-    findings_body = findings
-    if not _has_citations(findings_body):
-        warn = "Citations missing; include raw URLs for sources."
-        _log_event(log, "WARN", warn)
-        findings_body = f"{findings_body}\n\n[WARN] {warn}"
-    findings_with_sources = _append_sources_section(findings_body)
-    print(f"\n{CYAN}[FINDINGS]{RESET}\n{findings_with_sources}")
-
-    while True:
-        followup = input(f"\n{GREEN}Follow-up (or 'done'):{RESET} ").strip()
-        if not followup or followup.lower() in {"done", "exit", "quit"}:
-            break
-        _log_event(log, "FOLLOWUP", followup)
-
-        followup_prompt = f"""Topic: {topic}
-User clarifications: {answers}
-
-Previous answer:
-{findings_body[:4000]}
-
-Follow-up question: {followup}
-
-Do additional research and answer this follow-up. Include citations as raw URLs."""
-        more = _call_codex(followup_prompt, allow_tools=True, label="FOLLOWUP", context=followup)
-        if more.startswith("[CODEX ERROR]"):
-            print(f"{RED}{more}{RESET}")
-            continue
-        if not _has_citations(more):
-            warn = "Citations missing; include raw URLs for sources."
-            _log_event(log, "WARN", warn)
-            more = f"{more}\n\n[WARN] {warn}"
-        print(f"\n{CYAN}[MORE]{RESET}\n{more}")
-        findings_body += f"\n\n{more}"
-
-    save = input(f"\n{YELLOW}Save this research to a file? (y/n):{RESET} ").strip().lower()
-    if save != "y":
-        log_path = run_dir / "research_log.md"
-        log_md = "## Research Log\n" + "\n".join(f"- {e}" for e in log)
-        log_path.write_text(log_md, encoding="utf-8")
-        print(f"{YELLOW}[LOG]{RESET} Saved research log: {log_path}")
-        return
-
-    path = run_dir / "report.md"
-    final_report = _append_sources_section(findings_body)
-    path.write_text(final_report, encoding="utf-8")
-    print(f"{GREEN}[SAVED]{RESET} {path}")
-    log_path = run_dir / "research_log.md"
-    log_md = "## Research Log\n" + "\n".join(f"- {e}" for e in log)
-    log_path.write_text(log_md, encoding="utf-8")
-    print(f"{GREEN}[LOG]{RESET} {log_path}")
+    print(f"\n{CYAN}[REPORT]{RESET}\n{report}")
