@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from tempfile import TemporaryDirectory
 from datetime import datetime
@@ -444,6 +445,50 @@ def _call_codex(
         if msg:
             print(f"{YELLOW}[{label}]{RESET} {msg}")
 
+    progress_stop: threading.Event | None = None
+    progress_thread: threading.Thread | None = None
+
+    def _start_progress() -> None:
+        nonlocal progress_stop, progress_thread
+        if not sys.stdout.isatty():
+            return
+        progress_stop = threading.Event()
+        start_time = time.time()
+        bar_width = 20
+
+        def _run() -> None:
+            frames = ["|", "/", "-", "\\"]
+            idx = 0
+            while not progress_stop.wait(0.2):
+                elapsed = int(time.time() - start_time)
+                if timeout_s:
+                    pct = min(1.0, elapsed / max(1, timeout_s))
+                    filled = int(pct * bar_width)
+                    bar = "#" * filled + "-" * (bar_width - filled)
+                    msg = f"\r[{label}] {frames[idx]} [{bar}] {int(pct * 100):3d}% {elapsed:>3}s"
+                else:
+                    msg = f"\r[{label}] {frames[idx]} {elapsed:>3}s"
+                try:
+                    sys.stdout.write(msg)
+                    sys.stdout.flush()
+                except Exception:
+                    pass
+                idx = (idx + 1) % len(frames)
+            try:
+                sys.stdout.write("\r" + (" " * 80) + "\r")
+                sys.stdout.flush()
+            except Exception:
+                pass
+
+        progress_thread = threading.Thread(target=_run, daemon=True)
+        progress_thread.start()
+
+    def _stop_progress() -> None:
+        if progress_stop:
+            progress_stop.set()
+        if progress_thread:
+            progress_thread.join(timeout=1)
+
     def _handle_json_event(obj: dict) -> None:
         event_type = str(obj.get("type") or "").lower()
         if event_type == "turn.started":
@@ -468,6 +513,7 @@ def _call_codex(
                 _status("using tools...")
                 return
 
+    _start_progress()
     try:
         proc = subprocess.run(
             cmd,
@@ -481,9 +527,13 @@ def _call_codex(
             timeout=timeout_s,
         )
     except FileNotFoundError:
+        _stop_progress()
         return _error("Codex CLI not found on PATH")
     except subprocess.TimeoutExpired:
+        _stop_progress()
         return _error(f"timed out after {timeout_s}s")
+    finally:
+        _stop_progress()
 
     if proc.returncode != 0:
         err = proc.stderr.strip() if proc.stderr else "Unknown error"
