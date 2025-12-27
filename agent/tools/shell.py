@@ -43,6 +43,8 @@ class ShellTool(ToolAdapter):
                 cwd=cwd,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=int(timeout_seconds),
             )
         except subprocess.TimeoutExpired:
@@ -57,4 +59,3 @@ class ShellTool(ToolAdapter):
 
 
 __all__ = ["ShellTool"]
-

@@ -317,6 +317,59 @@ _EXEC_PHRASES = {
     "search for",
 }
 
+_REPO_KEYWORDS = {
+    "repo",
+    "repository",
+    "codebase",
+    "code base",
+    "code",
+    "source",
+    "project",
+    "files",
+    "file",
+}
+
+_REPO_ACTION_WORDS = {
+    "review",
+    "audit",
+    "scan",
+    "analyze",
+    "analysis",
+    "architecture",
+    "design",
+    "structure",
+    "gap",
+    "gaps",
+    "feature",
+    "plan",
+    "roadmap",
+    "documentation",
+    "docs",
+    "readme",
+    "refactor",
+    "search",
+    "find",
+    "locate",
+    "where is",
+}
+
+_REPO_TASK_PHRASES = {
+    "review my repo",
+    "review the repo",
+    "repo review",
+    "repository review",
+    "review my repository",
+    "review my code",
+    "review the code",
+    "code review",
+    "review my project",
+    "review the project",
+    "review the codebase",
+    "review my codebase",
+    "find gaps in the repo",
+    "find gaps in my repo",
+}
+
 _MAIL_KEYWORDS = {
     "mail",
     "email",
@@ -511,6 +564,41 @@ def _merge_research_constraints(existing: str | None, new: str) -> str:
     if new_clean.lower() in existing.lower():
         return existing
     return existing.rstrip() + "\n" + new_clean
+
+
+def _is_repo_task(text: str) -> bool:
+    lowered = (text or "").lower().strip()
+    if not lowered:
+        return False
+    if any(phrase in lowered for phrase in _REPO_TASK_PHRASES):
+        return True
+    has_repo = any(token in lowered for token in _REPO_KEYWORDS)
+    if not has_repo:
+        return False
+    return any(token in lowered for token in _REPO_ACTION_WORDS)
+
+
+def _classify_repo_task(text: str) -> str:
+    lowered = (text or "").lower()
+    if any(term in lowered for term in ("gap analysis", "identify gaps", "gaps", "coverage gap")):
+        return "gap_analysis"
+    if any(term in lowered for term in ("architecture", "design", "system design", "structure")):
+        return "architecture_review"
+    if any(term in lowered for term in ("feature plan", "feature planning", "roadmap", "plan", "planning")):
+        return "feature_planning"
+    if any(term in lowered for term in ("documentation", "docs", "readme", "doc")):
+        return "documentation"
+    if any(term in lowered for term in ("search", "find", "locate", "where is", "lookup")):
+        return "code_search"
+    return "repo_general"
+
+
+def _run_repo_mode(task: str, *, unsafe_mode: bool) -> None:
+    from agent.modes.swarm import mode_swarm
+
+    kind = _classify_repo_task(task)
+    objective = f"[REPO MODE: {kind}] {task}"
+    mode_swarm(objective, unsafe_mode=unsafe_mode)
 
 
 def _is_capability_query(text: str) -> bool:
@@ -1290,6 +1378,14 @@ def smart_orchestrator(user_input: str) -> Dict[str, Any]:
             "auto_execute": True,
         }
 
+    # TIER 2: Repo/codebase tasks (auto-run repo mode)
+    if _is_repo_task(user_input):
+        return {
+            "mode": "repo",
+            "reason": "Repo/codebase task detected",
+            "auto_execute": True,
+        }
+
     # TIER 2: Research tasks (auto-execute research mode)
     research_keywords = [
         "research",
@@ -1789,6 +1885,10 @@ def main() -> None:
 
         if routing["mode"] == "web_search":
             _run_web_search(user_input)
+            continue
+
+        if routing["mode"] == "repo":
+            _run_repo_mode(user_input, unsafe_mode=unsafe_mode)
             continue
 
         if routing["mode"] == "research":

@@ -720,32 +720,90 @@ def file_search_factory(agent_cfg: AgentConfig):
         hits: List[Dict[str, Any]] = []
         scanned = 0
         max_scan = profile.max_glob_results if profile else None
-        for path in root.rglob("*"):
-            if not path.is_file():
-                continue
-            if max_scan is not None and scanned >= max_scan:
-                break
-            try:
-                if path.stat().st_size > args.max_bytes:
-                    continue
-                if profile and usage:
-                    if not usage.can_read_file(profile.max_files_to_read):
-                        break
-                    remaining = usage.remaining_bytes(profile.max_total_bytes_to_read)
-                    if remaining <= 0:
-                        break
-                    data = path.read_text(encoding="utf-8", errors="replace")[:remaining]
-                    usage.consume_file(len(data))
-                else:
-                    data = path.read_text(encoding="utf-8", errors="replace")
-            except Exception:
-                continue
-            hay = data if args.case_sensitive else data.lower()
-            if needle in hay:
-                hits.append({"path": str(path), "preview": data[:300]})
-                if len(hits) >= max(1, args.max_results):
+        skip_dirs = {
+            "__pycache__",
+            ".git",
+            "node_modules",
+            ".venv",
+            "venv",
+            "dist",
+            "build",
+        }
+        binary_exts = {
+            ".pyc",
+            ".pyo",
+            ".so",
+            ".dll",
+            ".exe",
+            ".bin",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".gif",
+            ".pdf",
+            ".zip",
+            ".tar",
+            ".gz",
+            ".7z",
+            ".mp3",
+            ".mp4",
+            ".mov",
+            ".avi",
+            ".wav",
+            ".flac",
+            ".woff",
+            ".woff2",
+            ".ttf",
+            ".otf",
+            ".ico",
+        }
+        stop_scan = False
+        for current_root, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+            for filename in filenames:
+                if max_scan is not None and scanned >= max_scan:
+                    stop_scan = True
                     break
-            scanned += 1
+                path = Path(current_root) / filename
+                if path.suffix.lower() in binary_exts:
+                    continue
+                try:
+                    if path.stat().st_size > args.max_bytes:
+                        continue
+                    if profile and usage:
+                        if not usage.can_read_file(profile.max_files_to_read):
+                            stop_scan = True
+                            break
+                        remaining = usage.remaining_bytes(profile.max_total_bytes_to_read)
+                        if remaining <= 0:
+                            stop_scan = True
+                            break
+                        read_cap = min(args.max_bytes, remaining)
+                    else:
+                        read_cap = args.max_bytes
+                    data_bytes = path.read_bytes()[:read_cap]
+                    if b"\x00" in data_bytes:
+                        continue
+                    try:
+                        data = data_bytes.decode("utf-8")
+                    except UnicodeDecodeError:
+                        try:
+                            data = data_bytes.decode("latin-1")
+                        except Exception:
+                            continue
+                    if profile and usage:
+                        usage.consume_file(len(data_bytes))
+                except Exception:
+                    continue
+                hay = data if args.case_sensitive else data.lower()
+                if needle in hay:
+                    hits.append({"path": str(path), "preview": data[:300]})
+                    if len(hits) >= max(1, args.max_results):
+                        stop_scan = True
+                        break
+                scanned += 1
+            if stop_scan:
+                break
         return ToolResult(success=True, output={"root": str(root), "query": args.query, "matches": hits})
 
     return file_search

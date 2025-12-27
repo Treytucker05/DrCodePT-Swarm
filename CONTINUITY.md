@@ -1,39 +1,21 @@
 Goal (incl. success criteria):
-- Implement MCP-based Google Calendar + Tasks integration (client, helpers, tools, registry, treys_agent startup/shutdown) plus tests/scripts per spec.
-
+- Generate a deterministic playbook JSON for “review my repo and find gaps” in `C:\Users\treyt\OneDrive\Desktop\DrCodePT-Swarm`, using Python scanning (no external search utilities) and matching the provided schema.
 Constraints/Assumptions:
-- Use local MCP servers config in `agent/mcp/servers.json` with Windows paths.
-- Keep MCPClient compatible with current helpers/tools.
-- Use explicit phase banners in replies and start with Ledger Snapshot.
-
+- Return ONLY valid JSON (no prose) matching the given schema; keep steps minimal and robust.
+- Avoid external search utilities; use a Python step with os.walk/glob and plain string matching.
+- Include phase banners and a brief Ledger Snapshot in replies (must be embedded within JSON response).
 Key decisions:
-- Replace `agent/mcp/client.py` with the provided placeholder multi-server implementation.
-- Update helpers/tests to use `call_tool` and `list_tools`.
-- Initialize calendar/tasks MCP client during tool registry setup.
-
+- Encode the Ledger Snapshot inside the JSON `description` string to satisfy both JSON-only output and snapshot requirement.
+- Use a single Python scan step to gather “gap” signals (TODO/FIXME/XXX, missing tests/docstrings, empty files) without external tools.
 State:
   - Done:
-    - Updated `agent/mcp/client.py` to match the provided spec.
-    - Updated calendar/tasks helpers to use `call_tool` and added update/delete event + task helpers.
-    - Added update/delete calendar/task tool wrappers and registry entries.
-    - Updated tests and integration script to use `list_tools`, and aligned test file with pytest_asyncio fixtures.
-    - Initialized calendar/tasks MCP client in builtins registry setup.
-    - Ran `python -m py_compile` on updated modules.
-    - Ran `python -m pytest -q tests/test_calendar_tasks_integration.py` (5 skipped).
+    - Read `CONTINUITY.md`.
   - Now:
-    - Ready for any additional file updates or commit/push.
+    - Define playbook name/triggers and draft minimal scanning steps.
   - Next:
-    - Commit/push if requested.
-
+    - Emit JSON response that conforms to the schema.
 Open questions (UNCONFIRMED if needed):
-- None.
+- What constitutes a “gap” beyond TODO/FIXME and missing tests/docs (UNCONFIRMED).
 
 Working set (files/ids/commands):
-- `C:\Users\treyt\OneDrive\Desktop\DrCodePT-Swarm\agent\mcp\client.py`
-- `C:\Users\treyt\OneDrive\Desktop\DrCodePT-Swarm\agent\integrations\calendar_helper.py`
-- `C:\Users\treyt\OneDrive\Desktop\DrCodePT-Swarm\agent\integrations\tasks_helper.py`
-- `C:\Users\treyt\OneDrive\Desktop\DrCodePT-Swarm\agent\autonomous\tools\calendar_tasks_tools.py`
-- `C:\Users\treyt\OneDrive\Desktop\DrCodePT-Swarm\agent\autonomous\tools\registry.py`
-- `C:\Users\treyt\OneDrive\Desktop\DrCodePT-Swarm\agent\autonomous\tools\builtins.py`
-- `C:\Users\treyt\OneDrive\Desktop\DrCodePT-Swarm\tests\test_calendar_tasks_integration.py`
-- `C:\Users\treyt\OneDrive\Desktop\DrCodePT-Swarm\test_integration.py`
+- `C:\Users\treyt\OneDrive\Desktop\DrCodePT-Swarm\CONTINUITY.md`

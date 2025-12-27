@@ -34,8 +34,41 @@ PLAYBOOKS_DIR = BASE_DIR / "playbooks"
 PLAYBOOKS_INDEX = PLAYBOOKS_DIR / "index.json"
 RUNS_DIR = BASE_DIR / "runs" / "treys_agent"
 
-_OPEN_ALIAS_STOPWORDS = {"my", "the", "a", "an", "folder", "directory", "dir"}  
+_OPEN_ALIAS_STOPWORDS = {"my", "the", "a", "an", "folder", "directory", "dir"}
 GENERIC_TOKENS = {"list", "show", "get", "find", "read", "check", "test", "run", "start", "stop"}
+
+_REPO_HINTS = {
+    "repo",
+    "repository",
+    "codebase",
+    "code base",
+    "source",
+    "code",
+    "project",
+    "files",
+    "file",
+}
+_REPO_ACTION_HINTS = {
+    "review",
+    "audit",
+    "scan",
+    "analyze",
+    "analysis",
+    "architecture",
+    "design",
+    "structure",
+    "gap",
+    "gaps",
+    "feature",
+    "plan",
+    "roadmap",
+    "documentation",
+    "docs",
+    "readme",
+    "search",
+    "find",
+    "locate",
+}
 
 
 def _ensure_dirs() -> None:
@@ -91,11 +124,22 @@ def _slugify(text: str) -> str:
     return cleaned or "playbook"
 
 
+def _looks_like_repo_review(command: str) -> bool:
+    lower = (command or "").lower()
+    if not lower:
+        return False
+    has_repo = any(hint in lower for hint in _REPO_HINTS)
+    has_action = any(hint in lower for hint in _REPO_ACTION_HINTS)
+    return has_repo and has_action
+
+
 def find_matching_playbook(command: str, playbooks: dict) -> Tuple[Optional[str], Optional[dict]]:
     """
     Find a playbook that matches the user's command.
     Returns (playbook_id, playbook_data) or (None, None).
     """
+    if _looks_like_repo_review(command):
+        return None, None
     command_lower = command.lower().strip()
     if not command_lower:
         return None, None
@@ -808,6 +852,7 @@ Return ONLY valid JSON (no prose). Schema:
 Rules:
 - No secrets; use ${{ENV_VAR}} placeholders if needed.
 - Prefer BrowserTool actions: goto, click, click_optional, fill, press, wait_for, sleep, screenshot, extract.
+- Avoid external search utilities (rg, grep, findstr, fd). For file scanning, use a Python step with os.walk/glob and plain string matching.
 - Keep it minimal and robust."""
 
     response = _call_codex(prompt, allow_tools=False)
