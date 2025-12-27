@@ -22,6 +22,10 @@
     }
   },
   "required": [
-    "root_cause"
-  ]
+    "root_cause",
+    "explanation_short",
+    "suggested_tool_or_step_changes",
+    "stop_condition_if_applicable"
+  ],
+  "additionalProperties": false
 }

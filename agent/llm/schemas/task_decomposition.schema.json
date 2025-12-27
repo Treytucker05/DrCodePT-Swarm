@@ -22,11 +22,19 @@
           "notes": {
             "type": "string"
           }
-        }
+        },
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "goal",
+          "depends_on",
+          "notes"
+        ]
       }
     }
   },
   "required": [
     "subtasks"
-  ]
+  ],
+  "additionalProperties": false
 }

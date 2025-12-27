@@ -16,6 +16,9 @@
     }
   },
   "required": [
-    "improved_code"
-  ]
+    "improved_code",
+    "changes",
+    "explanation"
+  ],
+  "additionalProperties": false
 }

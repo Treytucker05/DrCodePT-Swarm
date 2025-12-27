@@ -13,7 +13,7 @@ print("[TEST] Calling Codex with simple prompt...")
 result = client.reason_json(
     prompt,
     schema_path=Path("agent/llm/schemas/chat_response.schema.json"),
-    timeout_seconds=60,
+    timeout_seconds=3600,
 )
 
 print(f"[TEST] Result: {result}")

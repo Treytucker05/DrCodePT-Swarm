@@ -21,11 +21,13 @@
           "description",
           "evidence",
           "confidence"
-        ]
+        ],
+        "additionalProperties": false
       }
     }
   },
   "required": [
     "gaps"
-  ]
+  ],
+  "additionalProperties": false
 }

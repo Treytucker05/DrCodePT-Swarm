@@ -8,5 +8,6 @@
   },
   "required": [
     "rolling_summary"
-  ]
+  ],
+  "additionalProperties": false
 }

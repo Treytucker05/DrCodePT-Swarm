@@ -13,6 +13,8 @@
     }
   },
   "required": [
-    "ok"
-  ]
+    "ok",
+    "failed"
+  ],
+  "additionalProperties": false
 }

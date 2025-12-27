@@ -18,15 +18,24 @@
           "type": [
             "object",
             "array"
-          ]
+          ],
+          "additionalProperties": false
         },
         "why": {
           "type": "string"
         }
-      }
+      },
+      "additionalProperties": false,
+      "required": [
+        "tool_name",
+        "tool_args",
+        "why"
+      ]
     }
   },
   "required": [
-    "likely_failure_modes"
-  ]
+    "likely_failure_modes",
+    "safer_alternative"
+  ],
+  "additionalProperties": false
 }

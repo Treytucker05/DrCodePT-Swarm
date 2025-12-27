@@ -8,5 +8,6 @@
   },
   "required": [
     "yaml"
-  ]
+  ],
+  "additionalProperties": false
 }

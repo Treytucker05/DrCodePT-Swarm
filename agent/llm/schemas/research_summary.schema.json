@@ -22,7 +22,12 @@
           "title": {
             "type": "string"
           }
-        }
+        },
+        "additionalProperties": false,
+        "required": [
+          "url",
+          "title"
+        ]
       }
     },
     "model_used": {
@@ -30,6 +35,10 @@
     }
   },
   "required": [
-    "summary_md"
-  ]
+    "summary_md",
+    "key_findings",
+    "citations",
+    "model_used"
+  ],
+  "additionalProperties": false
 }

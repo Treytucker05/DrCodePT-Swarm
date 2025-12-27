@@ -44,8 +44,14 @@
                           "value": {
                             "type": "string"
                           }
-                        }
-                      }
+                        },
+                        "additionalProperties": false,
+                        "required": [
+                          "key",
+                          "value"
+                        ]
+                      },
+                      "additionalProperties": false
                     },
                     "success_criteria": {
                       "type": "array",
@@ -67,19 +73,48 @@
                     }
                   },
                   "required": [
+                    "id",
                     "goal",
-                    "tool_name"
-                  ]
+                    "rationale_short",
+                    "tool_name",
+                    "tool_args",
+                    "success_criteria",
+                    "preconditions",
+                    "postconditions"
+                  ],
+                  "additionalProperties": false
                 }
               }
             },
             "required": [
               "goal",
               "steps"
-            ]
+            ],
+            "additionalProperties": false
           },
           "scores": {
-            "type": "object"
+            "type": "object",
+            "properties": {
+              "grounding_confidence": {
+                "type": "number"
+              },
+              "tool_feasibility": {
+                "type": "number"
+              },
+              "destructiveness": {
+                "type": "number"
+              },
+              "length": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "grounding_confidence",
+              "tool_feasibility",
+              "destructiveness",
+              "length"
+            ],
+            "additionalProperties": false
           },
           "score": {
             "type": "number"
@@ -87,7 +122,14 @@
           "notes": {
             "type": "string"
           }
-        }
+        },
+        "additionalProperties": false,
+        "required": [
+          "plan",
+          "scores",
+          "score",
+          "notes"
+        ]
       }
     },
     "fallback_plan": {
@@ -129,8 +171,14 @@
                         "value": {
                           "type": "string"
                         }
-                      }
-                    }
+                      },
+                      "additionalProperties": false,
+                      "required": [
+                        "key",
+                        "value"
+                      ]
+                    },
+                    "additionalProperties": false
                   },
                   "success_criteria": {
                     "type": "array",
@@ -152,16 +200,24 @@
                   }
                 },
                 "required": [
+                  "id",
                   "goal",
-                  "tool_name"
-                ]
+                  "rationale_short",
+                  "tool_name",
+                  "tool_args",
+                  "success_criteria",
+                  "preconditions",
+                  "postconditions"
+                ],
+                "additionalProperties": false
               }
             }
           },
           "required": [
             "goal",
             "steps"
-          ]
+          ],
+          "additionalProperties": false
         },
         {
           "type": "null"
@@ -170,6 +226,8 @@
     }
   },
   "required": [
-    "plans"
-  ]
+    "plans",
+    "fallback_plan"
+  ],
+  "additionalProperties": false
 }

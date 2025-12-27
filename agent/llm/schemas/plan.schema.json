@@ -36,8 +36,14 @@
                 "value": {
                   "type": "string"
                 }
-              }
-            }
+              },
+              "additionalProperties": false,
+              "required": [
+                "key",
+                "value"
+              ]
+            },
+            "additionalProperties": false
           },
           "success_criteria": {
             "type": "array",
@@ -59,14 +65,22 @@
           }
         },
         "required": [
+          "id",
           "goal",
-          "tool_name"
-        ]
+          "rationale_short",
+          "tool_name",
+          "tool_args",
+          "success_criteria",
+          "preconditions",
+          "postconditions"
+        ],
+        "additionalProperties": false
       }
     }
   },
   "required": [
     "goal",
     "steps"
-  ]
+  ],
+  "additionalProperties": false
 }

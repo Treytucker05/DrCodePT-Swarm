@@ -18,10 +18,40 @@
       "type": "string"
     },
     "memory_write": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "key": {
+          "type": "string"
+        },
+        "content": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "object",
+          "properties": {},
+          "required": [],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "kind",
+        "key",
+        "content",
+        "metadata"
+      ],
+      "additionalProperties": false
     }
   },
   "required": [
-    "status"
-  ]
+    "status",
+    "explanation_short",
+    "next_hint",
+    "failure_type",
+    "lesson",
+    "memory_write"
+  ],
+  "additionalProperties": false
 }

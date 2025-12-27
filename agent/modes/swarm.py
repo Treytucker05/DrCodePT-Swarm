@@ -1336,9 +1336,9 @@ Your reasoning must stay strictly within your Phase 1 model.
 
     # Timing + reasoning layers
     timeout_fingerprint = None
-    timeout_static = 180  # Static agent - needs more time for AST analysis
-    timeout_dynamic = 180  # Dynamic agent - needs time to run tests
-    timeout_research = 240  # Research agent - needs time for web search
+    timeout_static = 3600  # Static agent - allow long GPT-5 Codex runs
+    timeout_dynamic = 3600  # Dynamic agent - allow long GPT-5 Codex runs
+    timeout_research = 3600  # Research agent - allow long GPT-5 Codex runs
     timeout_supervisor = None
     timeout_critic = None
     timeout_synthesis = None

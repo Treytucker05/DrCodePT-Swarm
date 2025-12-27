@@ -16,6 +16,8 @@
     }
   },
   "required": [
-    "patterns"
-  ]
+    "patterns",
+    "procedures"
+  ],
+  "additionalProperties": false
 }

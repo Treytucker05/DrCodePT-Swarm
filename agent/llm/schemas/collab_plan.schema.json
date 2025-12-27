@@ -44,6 +44,12 @@
   },
   "required": [
     "summary",
-    "next_actions"
-  ]
+    "goals",
+    "decisions",
+    "questions",
+    "next_actions",
+    "risks",
+    "assumptions"
+  ],
+  "additionalProperties": false
 }

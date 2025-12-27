@@ -32,14 +32,24 @@
             "null"
           ]
         }
-      }
+      },
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "folder",
+        "question"
+      ]
     },
     "response": {
       "type": "string"
     }
   },
   "required": [
-    "response",
-    "next_action"
-  ]
+    "perception",
+    "reasoning",
+    "plan",
+    "next_action",
+    "response"
+  ],
+  "additionalProperties": false
 }

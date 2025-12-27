@@ -1,22 +1,30 @@
 # CONTINUITY.md
 
-Goal (incl. success criteria):
-- Synthesize provided agent gap findings into prioritized lists and output JSON with high/medium/low/flagged/discarded arrays.
-
-Constraints/Assumptions:
-- Provided findings payload is empty for Static/Dynamic/Research; only Critic summary notes missing findings.
-- Response must be JSON-only per user schema and kept under ~800 tokens.
-
-Key decisions:
-- Treat missing findings as no scorable gaps; return empty arrays.
-
-State:
-  - Done: Read prior ledger content.
-  - Now: Update ledger and prepare JSON output.
-  - Next: Respond with JSON containing empty lists.
-
-Open questions (UNCONFIRMED if needed):
-- None.
-
-Working set (files/ids/commands):
-- CONTINUITY.md
+- Goal (incl. success criteria):
+  - Run full swarm audit (security, code quality, architecture, dependency/license, docs) with static review only and 3600s timeouts; capture issue list w/ severity.
+- Constraints/Assumptions:
+  - Use Codex CLI via subprocess; approval_policy=never; sandbox_mode=danger-full-access; MCP disabled; no destructive actions.
+  - Keep audit static (no pytest) per user.
+- Key decisions:
+  - Pass env vars (CODEX_HOME/HOME/USERPROFILE) to subprocess; add debug logging and timeout handler.
+  - Disable MCP servers via CLI config/flags; set swarm timeouts to 3600s.
+  - Bulk-fix schemas to strict JSON Schema (additionalProperties=false, required list); hand-fix plan_candidates scores + reflection memory_write.
+- State:
+  - Done:
+    - Updated `agent/llm/codex_cli_client.py` with env propagation, debug logging, timeout handling.
+    - Added `fix_schemas.py`, `test_single_agent.py`; updated all schemas in `agent/llm/schemas`.
+    - Disabled MCP in `C:\Users\treyt\.codex\config.toml`; updated swarm timeouts in `agent/modes/swarm.py`.
+  - Now:
+    - Run full audit with clarified prompt and monitor completion.
+  - Next:
+    - If audit fails (e.g., missing output-last-message), capture logs and adjust.
+    - Report audit findings and/or rerun if needed.
+- Open questions (UNCONFIRMED if needed):
+  - Is a prior audit process still running and needs termination?
+  - Does codex exec still fail to emit output-last-message?
+- Working set (files/ids/commands):
+  - `agent/llm/codex_cli_client.py`
+  - `agent/modes/swarm.py`
+  - `agent/llm/schemas/*.json`
+  - `fix_schemas.py`, `test_single_agent.py`
+  - Command: `python -c "from agent.modes.swarm import mode_swarm; mode_swarm('audit my repo: all aspects (security, code quality, architecture, dependency/license, docs). Output as issue list with severity. Static review only, no running tests.', unsafe_mode=False, profile='audit')"`

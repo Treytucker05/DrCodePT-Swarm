@@ -17,7 +17,14 @@
         "overall": {
           "type": "integer"
         }
-      }
+      },
+      "additionalProperties": false,
+      "required": [
+        "reasoning",
+        "tool_usage",
+        "efficiency",
+        "overall"
+      ]
     },
     "summary": {
       "type": "string"
@@ -36,6 +43,10 @@
     }
   },
   "required": [
-    "scores"
-  ]
+    "scores",
+    "summary",
+    "issues",
+    "recommendations"
+  ],
+  "additionalProperties": false
 }
