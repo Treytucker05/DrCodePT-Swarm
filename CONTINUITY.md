@@ -1,21 +1,20 @@
 Goal (incl. success criteria):
-- Generate a deterministic playbook JSON for “review my repo and find gaps” in `C:\Users\treyt\OneDrive\Desktop\DrCodePT-Swarm`, using Python scanning (no external search utilities) and matching the provided schema.
+- Resolve conflict between ledger goal (feature verification) and user request (coverage/testing gaps) before proceeding; update ledger to match confirmed goal.
 Constraints/Assumptions:
-- Return ONLY valid JSON (no prose) matching the given schema; keep steps minimal and robust.
-- Avoid external search utilities; use a Python step with os.walk/glob and plain string matching.
-- Include phase banners and a brief Ledger Snapshot in replies (must be embedded within JSON response).
+- Output JSON only; no command execution.
+- Begin replies with Ledger Snapshot.
+- Use explicit phase banners; do not proceed past ASK_USER without answers.
 Key decisions:
-- Encode the Ledger Snapshot inside the JSON `description` string to satisfy both JSON-only output and snapshot requirement.
-- Use a single Python scan step to gather “gap” signals (TODO/FIXME/XXX, missing tests/docstrings, empty files) without external tools.
+- Pause execution pending user confirmation of target goal.
 State:
   - Done:
-    - Read `CONTINUITY.md`.
+    - Read `C:\Users\treyt\OneDrive\Desktop\DrCodePT-Swarm\CONTINUITY.md`.
   - Now:
-    - Define playbook name/triggers and draft minimal scanning steps.
+    - Ask user to confirm which goal to follow and whether to update ledger.
   - Next:
-    - Emit JSON response that conforms to the schema.
+    - If confirmed, scan repo for tests/CI/coverage gaps and report with file refs.
 Open questions (UNCONFIRMED if needed):
-- What constitutes a “gap” beyond TODO/FIXME and missing tests/docs (UNCONFIRMED).
-
+- Which goal should I follow: current ledger goal (feature verification) or your testing-coverage-gaps request?
+- Should I update `CONTINUITY.md` to match the confirmed goal?
 Working set (files/ids/commands):
 - `C:\Users\treyt\OneDrive\Desktop\DrCodePT-Swarm\CONTINUITY.md`

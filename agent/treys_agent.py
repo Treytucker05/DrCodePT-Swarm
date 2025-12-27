@@ -566,16 +566,29 @@ def _merge_research_constraints(existing: str | None, new: str) -> str:
     return existing.rstrip() + "\n" + new_clean
 
 
-def _is_repo_task(text: str) -> bool:
+def _repo_task_debug(text: str) -> dict:
     lowered = (text or "").lower().strip()
+    info = {
+        "input": lowered,
+        "phrase_match": False,
+        "has_repo": False,
+        "has_action": False,
+        "is_repo_task": False,
+    }
     if not lowered:
-        return False
-    if any(phrase in lowered for phrase in _REPO_TASK_PHRASES):
-        return True
+        return info
+    phrase_match = any(phrase in lowered for phrase in _REPO_TASK_PHRASES)
     has_repo = any(token in lowered for token in _REPO_KEYWORDS)
-    if not has_repo:
-        return False
-    return any(token in lowered for token in _REPO_ACTION_WORDS)
+    has_action = any(token in lowered for token in _REPO_ACTION_WORDS)
+    info["phrase_match"] = phrase_match
+    info["has_repo"] = has_repo
+    info["has_action"] = has_action
+    info["is_repo_task"] = phrase_match or (has_repo and has_action)
+    return info
+
+
+def _is_repo_task(text: str) -> bool:
+    return bool(_repo_task_debug(text).get("is_repo_task"))
 
 
 def _classify_repo_task(text: str) -> str:
@@ -594,11 +607,11 @@ def _classify_repo_task(text: str) -> str:
 
 
 def _run_repo_mode(task: str, *, unsafe_mode: bool) -> None:
-    from agent.modes.swarm import mode_swarm
+    from agent.modes.swarm import mode_swarm_simple
 
     kind = _classify_repo_task(task)
     objective = f"[REPO MODE: {kind}] {task}"
-    mode_swarm(objective, unsafe_mode=unsafe_mode)
+    mode_swarm_simple(objective, unsafe_mode=unsafe_mode)
 
 
 def _is_capability_query(text: str) -> bool:
@@ -647,6 +660,87 @@ def _is_confirm(text: str) -> bool:
     if lowered in _CONFIRM_WORDS:
         return True
     return any(word in lowered for word in _CONFIRM_WORDS)
+
+
+def _set_codex_speed(speed: str) -> None:
+    speed_clean = (speed or "").strip().lower()
+    effort_map = {
+        "fast": "low",
+        "quick": "low",
+        "low": "high",
+        "slow": "high",
+        "deep": "high",
+        "medium": "medium",
+        "normal": "medium",
+        "high": "high",
+    }
+    effort = effort_map.get(speed_clean)
+    if not effort:
+        return
+    os.environ["CODEX_REASONING_EFFORT"] = effort
+
+
+_CODEX_CONFIG_CACHE: dict | None = None
+
+
+def _load_codex_config() -> dict:
+    global _CODEX_CONFIG_CACHE
+    if _CODEX_CONFIG_CACHE is not None:
+        return _CODEX_CONFIG_CACHE
+    path = Path.home() / ".codex" / "config.toml"
+    if not path.is_file():
+        _CODEX_CONFIG_CACHE = {}
+        return _CODEX_CONFIG_CACHE
+    raw = ""
+    try:
+        raw = path.read_text(encoding="utf-8", errors="ignore")
+        try:
+            import tomllib  # type: ignore
+
+            _CODEX_CONFIG_CACHE = tomllib.loads(raw)
+            return _CODEX_CONFIG_CACHE or {}
+        except Exception:
+            pass
+    except Exception:
+        _CODEX_CONFIG_CACHE = {}
+        return _CODEX_CONFIG_CACHE
+
+    cfg: dict[str, str] = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("["):
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key in {"model", "model_reasoning_effort"}:
+            cfg[key] = value
+    _CODEX_CONFIG_CACHE = cfg
+    return _CODEX_CONFIG_CACHE
+
+
+def _normalize_effort(value: str) -> str:
+    effort = (value or "").strip().lower()
+    if effort in {"xhigh", "extra_high", "xh"}:
+        return "high"
+    if effort in {"xlow", "extra_low", "xl"}:
+        return "low"
+    if effort in {"high", "medium", "low"}:
+        return effort
+    return "medium"
+
+
+def _debug_agent_banner(agent_label: str) -> None:
+    cfg = _load_codex_config() or {}
+    profiles = cfg.get("profiles") if isinstance(cfg.get("profiles"), dict) else {}
+    profile_name = (os.getenv("CODEX_PROFILE_REASON") or "reason").strip()
+    profile_cfg = profiles.get(profile_name, {}) if isinstance(profiles, dict) else {}
+    model = (os.getenv("CODEX_MODEL") or profile_cfg.get("model") or cfg.get("model") or "default").strip()
+    effort_raw = os.getenv("CODEX_REASONING_EFFORT") or profile_cfg.get("model_reasoning_effort") or cfg.get("model_reasoning_effort") or "medium"
+    effort = _normalize_effort(str(effort_raw))
+    print(f"[MODEL: {model} | EFFORT: {effort} | AGENT: {agent_label}]")
 
 
 def _looks_like_action_request(text: str) -> bool:
@@ -1362,6 +1456,16 @@ def smart_orchestrator(user_input: str) -> Dict[str, Any]:
     Returns: {"mode": str, "reason": str, "auto_execute": bool}
     """
     lower = user_input.lower().strip()
+    repo_debug = _repo_task_debug(user_input)
+
+    # Repo/codebase tasks should always take precedence over generic heuristics.
+    if repo_debug.get("is_repo_task"):
+        return {
+            "mode": "repo",
+            "reason": "Repo/codebase task detected",
+            "auto_execute": True,
+            "repo_debug": repo_debug,
+        }
 
     # TIER 1: Simple read-only queries (auto-execute immediately)
     if _is_simple_filesystem_query(user_input):
@@ -1369,6 +1473,7 @@ def smart_orchestrator(user_input: str) -> Dict[str, Any]:
             "mode": "execute",
             "reason": "Simple filesystem query",
             "auto_execute": True,
+            "repo_debug": repo_debug,
         }
 
     if "search for" in lower:
@@ -1376,14 +1481,7 @@ def smart_orchestrator(user_input: str) -> Dict[str, Any]:
             "mode": "web_search",
             "reason": "Direct web search request",
             "auto_execute": True,
-        }
-
-    # TIER 2: Repo/codebase tasks (auto-run repo mode)
-    if _is_repo_task(user_input):
-        return {
-            "mode": "repo",
-            "reason": "Repo/codebase task detected",
-            "auto_execute": True,
+            "repo_debug": repo_debug,
         }
 
     # TIER 2: Research tasks (auto-execute research mode)
@@ -1404,6 +1502,7 @@ def smart_orchestrator(user_input: str) -> Dict[str, Any]:
             "mode": "research",
             "reason": "Research request",
             "auto_execute": True,
+            "repo_debug": repo_debug,
         }
 
     # TIER 3: Deep analysis tasks (swarm mode)
@@ -1420,6 +1519,7 @@ def smart_orchestrator(user_input: str) -> Dict[str, Any]:
             "mode": "swarm",
             "reason": "Complex analysis requiring parallel research",
             "auto_execute": False,  # Ask for swarm confirmation
+            "repo_debug": repo_debug,
         }
 
     # TIER 4: Ambiguous tasks (collaborative planning)
@@ -1437,6 +1537,7 @@ def smart_orchestrator(user_input: str) -> Dict[str, Any]:
             "mode": "collaborative",
             "reason": "Ambiguous task needs clarification",
             "auto_execute": True,
+            "repo_debug": repo_debug,
         }
 
     # TIER 5: Action requests (default to execute)
@@ -1445,6 +1546,7 @@ def smart_orchestrator(user_input: str) -> Dict[str, Any]:
             "mode": "execute",
             "reason": "Standard action request",
             "auto_execute": True,
+            "repo_debug": repo_debug,
         }
 
     # TIER 6: Conversational (chat only)
@@ -1452,6 +1554,7 @@ def smart_orchestrator(user_input: str) -> Dict[str, Any]:
         "mode": "chat",
         "reason": "Conversational query",
         "auto_execute": True,
+        "repo_debug": repo_debug,
     }
 
 
@@ -1488,7 +1591,12 @@ def _is_simple_filesystem_query(user_input: str) -> bool:
 
 def main() -> None:
     from agent.modes.autonomous import mode_autonomous
-    from agent.modes.execute import list_playbooks, load_playbooks, mode_execute
+    from agent.modes.execute import (
+        find_matching_playbook,
+        list_playbooks,
+        load_playbooks,
+        mode_execute,
+    )
     from agent.modes.learn import mode_learn
     from agent.modes.research import mode_research
 
@@ -1862,10 +1970,21 @@ def main() -> None:
             _handle_simple_question(user_input)
             continue
 
-        # Smart orchestrator decides mode automatically (before playbook matching)
+        # Smart orchestrator decides mode automatically (before playbook matching).
+        print("Checking smart_orchestrator...")
         routing = smart_orchestrator(user_input)
+        print(f"Result: {routing}")
+        mode = routing.get("mode") if isinstance(routing, dict) else None
+        # Treat execute as "no special route" so playbook matching happens only
+        # after routing fails to claim a dedicated mode (repo/research/web_search/etc).
+        if mode == "execute":
+            mode = None
+        speed_target = "medium" if mode == "repo" else ("low" if mode in {"research", "swarm"} else "fast")
+        _set_codex_speed(speed_target)
+        _debug_agent_banner("Main")
 
-        if routing["mode"] == "collaborative":
+        if mode == "collaborative":
+            print("Routing to: collaborative")
             from agent.context_loader import format_context_for_llm
             from agent.modes.collaborative import mode_collaborative
             from agent.modes.execute_plan import execute_plan_direct
@@ -1883,15 +2002,18 @@ def main() -> None:
                     mode_execute(user_input, context=result)
             continue
 
-        if routing["mode"] == "web_search":
+        if mode == "web_search":
+            print("Routing to: web_search")
             _run_web_search(user_input)
             continue
 
-        if routing["mode"] == "repo":
+        if mode == "repo":
+            print("Routing to: repo")
             _run_repo_mode(user_input, unsafe_mode=unsafe_mode)
             continue
 
-        if routing["mode"] == "research":
+        if mode == "research":
+            print("Routing to: research")
             if last_research_topic and _looks_like_research_refinement(user_input):
                 merged = _merge_research_constraints(last_research_constraints, user_input)
                 print(
@@ -1905,7 +2027,8 @@ def main() -> None:
                 mode_research(user_input)
             continue
 
-        if routing["mode"] == "swarm":
+        if mode == "swarm":
+            print("Routing to: swarm")
             from agent.modes.swarm import mode_swarm
 
             # Ask for swarm confirmation (complex tasks warrant it)
@@ -1918,15 +2041,21 @@ def main() -> None:
                 mode_execute(user_input)  # Fallback to single-agent
             continue
 
-        if routing["mode"] == "execute":
-            if routing.get("auto_execute"):
-                mode_execute(user_input)
-                continue
-
-        if routing["mode"] == "chat":
+        if mode == "chat":
+            print("Routing to: chat")
             chat_history.append(("user", user_input))
             _run_chat(user_input, chat_history)
             continue
+
+        # No special route claimed: fall back to playbook matching/generation.
+        playbooks = load_playbooks()
+        pb_id, pb_data = find_matching_playbook(user_input, playbooks)
+        if pb_data:
+            print("Routing to: playbook")
+        else:
+            print("Routing to: generate")
+        mode_execute(user_input)
+        continue
 
 if __name__ == "__main__":
     main()

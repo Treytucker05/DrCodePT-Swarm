@@ -212,6 +212,11 @@ class CodexCliClient(LLMClient):
             "--disable",
             "shell_snapshot",
             "exec",
+        ]
+        reasoning_effort = (os.getenv("CODEX_REASONING_EFFORT") or "").strip()
+        if reasoning_effort:
+            cmd += ["-c", f'model_reasoning_effort="{reasoning_effort}"']
+        cmd += [
             "--skip-git-repo-check",
             "--output-schema",
             str(schema_path),

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass, replace
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -27,7 +28,7 @@ import subprocess
 from agent.autonomous.manifest import write_run_manifest
 from agent.preflight.repo_fish import PreflightResult, run_preflight
 from agent.preflight.clarify import ClarifyResult, run_clarifier
-from agent.autonomous.repo_scan import is_repo_review_task
+from agent.autonomous.repo_scan import RepoScanner, is_repo_review_task
 from agent.config.profile import resolve_profile
 from agent.autonomous.runner import AgentRunner
 from agent.autonomous.task_orchestrator import TaskOrchestrator
@@ -35,6 +36,396 @@ from agent.llm import CodexCliAuthError, CodexCliClient, CodexCliNotFoundError
 from agent.llm import schemas as llm_schemas
 
 logger = logging.getLogger(__name__)
+
+
+_CODEX_CONFIG_CACHE: dict | None = None
+
+
+def _load_codex_config() -> dict:
+    global _CODEX_CONFIG_CACHE
+    if _CODEX_CONFIG_CACHE is not None:
+        return _CODEX_CONFIG_CACHE
+    path = Path.home() / ".codex" / "config.toml"
+    if not path.is_file():
+        _CODEX_CONFIG_CACHE = {}
+        return _CODEX_CONFIG_CACHE
+    raw = ""
+    try:
+        raw = path.read_text(encoding="utf-8", errors="ignore")
+        try:
+            import tomllib  # type: ignore
+
+            _CODEX_CONFIG_CACHE = tomllib.loads(raw)
+            return _CODEX_CONFIG_CACHE or {}
+        except Exception:
+            pass
+    except Exception:
+        _CODEX_CONFIG_CACHE = {}
+        return _CODEX_CONFIG_CACHE
+
+    cfg: dict[str, str] = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("["):
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key in {"model", "model_reasoning_effort"}:
+            cfg[key] = value
+    _CODEX_CONFIG_CACHE = cfg
+    return _CODEX_CONFIG_CACHE
+
+
+def _normalize_effort(value: str) -> str:
+    effort = (value or "").strip().lower()
+    if effort in {"xhigh", "extra_high", "xh"}:
+        return "high"
+    if effort in {"xlow", "extra_low", "xl"}:
+        return "low"
+    if effort in {"high", "medium", "low"}:
+        return effort
+    return "medium"
+
+
+def _debug_agent_banner(agent_label: str) -> None:
+    cfg = _load_codex_config() or {}
+    profiles = cfg.get("profiles") if isinstance(cfg.get("profiles"), dict) else {}
+    profile_name = (os.getenv("CODEX_PROFILE_REASON") or "reason").strip()
+    profile_cfg = profiles.get(profile_name, {}) if isinstance(profiles, dict) else {}
+    model = (os.getenv("CODEX_MODEL") or profile_cfg.get("model") or cfg.get("model") or "default").strip()
+    effort_raw = os.getenv("CODEX_REASONING_EFFORT") or profile_cfg.get("model_reasoning_effort") or cfg.get("model_reasoning_effort") or "medium"
+    effort = _normalize_effort(str(effort_raw))
+    print(f"[MODEL: {model} | EFFORT: {effort} | AGENT: {agent_label}]")
+
+
+def _simple_repo_roles(kind: str) -> list[str]:
+    kind = (kind or "").strip().lower()
+    if kind in {"gap_analysis", "gaps"}:
+        return ["Gap Analysis", "Coverage & Testing Gaps", "Quick Wins"]
+    if kind in {"architecture_review", "architecture"}:
+        return ["Architecture Review", "Dependency Boundaries", "Risk Hotspots"]
+    if kind in {"documentation", "docs"}:
+        return ["Documentation Gaps", "Onboarding Clarity", "Quick Wins"]
+    if kind in {"code_search"}:
+        return ["Code Search", "Where It Lives", "Quick Pointers"]
+    return ["Gap Analysis", "Architecture Review", "Quick Wins"]
+
+
+def _role_focus_instructions(role: str) -> str:
+    role_lower = (role or "").lower()
+    if "gap analysis" in role_lower:
+        return (
+            "Scan for TODO/FIXME comments, incomplete implementations, "
+            "missing error handling, and risky assumptions."
+        )
+    if "coverage" in role_lower or "testing" in role_lower:
+        return (
+            "Scan for missing test files, low coverage indicators, CI/CD configuration gaps, "
+            "missing test assertions, and untested critical paths. Skip observation and go "
+            "straight to analysis."
+        )
+    if "quick wins" in role_lower:
+        return (
+            "Find easy improvements: typos, unused imports, obvious refactors, "
+            "outdated dependencies, or small cleanup tasks."
+        )
+    if "architecture" in role_lower:
+        return "Review architecture boundaries, module coupling, and layering issues."
+    if "dependency" in role_lower or "risk" in role_lower:
+        return "Identify dependency or integration risks and high-risk areas."
+    if "documentation" in role_lower:
+        return "Identify missing or outdated documentation and onboarding gaps."
+    if "code search" in role_lower or "where it lives" in role_lower:
+        return "Locate likely file paths and entry points for the requested area."
+    return "Provide focused findings relevant to your role."
+
+
+def _find_key_docs(repo_root: Path) -> dict:
+    targets = ["README.md", "README.txt", "ARCHITECTURE.md", "ENHANCEMENT_SUMMARY.md"]
+    found: dict[str, Path] = {}
+    for name in targets:
+        direct = repo_root / name
+        if direct.is_file():
+            found[name] = direct
+    if len(found) < len(targets):
+        # Case-insensitive fallback search (shallow)
+        try:
+            for path in repo_root.rglob("*.md"):
+                if path.name.upper() in {t.upper() for t in targets}:
+                    found[path.name] = path
+        except Exception:
+            pass
+    return found
+
+
+def _read_text_snippet(path: Path, *, max_chars: int = 6000) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")[:max_chars]
+    except Exception:
+        return ""
+
+
+def _extract_bullets(section: str) -> list[str]:
+    bullets: list[str] = []
+    for line in section.splitlines():
+        ln = line.strip()
+        if ln.startswith("- "):
+            bullets.append(ln[2:].strip())
+    return bullets
+
+
+def _extract_section(text: str, header: str) -> str:
+    lines = text.splitlines()
+    header_lower = header.lower()
+    capture = False
+    buf: list[str] = []
+    for line in lines:
+        raw = line.strip()
+        if raw.lower().startswith(header_lower):
+            capture = True
+            continue
+        if capture and raw.endswith(":") and raw[:-1].strip().isupper():
+            break
+        if capture:
+            buf.append(line)
+    return "\n".join(buf).strip()
+
+
+def _is_incomplete_observation(output: str) -> bool:
+    if not output:
+        return False
+    text = output.strip().lower()
+    if text in {"phase: observe", "phase:observe", "observe"}:
+        return True
+    lines = [ln.strip().lower() for ln in output.splitlines() if ln.strip()]
+    if len(lines) == 1 and lines[0].startswith("phase: observe"):
+        return True
+    joined = " ".join(lines)
+    if "observe" in joined and "now" in joined and "scanning" in joined:
+        return True
+    return False
+
+
+def _extract_repo_kind(objective: str) -> str:
+    text = (objective or "").strip()
+    match = re.match(r"^\[REPO MODE:\s*([^\]]+)\]", text, flags=re.IGNORECASE)
+    if not match:
+        return ""
+    kind = match.group(1).strip().lower().replace(" ", "_")
+    return kind
+
+
+def _format_repo_map(repo_root: Path, repo_map: list) -> str:
+    lines: list[str] = []
+    for entry in repo_map:
+        path = getattr(entry, "path", "") or ""
+        desc = getattr(entry, "description", "") or ""
+        try:
+            rel = str(Path(path).resolve().relative_to(repo_root))
+        except Exception:
+            rel = path
+        if desc:
+            lines.append(f"- {rel}: {desc}")
+        else:
+            lines.append(f"- {rel}")
+        if len(lines) >= 30:
+            break
+    return "\n".join(lines)
+
+
+def mode_swarm_simple(
+    objective: str,
+    *,
+    unsafe_mode: bool = False,
+    profile: str | None = None,
+    max_agents: int | None = None,
+    timeout_seconds: int | None = None,
+) -> None:
+    """Simple swarm: spawn lightweight LLM agents (no planning/reflection loop)."""
+    _load_dotenv()
+    repo_root = Path(__file__).resolve().parents[2]
+    run_root = repo_root / "runs" / "swarm_simple" / datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    run_root.mkdir(parents=True, exist_ok=True)
+
+    profile_cfg = resolve_profile(profile, env_keys=("SWARM_SIMPLE_PROFILE", "SWARM_PROFILE", "AUTO_PROFILE", "AGENT_PROFILE"))
+    max_agents = max_agents or _int_env("SWARM_SIMPLE_MAX_AGENTS", 3)
+    timeout_seconds = _int_env("SWARM_SIMPLE_TIMEOUT_SECONDS", 300)
+    agent_timeout = None
+
+    scan_dir = run_root / "repo_scan"
+    scanner = RepoScanner(
+        repo_root=repo_root,
+        run_dir=scan_dir,
+        max_results=min(profile_cfg.max_glob_results, 200),
+        profile=profile_cfg,
+        usage=None,
+    )
+    index, repo_map = scanner.scan()
+
+    root_entries = []
+    try:
+        root_entries = sorted([p.name for p in repo_root.iterdir()])[:40]
+    except Exception:
+        root_entries = []
+
+    repo_context = _format_repo_map(repo_root, repo_map)
+    kind = _extract_repo_kind(objective)
+    roles = _simple_repo_roles(kind)[: max(1, max_agents)]
+    role_timeouts: dict[str, int] = {
+        "Gap Analysis": _int_env("SWARM_SIMPLE_TIMEOUT_GAP_SECONDS", 240),
+        "Coverage & Testing Gaps": _int_env("SWARM_SIMPLE_TIMEOUT_COVERAGE_SECONDS", 240),
+        "Quick Wins": _int_env("SWARM_SIMPLE_TIMEOUT_QUICK_SECONDS", 180),
+    }
+    prev_effort = os.environ.get("CODEX_REASONING_EFFORT")
+    if kind == "gap_analysis":
+        os.environ["CODEX_REASONING_EFFORT"] = "medium"
+
+    print("\n[SWARM SIMPLE] Objective:", objective)
+    if roles:
+        print("[SWARM SIMPLE] Agents:", ", ".join(roles))
+
+    def _run_role(role: str) -> tuple[str, str, float]:
+        start = time.time()
+        _debug_agent_banner(role)
+        try:
+            llm = CodexCliClient.from_env(workdir=repo_root, log_dir=run_root / role.replace(" ", "_"))
+        except (CodexCliNotFoundError, CodexCliAuthError) as exc:
+            return role, f"[ERROR] {exc}", time.time() - start
+
+        role_focus = _role_focus_instructions(role)
+        role_timeout = role_timeouts.get(role, timeout_seconds)
+
+        docs = _find_key_docs(repo_root)
+        docs_block = []
+        for name, path in docs.items():
+            content = _read_text_snippet(path)
+            if content:
+                docs_block.append(f"## {name}\n{content}")
+        docs_text = "\n\n".join(docs_block).strip()
+
+        # PHASE 1: UNDERSTAND
+        understand_prompt = (
+            f"You are the {role} agent.\n"
+            "PHASE 1 - UNDERSTAND: Read docs and summarize what the system claims to do.\n"
+            "Return two sections:\n"
+            "SUMMARY:\n- ...\n"
+            "CLAIMS:\n- feature claim\n"
+            "Do NOT mention workspace rules.\n"
+            f"Focus: {role_focus}\n\n"
+            f"Docs:\n{docs_text}\n"
+        )
+        understand = llm.reason_json(
+            understand_prompt, schema_path=llm_schemas.CHAT_RESPONSE, timeout_seconds=role_timeout
+        )
+        understand_text = (understand.get("response") or "").strip()
+        claims_section = _extract_section(understand_text, "CLAIMS")
+        claims = _extract_bullets(claims_section)
+
+        # PHASE 2: VERIFY
+        verify_prompt = (
+            f"You are the {role} agent.\n"
+            "PHASE 2 - VERIFY: Check whether the claimed features exist in the repo.\n"
+            "Return two sections:\n"
+            "VERIFICATION:\n- ...\n"
+            "GAPS:\n- Gap Topic: details (file refs)\n"
+            "Do NOT mention workspace rules.\n"
+            f"Focus: {role_focus}\n\n"
+            f"Claims:\n{chr(10).join('- ' + c for c in claims) or '- (none found)'}\n\n"
+            f"Repo root entries: {', '.join(root_entries)}\n\n"
+            "Repo map (selected files with short descriptions):\n"
+            f"{repo_context}\n"
+        )
+        verify = llm.reason_json(
+            verify_prompt, schema_path=llm_schemas.CHAT_RESPONSE, timeout_seconds=role_timeout
+        )
+        verify_text = (verify.get("response") or "").strip()
+        gaps_section = _extract_section(verify_text, "GAPS")
+        gap_items = _extract_bullets(gaps_section)
+        gap_topics = []
+        for item in gap_items:
+            topic = item.split(":")[0].strip()
+            if topic:
+                gap_topics.append(topic)
+        gap_topics = gap_topics[:3]
+
+        # PHASE 3: RESEARCH (web_search)
+        research_snippets: list[str] = []
+        try:
+            from agent.autonomous.config import RunContext
+            from agent.autonomous.tools.builtins import WebSearchArgs, web_search
+
+            ctx = RunContext(
+                run_id=f"swarm_simple_{role.replace(' ', '_')}",
+                run_dir=run_root,
+                workspace_dir=run_root,
+                profile=None,
+                usage=None,
+            )
+            for topic in gap_topics:
+                query = f"best practices for {topic}"
+                search = web_search(ctx, WebSearchArgs(query=query, max_results=4))
+                results = (search.output or {}).get("results") or []
+                for result in results[:3]:
+                    title = result.get("title") or "Untitled"
+                    url = result.get("url") or ""
+                    snippet = result.get("snippet") or ""
+                    research_snippets.append(f"- {title} | {url} | {snippet}")
+        except Exception as exc:
+            research_snippets.append(f"- [ERROR] web_search failed: {exc}")
+
+        # PHASE 4: RECOMMEND
+        recommend_prompt = (
+            f"You are the {role} agent.\n"
+            "PHASE 4 - RECOMMEND: Synthesize gaps + research into recommendations.\n"
+            "Return structured output with sections:\n"
+            "PHASE 1 - UNDERSTAND:\n- summary\n"
+            "PHASE 2 - VERIFY:\n- gaps with file refs\n"
+            "PHASE 3 - RESEARCH:\n- best practices with citations (raw URLs)\n"
+            "PHASE 4 - RECOMMEND:\n- actionable fixes with citations\n"
+            "QUESTIONS:\n- clarifying questions (if any)\n"
+            "Do NOT mention workspace rules.\n"
+            f"Focus: {role_focus}\n\n"
+            f"UNDERSTAND OUTPUT:\n{understand_text}\n\n"
+            f"VERIFY OUTPUT:\n{verify_text}\n\n"
+            f"RESEARCH SNIPPETS:\n{chr(10).join(research_snippets) if research_snippets else '- None'}\n"
+        )
+        recommend = llm.reason_json(
+            recommend_prompt, schema_path=llm_schemas.CHAT_RESPONSE, timeout_seconds=role_timeout
+        )
+        response = (recommend.get("response") or "").strip()
+        if _is_incomplete_observation(response):
+            return role, "[INCOMPLETE] Observation-only response", time.time() - start
+        return role, response or "[ERROR] Empty response", time.time() - start
+
+    results_by_role: dict[str, tuple[str, float]] = {}
+    with ThreadPoolExecutor(max_workers=len(roles)) as executor:
+        future_map = {executor.submit(_run_role, role): role for role in roles}
+        start_times = {future: time.time() for future in future_map}
+        for future, role in list(future_map.items()):
+            try:
+                _, output, elapsed = future.result()
+                results_by_role[role] = (output, elapsed)
+            except Exception as exc:
+                elapsed = time.time() - start_times.get(future, time.time())
+                results_by_role[role] = (f"[FAILED - {type(exc).__name__}]", elapsed)
+
+    print("\n[SWARM SIMPLE] Results:")
+    for role in roles:
+        output, elapsed = results_by_role.get(role, ("[FAILED - no result]", 0.0))
+        header = f"[{role}] ({elapsed:.1f}s)"
+        if output.startswith("[ERROR]") or output.startswith("[FAILED"):
+            print(f"\n{header} {output}")
+        elif output.startswith("[INCOMPLETE]"):
+            print(f"\n{header} {output}")
+        else:
+            print(f"\n{header}\n{output}")
+    if prev_effort is None:
+        os.environ.pop("CODEX_REASONING_EFFORT", None)
+    else:
+        os.environ["CODEX_REASONING_EFFORT"] = prev_effort
 
 
 def aggregate_swarm_results(
@@ -515,6 +906,7 @@ def _run_subagent(
     workdir: Optional[Path] = None,
 ) -> tuple[Subtask, str, str, Path]:
     # Threaded swarm runs must never mutate process-global state (e.g., os.chdir).
+    _debug_agent_banner(f"Swarm {subtask.id}")
     planner_mode = _planner_mode_for(subtask.goal)
     planner_cfg = PlannerConfig(
         mode=planner_mode,  # type: ignore[arg-type]
@@ -843,7 +1235,7 @@ def mode_swarm(
     print(f"[SWARM] Run folder: {run_root}")
 
 
-__all__ = ["mode_swarm"]
+__all__ = ["mode_swarm", "mode_swarm_simple"]
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -426,6 +426,69 @@ def _short_label(text: str, *, max_words: int = 6, max_chars: int = 40) -> str:
     return label
 
 
+_CODEX_CONFIG_CACHE: dict | None = None
+
+
+def _load_codex_config() -> dict:
+    global _CODEX_CONFIG_CACHE
+    if _CODEX_CONFIG_CACHE is not None:
+        return _CODEX_CONFIG_CACHE
+    path = Path.home() / ".codex" / "config.toml"
+    if not path.is_file():
+        _CODEX_CONFIG_CACHE = {}
+        return _CODEX_CONFIG_CACHE
+    raw = ""
+    try:
+        raw = path.read_text(encoding="utf-8", errors="ignore")
+        try:
+            import tomllib  # type: ignore
+
+            _CODEX_CONFIG_CACHE = tomllib.loads(raw)
+            return _CODEX_CONFIG_CACHE or {}
+        except Exception:
+            pass
+    except Exception:
+        _CODEX_CONFIG_CACHE = {}
+        return _CODEX_CONFIG_CACHE
+
+    cfg: dict[str, str] = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("["):
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key in {"model", "model_reasoning_effort"}:
+            cfg[key] = value
+    _CODEX_CONFIG_CACHE = cfg
+    return _CODEX_CONFIG_CACHE
+
+
+def _normalize_effort(value: str) -> str:
+    effort = (value or "").strip().lower()
+    if effort in {"xhigh", "extra_high", "xh"}:
+        return "high"
+    if effort in {"xlow", "extra_low", "xl"}:
+        return "low"
+    if effort in {"high", "medium", "low"}:
+        return effort
+    return "medium"
+
+
+def _debug_agent_banner(agent_label: str) -> None:
+    cfg = _load_codex_config() or {}
+    profiles = cfg.get("profiles") if isinstance(cfg.get("profiles"), dict) else {}
+    profile_name = (os.getenv("CODEX_PROFILE_REASON") or "reason").strip()
+    profile_cfg = profiles.get(profile_name, {}) if isinstance(profiles, dict) else {}
+    model = (os.getenv("CODEX_MODEL") or profile_cfg.get("model") or cfg.get("model") or "default").strip()
+    effort_raw = os.getenv("CODEX_REASONING_EFFORT") or profile_cfg.get("model_reasoning_effort") or cfg.get("model_reasoning_effort") or "medium"
+    effort = _normalize_effort(str(effort_raw))
+    print(f"[MODEL: {model} | EFFORT: {effort} | AGENT: {agent_label}]")
+
+
 def _strip_sources_section(markdown: str) -> str:
     if not markdown:
         return markdown
@@ -1276,6 +1339,7 @@ def mode_research(topic: str, *, constraints: str | None = None) -> None:
         policy_name, policy = _select_source_policy(constraints)
         overrides = _policy_env_overrides(policy)
         with _temporary_env(overrides):
+            _debug_agent_banner("Research")
             print(f"{YELLOW}[RESEARCH AGENT]{RESET} Gathering sources...")
             sources = _research_agent_sources(topic, ctx, constraints=constraints)
             if not sources:
@@ -1287,12 +1351,14 @@ def mode_research(topic: str, *, constraints: str | None = None) -> None:
                 )
                 return
 
+            _debug_agent_banner("Analysis")
             print(f"{YELLOW}[ANALYSIS AGENT]{RESET} Extracting key findings...")
             analysis = _analysis_agent(topic, sources, constraints=constraints)
             if analysis.startswith("[CODEX ERROR]"):
                 print(f"{RED}{analysis}{RESET}")
                 return
 
+            _debug_agent_banner("Synthesis")
             print(f"{YELLOW}[SYNTHESIS AGENT]{RESET} Producing report...")
             report = _synthesis_agent(topic, sources, analysis, constraints=constraints)
             if report.startswith("[CODEX ERROR]"):
