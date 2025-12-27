@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import re
 import time
+import sys
+import sqlite3
 from dataclasses import dataclass, replace
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -12,6 +15,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 import traceback
+from contextlib import contextmanager
+from typing import Iterable
+
+try:
+    from tree_sitter_languages import get_parser
+except Exception:  # pragma: no cover
+    get_parser = None
 
 from agent.autonomous.config import AgentConfig, PlannerConfig, RunnerConfig
 from agent.autonomous.exceptions import AgentException
@@ -101,6 +111,256 @@ def _debug_agent_banner(agent_label: str) -> None:
     print(f"[MODEL: {model} | EFFORT: {effort} | AGENT: {agent_label}]")
 
 
+def _current_model_effort() -> tuple[str, str]:
+    cfg = _load_codex_config() or {}
+    profiles = cfg.get("profiles") if isinstance(cfg.get("profiles"), dict) else {}
+    profile_name = (os.getenv("CODEX_PROFILE_REASON") or "reason").strip()
+    profile_cfg = profiles.get(profile_name, {}) if isinstance(profiles, dict) else {}
+    model = (os.getenv("CODEX_MODEL") or profile_cfg.get("model") or cfg.get("model") or "default").strip()
+    effort_raw = os.getenv("CODEX_REASONING_EFFORT") or profile_cfg.get("model_reasoning_effort") or cfg.get("model_reasoning_effort") or "medium"
+    effort = _normalize_effort(str(effort_raw))
+    return model, effort
+
+
+def _agent_log_dir(repo_root: Path) -> Path:
+    return repo_root / "agent" / "logs"
+
+
+def _write_agent_log(repo_root: Path, agent_name: str, payload: dict) -> None:
+    log_dir = _agent_log_dir(repo_root)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    safe = re.sub(r"[^a-zA-Z0-9_-]+", "_", agent_name.strip().lower())
+    path = log_dir / f"{safe}_{ts}.json"
+    payload["timestamp"] = datetime.now(timezone.utc).isoformat()
+    try:
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _compress_prompt(prompt: str, *, max_chars: int | None = None) -> str:
+    if not prompt:
+        return prompt
+    lines = [ln.rstrip() for ln in prompt.strip().splitlines()]
+    compact: list[str] = []
+    blank = False
+    for line in lines:
+        if not line.strip():
+            if not blank:
+                compact.append("")
+            blank = True
+            continue
+        blank = False
+        compact.append(line)
+    text = "\n".join(compact)
+    if max_chars and len(text) > max_chars:
+        return text[:max_chars]
+    return text
+
+
+def _resolve_repo_hash(repo_root: Path) -> str:
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if proc.returncode == 0:
+            return (proc.stdout or "").strip() or "unknown"
+    except Exception:
+        pass
+    # Fallback: hash top-level listing + mtimes
+    try:
+        items = []
+        for path in sorted(repo_root.iterdir(), key=lambda p: p.name):
+            try:
+                stat = path.stat()
+                items.append(f"{path.name}:{stat.st_mtime}:{stat.st_size}")
+            except Exception:
+                items.append(path.name)
+        return hashlib.sha256("|".join(items).encode("utf-8")).hexdigest()
+    except Exception:
+        return "unknown"
+
+
+def _git_changed_files(repo_root: Path) -> list[Path]:
+    files: set[str] = set()
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if proc.returncode == 0:
+            for line in (proc.stdout or "").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                path = line[3:].strip() if len(line) >= 4 else line
+                if "->" in path:
+                    path = path.split("->", 1)[1].strip()
+                if path:
+                    files.add(path)
+    except Exception:
+        pass
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_root), "diff", "--name-only", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if proc.returncode == 0:
+            for line in (proc.stdout or "").splitlines():
+                path = line.strip()
+                if path:
+                    files.add(path)
+    except Exception:
+        pass
+    resolved: list[Path] = []
+    for rel in sorted(files):
+        path = (repo_root / rel).resolve()
+        if path.is_file():
+            resolved.append(path)
+    return resolved
+
+
+def _file_hash(path: Path) -> str:
+    try:
+        data = path.read_bytes()
+    except Exception:
+        return "unreadable"
+    return hashlib.sha256(data).hexdigest()
+
+
+def _collect_file_hashes(paths: list[Path]) -> dict[str, str]:
+    hashes: dict[str, str] = {}
+    for path in paths:
+        try:
+            rel = str(path)
+            hashes[rel] = _file_hash(path)
+        except Exception:
+            continue
+    return hashes
+
+
+def _hash_agent_input(agent: str, file_hashes: dict[str, str], extra: dict | None = None) -> str:
+    payload = {
+        "agent": agent,
+        "files": file_hashes,
+        "extra": extra or {},
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _open_analysis_db(repo_root: Path) -> sqlite3.Connection | None:
+    try:
+        db_path = repo_root / "agent" / "past_analyses.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_cache (
+                agent TEXT NOT NULL,
+                input_hash TEXT NOT NULL,
+                repo_hash TEXT NOT NULL,
+                file_hashes TEXT NOT NULL,
+                output TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (agent, input_hash)
+            )
+            """
+        )
+        return conn
+    except Exception:
+        return None
+
+
+def _cache_lookup(conn: sqlite3.Connection | None, agent: str, input_hash: str) -> str | None:
+    if conn is None:
+        return None
+    try:
+        cur = conn.execute(
+            "SELECT output FROM agent_cache WHERE agent = ? AND input_hash = ?",
+            (agent, input_hash),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
+def _cache_store(
+    conn: sqlite3.Connection | None,
+    *,
+    agent: str,
+    input_hash: str,
+    repo_hash: str,
+    file_hashes: dict,
+    output: str,
+) -> None:
+    if conn is None:
+        return
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO agent_cache(agent, input_hash, repo_hash, file_hashes, output, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                agent,
+                input_hash,
+                repo_hash,
+                json.dumps(file_hashes, ensure_ascii=False),
+                output,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+        conn.commit()
+    except Exception:
+        return
+
+
+_AST_PARSER_CACHE: dict[str, Any] = {}
+_AST_LANG_BY_EXT = {
+    ".py": "python",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".ts": "typescript",
+    ".tsx": "tsx",
+    ".go": "go",
+    ".rs": "rust",
+    ".java": "java",
+    ".c": "c",
+    ".h": "c",
+    ".cpp": "cpp",
+    ".cc": "cpp",
+    ".cxx": "cpp",
+    ".hpp": "cpp",
+    ".cs": "c_sharp",
+    ".rb": "ruby",
+    ".php": "php",
+}
+_AST_IMPORT_NODES = {
+    "import_statement",
+    "import_from_statement",
+    "import_declaration",
+    "using_declaration",
+    "include_directive",
+    "require_call",
+}
+_AST_FUNCTION_NODES = {
+    "function_definition",
+    "function_declaration",
+    "method_definition",
+}
+_AST_CLASS_NODES = {
+    "class_definition",
+    "class_declaration",
+}
+
+
 def _simple_repo_roles(kind: str) -> list[str]:
     kind = (kind or "").strip().lower()
     if kind in {"gap_analysis", "gaps"}:
@@ -163,7 +423,8 @@ def _find_key_docs(repo_root: Path) -> dict:
 
 def _read_text_snippet(path: Path, *, max_chars: int = 6000) -> str:
     try:
-        return path.read_text(encoding="utf-8", errors="replace")[:max_chars]
+        raw = path.read_text(encoding="utf-8", errors="replace")
+        return _sanitize_doc_text(raw)[:max_chars]
     except Exception:
         return ""
 
@@ -194,6 +455,394 @@ def _extract_section(text: str, header: str) -> str:
     return "\n".join(buf).strip()
 
 
+@contextmanager
+def _temporary_reasoning_effort(effort: str | None):
+    prev = os.environ.get("CODEX_REASONING_EFFORT")
+    if effort:
+        os.environ["CODEX_REASONING_EFFORT"] = effort
+    try:
+        yield
+    finally:
+        if prev is None:
+            os.environ.pop("CODEX_REASONING_EFFORT", None)
+        else:
+            os.environ["CODEX_REASONING_EFFORT"] = prev
+
+
+@contextmanager
+def _temporary_env_var(name: str, value: str | None):
+    prev = os.environ.get(name)
+    if value is None:
+        os.environ.pop(name, None)
+    else:
+        os.environ[name] = value
+    try:
+        yield
+    finally:
+        if prev is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = prev
+
+
+def _extract_gap_topics(text: str, *, limit: int = 6) -> list[str]:
+    topics: list[str] = []
+    for line in text.splitlines():
+        raw = line.strip()
+        if not raw.startswith("-"):
+            continue
+        item = raw.lstrip("-").strip()
+        if not item:
+            continue
+        topic = item.split(":")[0].strip()
+        if topic and topic.lower() not in {t.lower() for t in topics}:
+            topics.append(topic)
+        if len(topics) >= limit:
+            break
+    return topics
+
+
+def _scan_todos(
+    repo_root: Path,
+    repo_map: list,
+    *,
+    limit: int = 40,
+    focus_files: set[Path] | None = None,
+) -> str:
+    hits: list[str] = []
+    for entry in repo_map:
+        path = Path(getattr(entry, "path", ""))
+        name = path.name.upper()
+        if name in {"AGENTS.MD", "CONTINUITY.MD", "CONTINUITY-POWERHOUSEATX.MD"}:
+            continue
+        if not path.is_file():
+            continue
+        if focus_files is not None:
+            try:
+                if path.resolve() not in focus_files:
+                    continue
+            except Exception:
+                continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        for line in text.splitlines():
+            if any(tag in line for tag in ("TODO", "FIXME", "XXX")):
+                hits.append(f"{path}: {line.strip()[:200]}")
+                if len(hits) >= limit:
+                    return "\n".join(f"- {h}" for h in hits)
+    return "\n".join(f"- {h}" for h in hits)
+
+
+def _get_tree_sitter_parser(language: str) -> Any:
+    if not language:
+        return None
+    if language in _AST_PARSER_CACHE:
+        return _AST_PARSER_CACHE[language]
+    if get_parser is None:
+        _AST_PARSER_CACHE[language] = None
+        return None
+    try:
+        parser = get_parser(language)
+    except Exception:
+        parser = None
+    _AST_PARSER_CACHE[language] = parser
+    return parser
+
+
+def _node_text(node: Any, source: bytes, *, limit: int = 140) -> str:
+    text = source[node.start_byte : node.end_byte].decode("utf-8", errors="ignore")
+    text = " ".join(text.split())
+    return text[:limit]
+
+
+def _node_name(node: Any, source: bytes) -> str:
+    name_node = getattr(node, "child_by_field_name", lambda *_: None)("name")
+    if name_node is None:
+        return ""
+    return _node_text(name_node, source, limit=80)
+
+
+def _should_skip_ast_path(path: Path) -> bool:
+    skip_parts = {
+        ".git",
+        ".venv",
+        "venv",
+        "node_modules",
+        "__pycache__",
+        "site-packages",
+        "dist",
+        "build",
+        "coverage",
+        ".pytest_cache",
+    }
+    for part in path.parts:
+        if part in skip_parts:
+            return True
+    return False
+
+
+def _extract_ast_summary(
+    repo_root: Path,
+    repo_map: list,
+    *,
+    focus_files: set[Path] | None = None,
+    max_files: int = 60,
+    max_bytes: int = 220_000,
+    max_items: int = 10,
+) -> str:
+    if get_parser is None:
+        return "- AST parsing unavailable (tree-sitter-languages not installed)"
+
+    lines: list[str] = []
+    for entry in repo_map:
+        raw_path = Path(getattr(entry, "path", ""))
+        path = raw_path if raw_path.is_absolute() else (repo_root / raw_path)
+        if not path.is_file():
+            continue
+        if focus_files is not None:
+            try:
+                if path.resolve() not in focus_files:
+                    continue
+            except Exception:
+                continue
+        if _should_skip_ast_path(path):
+            continue
+        suffix = path.suffix.lower()
+        language = _AST_LANG_BY_EXT.get(suffix)
+        if not language:
+            continue
+        try:
+            if path.stat().st_size > max_bytes:
+                continue
+        except Exception:
+            continue
+        parser = _get_tree_sitter_parser(language)
+        if parser is None:
+            continue
+        try:
+            source = path.read_bytes()
+        except Exception:
+            continue
+
+        try:
+            tree = parser.parse(source)
+        except Exception:
+            continue
+
+        imports: list[str] = []
+        functions: list[str] = []
+        classes: list[str] = []
+        seen_imports: set[str] = set()
+        seen_functions: set[str] = set()
+        seen_classes: set[str] = set()
+
+        stack = [tree.root_node]
+        while stack:
+            node = stack.pop()
+            ntype = getattr(node, "type", "")
+            if ntype in _AST_IMPORT_NODES and len(imports) < max_items:
+                text = _node_text(node, source)
+                if text and text not in seen_imports:
+                    imports.append(text)
+                    seen_imports.add(text)
+            if ntype in _AST_FUNCTION_NODES and len(functions) < max_items:
+                name = _node_name(node, source) or _node_text(node, source, limit=80)
+                if name and name not in seen_functions:
+                    functions.append(name)
+                    seen_functions.add(name)
+            if ntype in _AST_CLASS_NODES and len(classes) < max_items:
+                name = _node_name(node, source) or _node_text(node, source, limit=80)
+                if name and name not in seen_classes:
+                    classes.append(name)
+                    seen_classes.add(name)
+            if len(imports) >= max_items and len(functions) >= max_items and len(classes) >= max_items:
+                continue
+            stack.extend(reversed(getattr(node, "children", []) or []))
+
+        if not imports and not functions and not classes:
+            continue
+
+        try:
+            rel = str(path.resolve().relative_to(repo_root))
+        except Exception:
+            rel = str(path)
+        parts: list[str] = []
+        if imports:
+            parts.append(f"imports: {', '.join(imports)}")
+        if functions:
+            parts.append(f"functions: {', '.join(functions)}")
+        if classes:
+            parts.append(f"classes: {', '.join(classes)}")
+        if parts:
+            lines.append(f"- {rel}: " + "; ".join(parts))
+        if len(lines) >= max_files:
+            break
+
+    return "\n".join(lines) if lines else "- (no AST summary available)"
+
+
+def _find_dependent_files(
+    repo_root: Path,
+    repo_map: list,
+    changed_files: list[Path],
+    *,
+    max_files: int = 200,
+    max_bytes: int = 120_000,
+) -> list[Path]:
+    if not changed_files:
+        return []
+    stems = {p.stem for p in changed_files if p.stem}
+    if not stems:
+        return []
+    patterns = [
+        re.compile(rf"\\bimport\\s+{re.escape(stem)}\\b") for stem in stems
+    ] + [
+        re.compile(rf"\\bfrom\\s+{re.escape(stem)}\\b") for stem in stems
+    ] + [
+        re.compile(rf"\\brequire\\(\\s*[\\\"\\']{re.escape(stem)}[\\\"\\']\\s*\\)")
+        for stem in stems
+    ] + [
+        re.compile(rf"\\bfrom\\s+[\\\"\\']{re.escape(stem)}[\\\"\\']") for stem in stems
+    ]
+    dependents: list[Path] = []
+    changed_set = {p.resolve() for p in changed_files if p.is_file()}
+    for entry in repo_map:
+        raw_path = Path(getattr(entry, "path", ""))
+        path = raw_path if raw_path.is_absolute() else (repo_root / raw_path)
+        if not path.is_file():
+            continue
+        try:
+            resolved = path.resolve()
+        except Exception:
+            continue
+        if resolved in changed_set:
+            continue
+        if _should_skip_ast_path(path):
+            continue
+        try:
+            if path.stat().st_size > max_bytes:
+                continue
+        except Exception:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        if any(p.search(text) for p in patterns):
+            dependents.append(resolved)
+        if len(dependents) >= max_files:
+            break
+    return dependents
+
+
+def _restricted_env(repo_root: Path, run_root: Path) -> dict:
+    # Rule of Two: minimize env exposure (no secrets) and redirect caches away from the repo.
+    tmp_dir = run_root / "dynamic_tmp"
+    pycache_dir = run_root / "dynamic_pycache"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    pycache_dir.mkdir(parents=True, exist_ok=True)
+
+    return {
+        "PATH": os.environ.get("PATH", ""),
+        "SystemRoot": os.environ.get("SystemRoot", "C:\\Windows"),
+        "WINDIR": os.environ.get("WINDIR", "C:\\Windows"),
+        "COMSPEC": os.environ.get("COMSPEC", "C:\\Windows\\System32\\cmd.exe"),
+        "PATHEXT": os.environ.get("PATHEXT", ""),
+        "PYTHONPATH": str(repo_root),
+        "PYTHONNOUSERSITE": "1",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPYCACHEPREFIX": str(pycache_dir),
+        "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+        "TMP": str(tmp_dir),
+        "TEMP": str(tmp_dir),
+        "TMPDIR": str(tmp_dir),
+        "HOME": str(run_root),
+        "USERPROFILE": str(run_root),
+        "APPDATA": str(run_root),
+        "LOCALAPPDATA": str(run_root),
+        "PYTHONHASHSEED": "0",
+    }
+
+
+def _run_dynamic_checks(repo_root: Path, run_root: Path) -> str:
+    # Rule of Two: read-only intent (no repo writes) with restricted env and redirected caches.
+    lines: list[str] = []
+    env = _restricted_env(repo_root, run_root)
+    packages = []
+    try:
+        for path in repo_root.iterdir():
+            if path.is_dir() and (path / "__init__.py").is_file():
+                packages.append(path.name)
+    except Exception:
+        packages = []
+    for pkg in packages[:3]:
+        cmd = [sys.executable, "-c", f"import {pkg}; print('{pkg} OK')"]
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                cwd=str(repo_root),
+                env=env,
+            )
+            if proc.returncode == 0:
+                lines.append(f"- import {pkg}: OK")
+            else:
+                lines.append(f"- import {pkg}: FAIL ({proc.stderr.strip()[:200]})")
+        except Exception as exc:
+            lines.append(f"- import {pkg}: ERROR ({exc})")
+
+    test_candidates = [
+        repo_root / "tests",
+        repo_root / "pytest.ini",
+        repo_root / "pyproject.toml",
+    ]
+    if any(p.exists() for p in test_candidates):
+        cache_dir = run_root / "pytest_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        basetemp = run_root / "pytest_tmp"
+        basetemp.mkdir(parents=True, exist_ok=True)
+        cmd = [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "--maxfail=1",
+            "-p",
+            "no:cacheprovider",
+            "-o",
+            f"cache_dir={cache_dir}",
+            "--basetemp",
+            str(basetemp),
+        ]
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=45,
+                cwd=str(repo_root),
+                env=env,
+            )
+            out = (proc.stdout or "").strip()
+            err = (proc.stderr or "").strip()
+            lines.append(f"- pytest exit={proc.returncode}")
+            if out:
+                lines.append(f"  stdout: {out[:500]}")
+            if err:
+                lines.append(f"  stderr: {err[:500]}")
+        except Exception as exc:
+            lines.append(f"- pytest: ERROR ({exc})")
+    else:
+        lines.append("- pytest: SKIPPED (no obvious test config found)")
+
+    return "\n".join(lines)
+
+
 def _is_incomplete_observation(output: str) -> bool:
     if not output:
         return False
@@ -209,6 +858,71 @@ def _is_incomplete_observation(output: str) -> bool:
     return False
 
 
+def _parse_reanalysis(text: str) -> dict[str, str]:
+    requests: dict[str, str] = {}
+    for line in text.splitlines():
+        if not line.strip().lower().startswith("reanalyze"):
+            continue
+        _, rest = line.split(":", 1) if ":" in line else ("", "")
+        if "->" in rest:
+            agent, guidance = rest.split("->", 1)
+            agent = agent.strip().title()
+            requests[agent] = guidance.strip()
+    return requests
+
+
+def _parse_confidence_lines(text: str) -> list[dict]:
+    results: list[dict] = []
+    score_re = re.compile(r"\b(static|dynamic|research|avg)\s*=\s*([01](?:\.\d+)?)", re.IGNORECASE)
+    for line in text.splitlines():
+        if "gap:" not in line.lower():
+            continue
+        gap = ""
+        if "gap:" in line.lower():
+            try:
+                gap = line.split("gap:", 1)[1].split("|", 1)[0].strip()
+            except Exception:
+                gap = line.strip()
+        scores: dict[str, float] = {}
+        for key, value in score_re.findall(line):
+            try:
+                scores[key.lower()] = float(value)
+            except ValueError:
+                continue
+        raw_scores = [v for k, v in scores.items() if k != "avg"]
+        avg = scores.get("avg")
+        if avg is None and raw_scores:
+            avg = sum(raw_scores) / max(len(raw_scores), 1)
+        variance = None
+        if len(raw_scores) >= 2:
+            variance = max(raw_scores) - min(raw_scores)
+        results.append(
+            {
+                "gap": gap or line.strip(),
+                "scores": scores,
+                "avg": avg,
+                "variance": variance,
+            }
+        )
+    return results
+
+
+def _confidence_stats(gaps: list[dict]) -> tuple[float | None, dict[str, float], list[dict]]:
+    avg_values = [g["avg"] for g in gaps if isinstance(g.get("avg"), (int, float))]
+    global_avg = sum(avg_values) / len(avg_values) if avg_values else None
+    agent_scores: dict[str, list[float]] = {"static": [], "dynamic": [], "research": []}
+    for g in gaps:
+        scores = g.get("scores") or {}
+        for agent in agent_scores:
+            if agent in scores:
+                agent_scores[agent].append(scores[agent])
+    agent_avgs: dict[str, float] = {
+        agent: (sum(vals) / len(vals)) for agent, vals in agent_scores.items() if vals
+    }
+    uncertain = [g for g in gaps if g.get("variance") is not None and g["variance"] > 0.5]
+    return global_avg, agent_avgs, uncertain
+
+
 def _extract_repo_kind(objective: str) -> str:
     text = (objective or "").strip()
     match = re.match(r"^\[REPO MODE:\s*([^\]]+)\]", text, flags=re.IGNORECASE)
@@ -222,6 +936,9 @@ def _format_repo_map(repo_root: Path, repo_map: list) -> str:
     lines: list[str] = []
     for entry in repo_map:
         path = getattr(entry, "path", "") or ""
+        name = Path(path).name
+        if name.upper() in {"AGENTS.md".upper(), "CONTINUITY.md".upper(), "CONTINUITY-POWERHOUSEATX.MD"}:
+            continue
         desc = getattr(entry, "description", "") or ""
         try:
             rel = str(Path(path).resolve().relative_to(repo_root))
@@ -236,6 +953,35 @@ def _format_repo_map(repo_root: Path, repo_map: list) -> str:
     return "\n".join(lines)
 
 
+def _sanitize_doc_text(text: str) -> str:
+    if not text:
+        return text
+    deny = ("continuity.md", "agents.md", "continuity ledger", "workspace rules")
+    cleaned_lines = []
+    for line in text.splitlines():
+        lower = line.lower()
+        if any(token in lower for token in deny):
+            continue
+        cleaned_lines.append(line)
+    return "\n".join(cleaned_lines)
+
+
+def _repo_access_instruction() -> str:
+    return "Analyze the repository directly.\nDo NOT ask for permission.\n"
+
+
+def _workspace_override() -> str:
+    return (
+        "WORKSPACE OVERRIDE - READ THIS FIRST:\n"
+        "You are NOT operating in a standard Codex workspace.\n"
+        "Do NOT read CONTINUITY.md or any workspace files.\n"
+        "Do NOT request workspace confirmation or ledger updates.\n"
+        "Do NOT mention \"UNCONFIRMED\" or \"need to read CONTINUITY.md\".\n"
+        "You have complete information in this prompt.\n"
+        "Proceed directly with your analysis task.\n"
+    )
+
+
 def mode_swarm_simple(
     objective: str,
     *,
@@ -244,16 +990,40 @@ def mode_swarm_simple(
     max_agents: int | None = None,
     timeout_seconds: int | None = None,
 ) -> None:
-    """Simple swarm: spawn lightweight LLM agents (no planning/reflection loop)."""
+    """Simple swarm: deep repo analysis with supervisor/critic/synthesis."""
     _load_dotenv()
     repo_root = Path(__file__).resolve().parents[2]
     run_root = repo_root / "runs" / "swarm_simple" / datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    # Rule of Two: analysis is read-only; all generated artifacts stay under runs/swarm_simple.
     run_root.mkdir(parents=True, exist_ok=True)
 
+    repo_hash = _resolve_repo_hash(repo_root)
+    analysis_db = _open_analysis_db(repo_root)
+    prompt_max_chars = _int_env("SWARM_SIMPLE_PROMPT_MAX_CHARS", 12000)
+    docs_max_chars = _int_env("SWARM_SIMPLE_DOCS_MAX_CHARS", 3500)
+    dependent_limit = _int_env("SWARM_SIMPLE_DEPENDENT_SCAN_LIMIT", 200)
+    max_output_defaults = {
+        "Fingerprint": 300,
+        "ProblemModel": 400,
+        "Supervisor": 120,
+        "Static": 500,
+        "Dynamic": 500,
+        "Research": 600,
+        "Critic": 500,
+        "Synthesis": 800,
+    }
+
     profile_cfg = resolve_profile(profile, env_keys=("SWARM_SIMPLE_PROFILE", "SWARM_PROFILE", "AUTO_PROFILE", "AGENT_PROFILE"))
-    max_agents = max_agents or _int_env("SWARM_SIMPLE_MAX_AGENTS", 3)
-    timeout_seconds = _int_env("SWARM_SIMPLE_TIMEOUT_SECONDS", 300)
-    agent_timeout = None
+    max_agents = max_agents or 3
+
+    # Timing + reasoning layers
+    timeout_fingerprint = None
+    timeout_static = None
+    timeout_dynamic = None
+    timeout_research = None
+    timeout_supervisor = None
+    timeout_critic = None
+    timeout_synthesis = None
 
     scan_dir = run_root / "repo_scan"
     scanner = RepoScanner(
@@ -263,7 +1033,7 @@ def mode_swarm_simple(
         profile=profile_cfg,
         usage=None,
     )
-    index, repo_map = scanner.scan()
+    _, repo_map = scanner.scan()
 
     root_entries = []
     try:
@@ -271,161 +1041,550 @@ def mode_swarm_simple(
     except Exception:
         root_entries = []
 
-    repo_context = _format_repo_map(repo_root, repo_map)
-    kind = _extract_repo_kind(objective)
-    roles = _simple_repo_roles(kind)[: max(1, max_agents)]
-    role_timeouts: dict[str, int] = {
-        "Gap Analysis": _int_env("SWARM_SIMPLE_TIMEOUT_GAP_SECONDS", 240),
-        "Coverage & Testing Gaps": _int_env("SWARM_SIMPLE_TIMEOUT_COVERAGE_SECONDS", 240),
-        "Quick Wins": _int_env("SWARM_SIMPLE_TIMEOUT_QUICK_SECONDS", 180),
-    }
-    prev_effort = os.environ.get("CODEX_REASONING_EFFORT")
-    if kind == "gap_analysis":
-        os.environ["CODEX_REASONING_EFFORT"] = "medium"
+    changed_files = _git_changed_files(repo_root)
+    dependent_files: list[Path] = []
+    if changed_files:
+        dependent_files = _find_dependent_files(
+            repo_root,
+            repo_map,
+            changed_files,
+            max_files=dependent_limit,
+        )
+    focus_files = changed_files + [p for p in dependent_files if p not in changed_files]
+    focus_files_set = {p.resolve() for p in focus_files if p.is_file()}
+    if focus_files:
+        print(f"[SWARM SIMPLE] Incremental focus: {len(changed_files)} changed, {len(dependent_files)} dependents")
+    else:
+        print("[SWARM SIMPLE] Incremental focus: none (full scan)")
+
+    ast_summary = _extract_ast_summary(
+        repo_root,
+        repo_map,
+        focus_files=focus_files_set if focus_files else None,
+        max_files=_int_env("SWARM_SIMPLE_AST_MAX_FILES", 60),
+        max_items=_int_env("SWARM_SIMPLE_AST_MAX_ITEMS", 10),
+    )
+    roles = ["Static", "Dynamic", "Research"]
 
     print("\n[SWARM SIMPLE] Objective:", objective)
-    if roles:
-        print("[SWARM SIMPLE] Agents:", ", ".join(roles))
+    print("[SWARM SIMPLE] Agents:", ", ".join(roles + ["Critic", "Synthesis"]))
 
-    def _run_role(role: str) -> tuple[str, str, float]:
-        start = time.time()
-        _debug_agent_banner(role)
-        try:
-            llm = CodexCliClient.from_env(workdir=repo_root, log_dir=run_root / role.replace(" ", "_"))
-        except (CodexCliNotFoundError, CodexCliAuthError) as exc:
-            return role, f"[ERROR] {exc}", time.time() - start
-
-        role_focus = _role_focus_instructions(role)
-        role_timeout = role_timeouts.get(role, timeout_seconds)
-
-        docs = _find_key_docs(repo_root)
-        docs_block = []
-        for name, path in docs.items():
-            content = _read_text_snippet(path)
-            if content:
-                docs_block.append(f"## {name}\n{content}")
-        docs_text = "\n\n".join(docs_block).strip()
-
-        # PHASE 1: UNDERSTAND
-        understand_prompt = (
-            f"You are the {role} agent.\n"
-            "PHASE 1 - UNDERSTAND: Read docs and summarize what the system claims to do.\n"
-            "Return two sections:\n"
-            "SUMMARY:\n- ...\n"
-            "CLAIMS:\n- feature claim\n"
-            "Do NOT mention workspace rules.\n"
-            f"Focus: {role_focus}\n\n"
-            f"Docs:\n{docs_text}\n"
-        )
-        understand = llm.reason_json(
-            understand_prompt, schema_path=llm_schemas.CHAT_RESPONSE, timeout_seconds=role_timeout
-        )
-        understand_text = (understand.get("response") or "").strip()
-        claims_section = _extract_section(understand_text, "CLAIMS")
-        claims = _extract_bullets(claims_section)
-
-        # PHASE 2: VERIFY
-        verify_prompt = (
-            f"You are the {role} agent.\n"
-            "PHASE 2 - VERIFY: Check whether the claimed features exist in the repo.\n"
-            "Return two sections:\n"
-            "VERIFICATION:\n- ...\n"
-            "GAPS:\n- Gap Topic: details (file refs)\n"
-            "Do NOT mention workspace rules.\n"
-            f"Focus: {role_focus}\n\n"
-            f"Claims:\n{chr(10).join('- ' + c for c in claims) or '- (none found)'}\n\n"
-            f"Repo root entries: {', '.join(root_entries)}\n\n"
-            "Repo map (selected files with short descriptions):\n"
-            f"{repo_context}\n"
-        )
-        verify = llm.reason_json(
-            verify_prompt, schema_path=llm_schemas.CHAT_RESPONSE, timeout_seconds=role_timeout
-        )
-        verify_text = (verify.get("response") or "").strip()
-        gaps_section = _extract_section(verify_text, "GAPS")
-        gap_items = _extract_bullets(gaps_section)
-        gap_topics = []
-        for item in gap_items:
-            topic = item.split(":")[0].strip()
-            if topic:
-                gap_topics.append(topic)
-        gap_topics = gap_topics[:3]
-
-        # PHASE 3: RESEARCH (web_search)
-        research_snippets: list[str] = []
-        try:
-            from agent.autonomous.config import RunContext
-            from agent.autonomous.tools.builtins import WebSearchArgs, web_search
-
-            ctx = RunContext(
-                run_id=f"swarm_simple_{role.replace(' ', '_')}",
-                run_dir=run_root,
-                workspace_dir=run_root,
-                profile=None,
-                usage=None,
-            )
-            for topic in gap_topics:
-                query = f"best practices for {topic}"
-                search = web_search(ctx, WebSearchArgs(query=query, max_results=4))
-                results = (search.output or {}).get("results") or []
-                for result in results[:3]:
-                    title = result.get("title") or "Untitled"
-                    url = result.get("url") or ""
-                    snippet = result.get("snippet") or ""
-                    research_snippets.append(f"- {title} | {url} | {snippet}")
-        except Exception as exc:
-            research_snippets.append(f"- [ERROR] web_search failed: {exc}")
-
-        # PHASE 4: RECOMMEND
-        recommend_prompt = (
-            f"You are the {role} agent.\n"
-            "PHASE 4 - RECOMMEND: Synthesize gaps + research into recommendations.\n"
-            "Return structured output with sections:\n"
-            "PHASE 1 - UNDERSTAND:\n- summary\n"
-            "PHASE 2 - VERIFY:\n- gaps with file refs\n"
-            "PHASE 3 - RESEARCH:\n- best practices with citations (raw URLs)\n"
-            "PHASE 4 - RECOMMEND:\n- actionable fixes with citations\n"
-            "QUESTIONS:\n- clarifying questions (if any)\n"
-            "Do NOT mention workspace rules.\n"
-            f"Focus: {role_focus}\n\n"
-            f"UNDERSTAND OUTPUT:\n{understand_text}\n\n"
-            f"VERIFY OUTPUT:\n{verify_text}\n\n"
-            f"RESEARCH SNIPPETS:\n{chr(10).join(research_snippets) if research_snippets else '- None'}\n"
-        )
-        recommend = llm.reason_json(
-            recommend_prompt, schema_path=llm_schemas.CHAT_RESPONSE, timeout_seconds=role_timeout
-        )
-        response = (recommend.get("response") or "").strip()
-        if _is_incomplete_observation(response):
-            return role, "[INCOMPLETE] Observation-only response", time.time() - start
-        return role, response or "[ERROR] Empty response", time.time() - start
-
-    results_by_role: dict[str, tuple[str, float]] = {}
-    with ThreadPoolExecutor(max_workers=len(roles)) as executor:
-        future_map = {executor.submit(_run_role, role): role for role in roles}
-        start_times = {future: time.time() for future in future_map}
-        for future, role in list(future_map.items()):
+    def _max_tokens_for(label: str) -> int:
+        key = f"SWARM_SIMPLE_MAX_TOKENS_{label.upper()}"
+        raw = os.getenv(key) or os.getenv("SWARM_SIMPLE_MAX_TOKENS")
+        if raw:
             try:
-                _, output, elapsed = future.result()
-                results_by_role[role] = (output, elapsed)
+                return max(50, int(raw))
+            except ValueError:
+                pass
+        return max_output_defaults.get(label, 400)
+
+    def _output_limit_note(label: str) -> str:
+        tokens = _max_tokens_for(label)
+        words = max(40, int(tokens * 0.75))
+        return f"Keep the response under ~{tokens} tokens (~{words} words)."
+
+    def _call_llm(
+        label: str,
+        prompt: str,
+        *,
+        effort: str,
+        timeout: int | None,
+        log_name: str,
+        cached_output: str | None = None,
+        cache_meta: dict | None = None,
+        enable_search: bool = False,
+    ) -> str:
+        started = time.monotonic()
+        compressed = _compress_prompt(prompt, max_chars=prompt_max_chars)
+        if cached_output is not None:
+            duration = time.monotonic() - started
+            model, effort_used = _current_model_effort()
+            _write_agent_log(
+                repo_root,
+                label,
+                {
+                    "agent": label,
+                    "status": "cached",
+                    "duration_sec": round(duration, 2),
+                    "model": model,
+                    "effort": effort_used,
+                    "prompt_chars": len(compressed),
+                    "response_chars": len(cached_output),
+                    "usage": None,
+                    "tokens": None,
+                    "cached": True,
+                    "cache_meta": cache_meta or {},
+                },
+            )
+            return cached_output
+        with _temporary_reasoning_effort(effort), _temporary_env_var(
+            "CODEX_ENABLE_WEB_SEARCH", "1" if enable_search else None
+        ):
+            _debug_agent_banner(label)
+            llm = CodexCliClient.from_env(workdir=repo_root, log_dir=run_root / log_name)
+            data = llm.reason_json(compressed, schema_path=llm_schemas.CHAT_RESPONSE, timeout_seconds=timeout)
+        response = (data.get("response") or "").strip()
+        duration = time.monotonic() - started
+        model, effort_used = _current_model_effort()
+        usage = data.get("usage") if isinstance(data, dict) else None
+        tokens = None
+        if isinstance(usage, dict):
+            tokens = (
+                usage.get("total_tokens")
+                or usage.get("output_tokens")
+                or usage.get("completion_tokens")
+            )
+        _write_agent_log(
+            repo_root,
+            label,
+            {
+                "agent": label,
+                "status": "success",
+                "duration_sec": round(duration, 2),
+                "model": model,
+                "effort": effort_used,
+                "prompt_chars": len(compressed),
+                "response_chars": len(response),
+                "usage": usage,
+                "tokens": tokens,
+                "cached": False,
+                "cache_meta": cache_meta or {},
+            },
+        )
+        return response
+
+    # Fingerprint extraction
+    docs = _find_key_docs(repo_root)
+    docs_block = []
+    for name, path in docs.items():
+        content = _read_text_snippet(path, max_chars=docs_max_chars)
+        if content:
+            docs_block.append(f"## {name}\n{content}")
+    docs_text = "\n\n".join(docs_block).strip()
+
+    fingerprint_prompt = (
+        _workspace_override()
+        + "You are the Fingerprint Extractor.\n"
+        "Extract system claims from README/docs and promises from ARCHITECTURE.\n"
+        "Create a verification checklist.\n"
+        "Return sections:\n"
+        "SUMMARY:\n- ...\n"
+        "CLAIMS:\n- ...\n"
+        "PROMISES:\n- ...\n"
+        "CHECKLIST:\n- ...\n"
+        f"{_output_limit_note('Fingerprint')}\n"
+        "Use only the provided docs. Do NOT ask for permission.\n"
+        f"Objective: {objective}\n\n"
+        f"Docs:\n{docs_text}\n"
+    )
+    fingerprint_files = list(docs.values())
+    fingerprint_hashes = _collect_file_hashes(fingerprint_files)
+    fingerprint_input_hash = _hash_agent_input(
+        "Fingerprint",
+        fingerprint_hashes,
+        {"objective": objective, "repo_hash": repo_hash},
+    )
+    fingerprint_cached = _cache_lookup(analysis_db, "Fingerprint", fingerprint_input_hash)
+    fingerprint_text = _call_llm(
+        "Fingerprint",
+        fingerprint_prompt,
+        effort="low",
+        timeout=timeout_fingerprint,
+        log_name="fingerprint",
+        cached_output=fingerprint_cached,
+        cache_meta={"input_hash": fingerprint_input_hash, "repo_hash": repo_hash},
+    )
+    if fingerprint_cached is None:
+        _cache_store(
+            analysis_db,
+            agent="Fingerprint",
+            input_hash=fingerprint_input_hash,
+            repo_hash=repo_hash,
+            file_hashes=fingerprint_hashes,
+            output=fingerprint_text,
+        )
+    claims = _extract_bullets(_extract_section(fingerprint_text, "CLAIMS"))
+    promises = _extract_bullets(_extract_section(fingerprint_text, "PROMISES"))
+    checklist = _extract_bullets(_extract_section(fingerprint_text, "CHECKLIST"))
+
+    fingerprint_digest = hashlib.sha256(fingerprint_text.encode("utf-8", errors="ignore")).hexdigest()
+    problem_model_prompt = (
+        _workspace_override()
+        + "You are the Problem Modeler for Model-First Reasoning.\n"
+        "Build an explicit shared problem model BEFORE any reasoning.\n"
+        "Define what counts as a gap, evidence requirements, scope, constraints, and success criteria.\n"
+        "Return sections:\n"
+        "MODEL:\n- Scope: ...\n- Claims: ...\n- Gap Criteria: ...\n- Evidence Rules: ...\n- Checklist: ...\n- Unknowns: ...\n"
+        f"{_output_limit_note('ProblemModel')}\n"
+        f"Objective: {objective}\n"
+        f"Fingerprint:\n{fingerprint_text}\n"
+    )
+    problem_model_input_hash = _hash_agent_input(
+        "ProblemModel",
+        fingerprint_hashes,
+        {"objective": objective, "repo_hash": repo_hash, "fingerprint": fingerprint_digest},
+    )
+    problem_model_cached = _cache_lookup(analysis_db, "ProblemModel", problem_model_input_hash)
+    problem_model_text = _call_llm(
+        "ProblemModel",
+        problem_model_prompt,
+        effort="low",
+        timeout=timeout_fingerprint,
+        log_name="problem_model",
+        cached_output=problem_model_cached,
+        cache_meta={"input_hash": problem_model_input_hash, "repo_hash": repo_hash},
+    )
+    if problem_model_cached is None:
+        _cache_store(
+            analysis_db,
+            agent="ProblemModel",
+            input_hash=problem_model_input_hash,
+            repo_hash=repo_hash,
+            file_hashes=fingerprint_hashes,
+            output=problem_model_text,
+        )
+
+    def _supervisor_check(role: str, output: str) -> tuple[bool, str]:
+        prompt = (
+            _workspace_override()
+            + "You are the Supervisor QA-Checker.\n"
+            "Determine if the agent stayed on-topic for repo gap analysis.\n"
+            "Respond with either:\n"
+            "OK\n"
+            "or\n"
+            "REDIRECT: <one-sentence guidance to refocus>\n\n"
+            f"{_output_limit_note('Supervisor')}\n"
+            f"Objective: {objective}\n"
+            f"Problem Model:\n{problem_model_text}\n"
+            f"Agent: {role}\n"
+            f"Output:\n{output}\n"
+        )
+        resp = _call_llm(
+            "Supervisor",
+            prompt,
+            effort="medium",
+            timeout=timeout_supervisor,
+            log_name=f"supervisor_{role}",
+        )
+        lower = resp.strip().lower()
+        if lower.startswith("redirect"):
+            guidance = resp.split(":", 1)[1].strip() if ":" in resp else "Refocus on repo gaps."
+            return False, guidance
+        return True, ""
+
+    def _run_static(extra_guidance: str | None = None) -> str:
+        todo_hits = _scan_todos(
+            repo_root,
+            repo_map,
+            focus_files=focus_files_set if focus_files else None,
+        )
+        prompt = (
+            _workspace_override()
+            + "You are the Static Analysis agent.\n"
+            "Use ONLY the AST summary and TODO/FIXME list to find structure gaps.\n"
+            f"{_repo_access_instruction()}\n"
+            f"{_output_limit_note('Static')}\n"
+            "Return bullets with file references.\n\n"
+            f"Objective: {objective}\n"
+            f"Problem Model:\n{problem_model_text}\n"
+            f"AST summary:\n{ast_summary}\n"
+            f"TODO/FIXME hits:\n{todo_hits or '- None found'}\n"
+        )
+        if extra_guidance:
+            prompt += f"\nSupervisor guidance: {extra_guidance}\n"
+        static_files = focus_files if focus_files else []
+        static_hashes = _collect_file_hashes(static_files)
+        static_input_hash = _hash_agent_input(
+            "Static",
+            static_hashes,
+            {"objective": objective, "repo_hash": repo_hash},
+        )
+        static_cached = _cache_lookup(analysis_db, "Static", static_input_hash)
+        output = _call_llm(
+            "Static",
+            prompt,
+            effort="low",
+            timeout=timeout_static,
+            log_name="static",
+            cached_output=static_cached,
+            cache_meta={"input_hash": static_input_hash, "repo_hash": repo_hash},
+        )
+        if static_cached is None:
+            _cache_store(
+                analysis_db,
+                agent="Static",
+                input_hash=static_input_hash,
+                repo_hash=repo_hash,
+                file_hashes=static_hashes,
+                output=output,
+            )
+        return output
+
+    def _run_dynamic(extra_guidance: str | None = None) -> str:
+        test_candidates = [
+            repo_root / "tests",
+            repo_root / "pytest.ini",
+            repo_root / "pyproject.toml",
+        ]
+        tests_present = any(p.exists() for p in test_candidates)
+        dynamic_files = focus_files if focus_files else []
+        dynamic_hashes = _collect_file_hashes(dynamic_files)
+        dynamic_input_hash = _hash_agent_input(
+            "Dynamic",
+            dynamic_hashes,
+            {"objective": objective, "repo_hash": repo_hash, "tests_present": tests_present},
+        )
+        dynamic_cached = _cache_lookup(analysis_db, "Dynamic", dynamic_input_hash)
+        dynamic_log = ""
+        if dynamic_cached is None:
+            dynamic_log = _run_dynamic_checks(repo_root, run_root)
+        prompt = (
+            _workspace_override()
+            + "You are the Dynamic Verification agent.\n"
+            "Use ONLY the runtime check log below (imports/tests).\n"
+            "Do NOT inspect code or docs. Do NOT ask for permission.\n"
+            "Return bullets with command outputs and implications.\n\n"
+            f"{_output_limit_note('Dynamic')}\n"
+            f"Objective: {objective}\n"
+            f"Problem Model:\n{problem_model_text}\n"
+            f"Runtime log:\n{dynamic_log or '- (cached)'}\n"
+        )
+        if extra_guidance:
+            prompt += f"\nSupervisor guidance: {extra_guidance}\n"
+        output = _call_llm(
+            "Dynamic",
+            prompt,
+            effort="medium",
+            timeout=timeout_dynamic,
+            log_name="dynamic",
+            cached_output=dynamic_cached,
+            cache_meta={"input_hash": dynamic_input_hash, "repo_hash": repo_hash},
+        )
+        if dynamic_cached is None:
+            _cache_store(
+                analysis_db,
+                agent="Dynamic",
+                input_hash=dynamic_input_hash,
+                repo_hash=repo_hash,
+                file_hashes=dynamic_hashes,
+                output=output,
+            )
+        return output
+
+    def _run_research(gap_topics: list[str], extra_guidance: str | None = None) -> str:
+        research_snippets: list[str] = []
+        research_input_hash = _hash_agent_input(
+            "Research",
+            {},
+            {"objective": objective, "repo_hash": repo_hash, "gap_topics": gap_topics[:6]},
+        )
+        research_cached = _cache_lookup(analysis_db, "Research", research_input_hash)
+        if research_cached is None:
+            try:
+                from agent.autonomous.config import RunContext
+                from agent.autonomous.tools.builtins import WebSearchArgs, web_search
+
+                ctx = RunContext(
+                    run_id="swarm_simple_research",
+                    run_dir=run_root,
+                    workspace_dir=run_root,
+                    profile=None,
+                    usage=None,
+                )
+                for topic in gap_topics[:4]:
+                    query = f"best practices for {topic}"
+                    search = web_search(ctx, WebSearchArgs(query=query, max_results=5))
+                    results = (search.output or {}).get("results") or []
+                    for result in results[:3]:
+                        title = result.get("title") or "Untitled"
+                        url = result.get("url") or ""
+                        snippet = result.get("snippet") or ""
+                        research_snippets.append(f"- {title} | {url} | {snippet}")
             except Exception as exc:
-                elapsed = time.time() - start_times.get(future, time.time())
-                results_by_role[role] = (f"[FAILED - {type(exc).__name__}]", elapsed)
+                research_snippets.append(f"- [ERROR] web_search failed: {exc}")
+
+        prompt = (
+            _workspace_override()
+            + "You are the Research agent.\n"
+            "Use ONLY web search to find best practices (no code analysis).\n"
+            "Do NOT ask for permission.\n"
+            "Return bullets with citations (raw URLs).\n\n"
+            f"{_output_limit_note('Research')}\n"
+            f"Objective: {objective}\n"
+            f"Problem Model:\n{problem_model_text}\n"
+            f"Gap topics: {gap_topics}\n"
+            f"Research snippets:\n{chr(10).join(research_snippets) if research_snippets else '- None'}\n"
+        )
+        if extra_guidance:
+            prompt += f"\nSupervisor guidance: {extra_guidance}\n"
+        output = _call_llm(
+            "Research",
+            prompt,
+            effort="medium",
+            timeout=timeout_research,
+            log_name="research",
+            cached_output=research_cached,
+            cache_meta={"input_hash": research_input_hash, "repo_hash": repo_hash},
+            enable_search=True,
+        )
+        if research_cached is None:
+            _cache_store(
+                analysis_db,
+                agent="Research",
+                input_hash=research_input_hash,
+                repo_hash=repo_hash,
+                file_hashes={},
+                output=output,
+            )
+        return output
+
+    # Seed research topics from fingerprint so Research can run in parallel
+    gap_topics_seed = _extract_gap_topics(
+        "\n".join([fingerprint_text, "\n".join(claims), "\n".join(promises), "\n".join(checklist)]),
+        limit=6,
+    )
+
+    # Run Static + Dynamic + Research in parallel
+    outputs: dict[str, str] = {}
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {
+            executor.submit(_run_static): "Static",
+            executor.submit(_run_dynamic): "Dynamic",
+            executor.submit(_run_research, gap_topics_seed): "Research",
+        }
+        for future, role in list(futures.items()):
+            try:
+                outputs[role] = future.result()
+            except Exception as exc:
+                outputs[role] = f"[FAILED - {type(exc).__name__}]"
+
+    # Supervisor checks & re-run if needed
+    for role in ("Static", "Dynamic", "Research"):
+        ok, guidance = _supervisor_check(role, outputs.get(role, ""))
+        if not ok:
+            if role == "Static":
+                outputs[role] = _run_static(guidance)
+            elif role == "Dynamic":
+                outputs[role] = _run_dynamic(guidance)
+            else:
+                outputs[role] = _run_research(gap_topics_seed, guidance)
+
+    gap_topics = []
+    for source in (
+        fingerprint_text,
+        outputs.get("Static", ""),
+        outputs.get("Dynamic", ""),
+        outputs.get("Research", ""),
+    ):
+        gap_topics.extend(_extract_gap_topics(source, limit=6))
+    # de-dupe
+    deduped = []
+    for topic in gap_topics:
+        if topic.lower() not in {t.lower() for t in deduped}:
+            deduped.append(topic)
+    gap_topics = deduped[:6]
+
+    # Critic agent
+    def _build_critic_prompt() -> str:
+        return (
+            _workspace_override()
+            + "You are the Critic agent.\n"
+            "Verify each finding: is it real, important, and supported?\n"
+            "Score confidence per agent (static/dynamic/research) from 0-1 and overall avg.\n"
+            "Measure disagreement by the spread of scores.\n"
+            "If average confidence <0.70, include REANALYZE: Agent -> guidance.\n"
+            "Return sections:\n"
+            "VERIFY:\n- Gap: ... | static=0.xx | dynamic=0.xx | research=0.xx | avg=0.xx | notes: ...\n"
+            "REFLECT:\nREANALYZE: <Agent> -> <guidance>\n"
+            "AVERAGE_CONFIDENCE: 0.xx\n"
+            "Do NOT ask for permission.\n"
+            f"{_output_limit_note('Critic')}\n"
+            f"Objective: {objective}\n"
+            f"Problem Model:\n{problem_model_text}\n"
+            f"Fingerprint:\n{fingerprint_text}\n"
+            f"Static findings:\n{outputs.get('Static','')}\n"
+            f"Dynamic findings:\n{outputs.get('Dynamic','')}\n"
+            f"Research findings:\n{outputs.get('Research','')}\n"
+        )
+
+    def _log_uncertain(uncertain: list[dict]) -> None:
+        if not uncertain:
+            return
+        print("\n[SWARM SIMPLE] Uncertain gaps (high disagreement):")
+        for gap in uncertain:
+            variance = gap.get("variance")
+            label = gap.get("gap") or "(unknown gap)"
+            if isinstance(variance, (int, float)):
+                print(f"- {label} | variance={variance:.2f}")
+            else:
+                print(f"- {label} | variance=unknown")
+
+    critic_prompt = _build_critic_prompt()
+    critic_text = _call_llm("Critic", critic_prompt, effort="high", timeout=timeout_critic, log_name="critic")
+    gap_scores = _parse_confidence_lines(critic_text)
+    global_avg, agent_avgs, uncertain = _confidence_stats(gap_scores)
+    _log_uncertain(uncertain)
+
+    reanalysis = _parse_reanalysis(critic_text)
+    if global_avg is not None and global_avg < 0.7 and not reanalysis:
+        weakest = min(agent_avgs, key=agent_avgs.get) if agent_avgs else "Static"
+        reanalysis = {
+            weakest: "Overall confidence <0.70; add evidence and file references for weak gaps."
+        }
+        print(f"[Critic] Low average confidence; forcing reanalysis of {weakest}.")
+    if reanalysis:
+        for agent, guidance in reanalysis.items():
+            if agent == "Static":
+                outputs["Static"] = _run_static(guidance)
+            elif agent == "Dynamic":
+                outputs["Dynamic"] = _run_dynamic(guidance)
+            elif agent == "Research":
+                outputs["Research"] = _run_research(gap_topics, guidance)
+        # Re-run critic once after reanalysis
+        critic_prompt = _build_critic_prompt()
+        critic_text = _call_llm("Critic", critic_prompt, effort="high", timeout=timeout_critic, log_name="critic_retry")
+        gap_scores = _parse_confidence_lines(critic_text)
+        global_avg, agent_avgs, uncertain = _confidence_stats(gap_scores)
+        _log_uncertain(uncertain)
+
+    # Synthesis agent
+    synthesis_prompt = (
+        _workspace_override()
+        + "You are the Synthesis agent.\n"
+        "Combine findings and prioritize by impact × confidence.\n"
+        "Return:\n"
+        "PRIORITIZED GAPS (with citations)\n"
+        "RECOMMENDATIONS (actionable, cited)\n"
+        "QUESTIONS (clarifying)\n"
+        "Do NOT ask for permission.\n"
+        f"{_output_limit_note('Synthesis')}\n"
+        f"Objective: {objective}\n"
+        f"Problem Model:\n{problem_model_text}\n"
+        f"Fingerprint:\n{fingerprint_text}\n"
+        f"Static findings:\n{outputs.get('Static','')}\n"
+        f"Dynamic findings:\n{outputs.get('Dynamic','')}\n"
+        f"Research findings:\n{outputs.get('Research','')}\n"
+        f"Critic review:\n{critic_text}\n"
+    )
+    synthesis_text = _call_llm("Synthesis", synthesis_prompt, effort="medium", timeout=timeout_synthesis, log_name="synthesis")
 
     print("\n[SWARM SIMPLE] Results:")
-    for role in roles:
-        output, elapsed = results_by_role.get(role, ("[FAILED - no result]", 0.0))
-        header = f"[{role}] ({elapsed:.1f}s)"
-        if output.startswith("[ERROR]") or output.startswith("[FAILED"):
-            print(f"\n{header} {output}")
-        elif output.startswith("[INCOMPLETE]"):
-            print(f"\n{header} {output}")
+    for role in ["Static", "Dynamic", "Research"]:
+        out = outputs.get(role, "[FAILED - no result]")
+        if out.startswith("[FAILED"):
+            print(f"\n[{role}] {out}")
+        elif _is_incomplete_observation(out):
+            print(f"\n[{role}] [INCOMPLETE] Observation-only response")
         else:
-            print(f"\n{header}\n{output}")
-    if prev_effort is None:
-        os.environ.pop("CODEX_REASONING_EFFORT", None)
-    else:
-        os.environ["CODEX_REASONING_EFFORT"] = prev_effort
+            print(f"\n[{role}]\n{out}")
+    print(f"\n[Critic]\n{critic_text}")
+    print(f"\n[Synthesis]\n{synthesis_text}")
+    if analysis_db is not None:
+        try:
+            analysis_db.close()
+        except Exception:
+            pass
 
 
 def aggregate_swarm_results(

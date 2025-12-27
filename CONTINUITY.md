@@ -1,20 +1,19 @@
 Goal (incl. success criteria):
-- Resolve conflict between ledger goal (feature verification) and user request (coverage/testing gaps) before proceeding; update ledger to match confirmed goal.
+- Critic-verify provided findings for gap_analysis; output JSON with VERIFY/REFLECT/(REANALYZE if avg<0.70) plus Ledger Snapshot in response.
 Constraints/Assumptions:
-- Output JSON only; no command execution.
-- Begin replies with Ledger Snapshot.
-- Use explicit phase banners; do not proceed past ASK_USER without answers.
+- Respond in required JSON schema with response/action; include Ledger Snapshot in response.
+- Do not execute shell commands; tool use only as needed to read/update ledger.
+- At turn start, read/update CONTINUITY.md.
 Key decisions:
-- Pause execution pending user confirmation of target goal.
+- Evaluate each reported finding for reality/importance/support based on given prompt only (no repo reads requested).
 State:
   - Done:
-    - Read `C:\Users\treyt\OneDrive\Desktop\DrCodePT-Swarm\CONTINUITY.md`.
+    - Read CONTINUITY.md.
   - Now:
-    - Ask user to confirm which goal to follow and whether to update ledger.
+    - Verify each provided finding and score confidence.
   - Next:
-    - If confirmed, scan repo for tests/CI/coverage gaps and report with file refs.
+    - Deliver JSON response/action with required sections.
 Open questions (UNCONFIRMED if needed):
-- Which goal should I follow: current ledger goal (feature verification) or your testing-coverage-gaps request?
-- Should I update `CONTINUITY.md` to match the confirmed goal?
+- None.
 Working set (files/ids/commands):
 - `C:\Users\treyt\OneDrive\Desktop\DrCodePT-Swarm\CONTINUITY.md`

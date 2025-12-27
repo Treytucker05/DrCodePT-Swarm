@@ -204,15 +204,14 @@ class CodexCliClient(LLMClient):
             profile,
             "--dangerously-bypass-approvals-and-sandbox",
             "--disable",
-            "shell_tool",
-            "--disable",
-            "web_search_request",
-            "--disable",
             "unified_exec",
             "--disable",
-            "shell_snapshot",
+            "streamable_shell",
             "exec",
         ]
+        search_flag = (os.getenv("CODEX_ENABLE_WEB_SEARCH") or "").strip().lower()
+        if search_flag in {"1", "true", "yes", "y", "on"}:
+            cmd += ["--search"]
         reasoning_effort = (os.getenv("CODEX_REASONING_EFFORT") or "").strip()
         if reasoning_effort:
             cmd += ["-c", f'model_reasoning_effort="{reasoning_effort}"']

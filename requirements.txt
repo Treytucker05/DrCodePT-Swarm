@@ -16,3 +16,8 @@ google-auth-oauthlib
 google-auth-httplib2
 google-api-python-client
 psutil>=5.9.0
+tree-sitter
+tree-sitter-language-pack
+tree-sitter-python
+tree-sitter-javascript
+tree-sitter-typescript
