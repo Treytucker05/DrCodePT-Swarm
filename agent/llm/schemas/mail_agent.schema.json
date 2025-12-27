@@ -3,46 +3,43 @@
   "type": "object",
   "properties": {
     "perception": {
-      "type": "string",
-      "description": "What the agent understands about the current situation and user's intent"
+      "type": "string"
     },
     "reasoning": {
-      "type": "string",
-      "description": "The agent's thought process about what to do next"
+      "type": "string"
     },
     "plan": {
       "type": "array",
-      "description": "Ordered list of steps the agent plans to take",
       "items": {
         "type": "string"
       }
     },
     "next_action": {
       "type": "object",
-      "description": "The immediate next action to take",
       "properties": {
         "type": {
-          "type": "string",
-          "enum": ["scan_folder", "create_folder", "show_folders", "ask_question", "none"],
-          "description": "The type of action"
+          "type": "string"
         },
         "folder": {
-          "type": ["string", "null"],
-          "description": "Folder name if applicable"
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "question": {
-          "type": ["string", "null"],
-          "description": "Question to ask the user if action type is ask_question"
+          "type": [
+            "string",
+            "null"
+          ]
         }
-      },
-      "required": ["type", "folder", "question"],
-      "additionalProperties": false
+      }
     },
     "response": {
-      "type": "string",
-      "description": "What to say to the user"
+      "type": "string"
     }
   },
-  "required": ["perception", "reasoning", "plan", "next_action", "response"],
-  "additionalProperties": false
+  "required": [
+    "response",
+    "next_action"
+  ]
 }

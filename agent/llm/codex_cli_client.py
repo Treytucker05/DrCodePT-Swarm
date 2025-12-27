@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -21,6 +22,18 @@ from .errors import (
     CodexCliOutputError,
 )
 from contextlib import nullcontext
+
+
+PROFILE_MAP = {
+    "Fingerprint": "fast",
+    "Static": "fast",
+    "Dynamic": "fast",
+    "Research": "research",
+    "Supervisor": "fast",
+    "Critic": "heavy",
+    "Synthesis": "heavy",
+    "Main": "heavy",
+}
 
 
 def _snippet(text: str | None, *, limit: int = 500) -> str:
@@ -67,6 +80,112 @@ def _strip_disable_flags(cmd: list[str]) -> list[str]:
 
 def _looks_like_unknown_feature_flag(stderr: str) -> bool:
     return "unknown feature flag" in (stderr or "").lower()
+
+
+def _profile_for_agent(agent_name: str, default_profile: str) -> str:
+    if not agent_name:
+        return default_profile
+    base = agent_name.split("-", 1)[0].strip()
+    return PROFILE_MAP.get(base, default_profile)
+
+
+def build_codex_command(
+    *,
+    codex_bin: str,
+    agent_name: str,
+    profile: str,
+    schema_path: Optional[str] = None,
+    out_path: Optional[str] = None,
+    enable_search: bool = False,
+    model: str = "",
+) -> list[str]:
+    """
+    Build optimized Codex CLI command with profile selection.
+    """
+    resolved_profile = _profile_for_agent(agent_name, profile)
+    cmd = [
+        codex_bin,
+        "--profile",
+        resolved_profile,
+        "--color",
+        "never",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--disable",
+        "unified_exec",
+        "--disable",
+        "streamable_shell",
+    ]
+    if enable_search:
+        cmd.append("--search")
+    cmd += ["--skip-git-repo-check"]
+    if schema_path:
+        cmd += ["--output-schema", schema_path]
+    if out_path:
+        cmd += ["--output-last-message", out_path]
+    if model:
+        cmd += ["--model", model]
+    cmd += ["exec", "-"]
+    return cmd
+
+
+def call_codex(
+    *,
+    prompt: str,
+    agent: str = "Main",
+    schema_path: Optional[str] = None,
+    timeout: int = 120,
+    enable_search: bool = False,
+) -> Dict[str, Any]:
+    """
+    Execute Codex CLI with optimized settings.
+    """
+    codex_bin = shutil.which(os.getenv("CODEX_BIN") or "codex") or "codex"
+    env_search = (os.getenv("CODEX_ENABLE_WEB_SEARCH") or "").strip().lower()
+    enable_search = enable_search or env_search in {"1", "true", "yes", "y", "on"}
+    cmd = build_codex_command(
+        codex_bin=codex_bin,
+        agent_name=agent,
+        profile="reason",
+        schema_path=schema_path,
+        enable_search=enable_search,
+    )
+    try:
+        result = subprocess.run(
+            cmd,
+            input=prompt,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            encoding="utf-8",
+        )
+        if "429" in (result.stderr or "") or "rate limit" in (result.stderr or "").lower():
+            logging.warning("[%s] Hit rate limit - quota exhausted", agent)
+            return {
+                "error": "rate_limit",
+                "message": "ChatGPT Pro quota exhausted",
+                "suggestion": "Wait for quota refresh or reduce usage",
+            }
+        if result.returncode != 0:
+            logging.error("[%s] Codex error: %s", agent, result.stderr)
+            return {
+                "error": "execution_failed",
+                "stderr": result.stderr,
+                "returncode": result.returncode,
+            }
+        output = (result.stdout or "").strip()
+        if schema_path:
+            try:
+                return json.loads(output)
+            except json.JSONDecodeError as exc:
+                logging.error("[%s] JSON parse error: %s", agent, exc)
+                return {"error": "invalid_json", "raw_output": output}
+        return {"result": output}
+    except subprocess.TimeoutExpired:
+        logging.error("[%s] Timeout after %ss", agent, timeout)
+        return {"error": "timeout", "timeout_seconds": timeout}
+    except Exception as exc:
+        logging.error("[%s] Unexpected error: %s", agent, exc)
+        return {"error": "unknown", "exception": str(exc)}
 
 
 @dataclass(frozen=True)
@@ -198,32 +317,26 @@ class CodexCliClient(LLMClient):
 
         out_path = Path(tempfile.gettempdir()) / f"codex_last_message_{uuid4().hex}.json"
 
-        cmd = [
-            codex,
-            "--profile",
-            profile,
-            "--dangerously-bypass-approvals-and-sandbox",
-            "--disable",
-            "unified_exec",
-            "--disable",
-            "streamable_shell",
-            "exec",
-        ]
+        agent_name = (os.getenv("CODEX_AGENT_NAME") or "").strip()
         search_flag = (os.getenv("CODEX_ENABLE_WEB_SEARCH") or "").strip().lower()
-        if search_flag in {"1", "true", "yes", "y", "on"}:
-            cmd += ["--search"]
+        enable_search = search_flag in {"1", "true", "yes", "y", "on"}
+        cmd = build_codex_command(
+            codex_bin=codex,
+            agent_name=agent_name,
+            profile=profile,
+            schema_path=str(schema_path),
+            out_path=str(out_path),
+            enable_search=enable_search,
+            model=self.model,
+        )
         reasoning_effort = (os.getenv("CODEX_REASONING_EFFORT") or "").strip()
         if reasoning_effort:
-            cmd += ["-c", f'model_reasoning_effort="{reasoning_effort}"']
-        cmd += [
-            "--skip-git-repo-check",
-            "--output-schema",
-            str(schema_path),
-            "--output-last-message",
-            str(out_path),
-        ]
-        if self.model:
-            cmd.extend(["--model", self.model])
+            try:
+                exec_index = cmd.index("exec")
+            except ValueError:
+                exec_index = len(cmd)
+            cmd[exec_index:exec_index] = ["-c", f'model_reasoning_effort="{reasoning_effort}"']
+        # build_codex_command includes schema/out paths and model if provided
 
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"

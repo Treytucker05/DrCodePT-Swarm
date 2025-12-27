@@ -3,27 +3,10 @@
   "type": "object",
   "properties": {
     "response": {
-      "type": "string",
-      "description": "The assistant's conversational response to the user"
-    },
-    "action": {
-      "type": "object",
-      "description": "Optional action to execute",
-      "properties": {
-        "type": {
-          "type": "string",
-          "enum": ["scan_folder", "create_folder", "show_folders", "none"],
-          "description": "The type of action to perform"
-        },
-        "folder": {
-          "type": ["string", "null"],
-          "description": "The folder name for the action (if applicable)"
-        }
-      },
-      "required": ["type", "folder"],
-      "additionalProperties": false
+      "type": "string"
     }
   },
-  "required": ["response", "action"],
-  "additionalProperties": false
+  "required": [
+    "response"
+  ]
 }

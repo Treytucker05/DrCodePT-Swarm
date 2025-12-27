@@ -2,34 +2,30 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
   "properties": {
-    "summary_md": {
-      "type": "string"
-    },
-    "key_findings": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
-    "citations": {
+    "gaps": {
       "type": "array",
       "items": {
         "type": "object",
         "properties": {
-          "url": {
+          "description": {
             "type": "string"
           },
-          "title": {
+          "evidence": {
             "type": "string"
+          },
+          "confidence": {
+            "type": "number"
           }
-        }
+        },
+        "required": [
+          "description",
+          "evidence",
+          "confidence"
+        ]
       }
-    },
-    "model_used": {
-      "type": "string"
     }
   },
   "required": [
-    "summary_md"
+    "gaps"
   ]
 }

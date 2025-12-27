@@ -1,35 +1,32 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
-  "additionalProperties": false,
-  "required": ["likely_failure_modes", "safer_alternative"],
   "properties": {
     "likely_failure_modes": {
       "type": "array",
-      "items": { "type": "string" },
-      "minItems": 0,
-      "maxItems": 8
+      "items": {
+        "type": "string"
+      }
     },
     "safer_alternative": {
       "type": "object",
-      "additionalProperties": false,
-      "required": ["tool_name", "tool_args", "why"],
       "properties": {
-        "tool_name": { "type": "string" },
-        "tool_args": { "type": "array", "items": { "$ref": "#/$defs/kv_pair" } },
-        "why": { "type": "string" }
+        "tool_name": {
+          "type": "string"
+        },
+        "tool_args": {
+          "type": [
+            "object",
+            "array"
+          ]
+        },
+        "why": {
+          "type": "string"
+        }
       }
     }
   },
-  "$defs": {
-    "kv_pair": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["key", "value"],
-      "properties": {
-        "key": { "type": "string" },
-        "value": { "type": "string" }
-      }
-    }
-  }
+  "required": [
+    "likely_failure_modes"
+  ]
 }

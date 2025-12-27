@@ -1,11 +1,21 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
-  "additionalProperties": false,
-  "required": ["patterns", "procedures"],
   "properties": {
-    "patterns": { "type": "array", "items": { "type": "string" } },
-    "procedures": { "type": "array", "items": { "type": "string" } }
-  }
+    "patterns": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "procedures": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "patterns"
+  ]
 }
-

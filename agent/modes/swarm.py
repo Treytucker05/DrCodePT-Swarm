@@ -19,7 +19,7 @@ from contextlib import contextmanager
 from typing import Iterable
 
 try:
-    from tree_sitter_languages import get_parser
+    from tree_sitter_language_pack import get_parser
 except Exception:  # pragma: no cover
     get_parser = None
 
@@ -42,7 +42,9 @@ from agent.autonomous.repo_scan import RepoScanner, is_repo_review_task
 from agent.config.profile import resolve_profile
 from agent.autonomous.runner import AgentRunner
 from agent.autonomous.task_orchestrator import TaskOrchestrator
-from agent.llm import CodexCliAuthError, CodexCliClient, CodexCliNotFoundError
+from agent.llm import CodexCliAuthError, CodexCliClient, CodexCliNotFoundError  
+from agent.llm.codex_cli_client import PROFILE_MAP as CODEX_PROFILE_MAP
+from agent.llm.codex_cli_client import call_codex
 from agent.llm import schemas as llm_schemas
 
 logger = logging.getLogger(__name__)
@@ -100,26 +102,36 @@ def _normalize_effort(value: str) -> str:
     return "medium"
 
 
-def _debug_agent_banner(agent_label: str) -> None:
+def _resolve_profile_name(agent_label: str) -> str:
+    base = (agent_label or "").split("-", 1)[0].strip()
+    profile = CODEX_PROFILE_MAP.get(base) or os.getenv("CODEX_PROFILE_REASON") or "reason"
+    return str(profile).strip()
+
+
+def _resolve_model_effort_for(agent_label: str) -> tuple[str, str]:
     cfg = _load_codex_config() or {}
     profiles = cfg.get("profiles") if isinstance(cfg.get("profiles"), dict) else {}
-    profile_name = (os.getenv("CODEX_PROFILE_REASON") or "reason").strip()
+    profile_name = _resolve_profile_name(agent_label)
     profile_cfg = profiles.get(profile_name, {}) if isinstance(profiles, dict) else {}
     model = (os.getenv("CODEX_MODEL") or profile_cfg.get("model") or cfg.get("model") or "default").strip()
-    effort_raw = os.getenv("CODEX_REASONING_EFFORT") or profile_cfg.get("model_reasoning_effort") or cfg.get("model_reasoning_effort") or "medium"
+    effort_raw = (
+        os.getenv("CODEX_REASONING_EFFORT")
+        or profile_cfg.get("model_reasoning_effort")
+        or cfg.get("model_reasoning_effort")
+        or "medium"
+    )
     effort = _normalize_effort(str(effort_raw))
+    return model, effort
+
+
+def _debug_agent_banner(agent_label: str) -> None:
+    model, effort = _resolve_model_effort_for(agent_label)
     print(f"[MODEL: {model} | EFFORT: {effort} | AGENT: {agent_label}]")
 
 
-def _current_model_effort() -> tuple[str, str]:
-    cfg = _load_codex_config() or {}
-    profiles = cfg.get("profiles") if isinstance(cfg.get("profiles"), dict) else {}
-    profile_name = (os.getenv("CODEX_PROFILE_REASON") or "reason").strip()
-    profile_cfg = profiles.get(profile_name, {}) if isinstance(profiles, dict) else {}
-    model = (os.getenv("CODEX_MODEL") or profile_cfg.get("model") or cfg.get("model") or "default").strip()
-    effort_raw = os.getenv("CODEX_REASONING_EFFORT") or profile_cfg.get("model_reasoning_effort") or cfg.get("model_reasoning_effort") or "medium"
-    effort = _normalize_effort(str(effort_raw))
-    return model, effort
+def _current_model_effort(agent_label: str | None = None) -> tuple[str, str]:
+    label = agent_label or os.getenv("CODEX_AGENT_NAME") or "Main"
+    return _resolve_model_effort_for(label)
 
 
 def _agent_log_dir(repo_root: Path) -> Path:
@@ -593,7 +605,7 @@ def _extract_ast_summary(
     max_items: int = 10,
 ) -> str:
     if get_parser is None:
-        return "- AST parsing unavailable (tree-sitter-languages not installed)"
+        return "- AST parsing unavailable (tree-sitter-language-pack not installed)"
 
     lines: list[str] = []
     for entry in repo_map:
@@ -681,6 +693,173 @@ def _extract_ast_summary(
             break
 
     return "\n".join(lines) if lines else "- (no AST summary available)"
+
+
+def _extract_ast_data(
+    repo_root: Path,
+    repo_map: list,
+    *,
+    focus_files: set[Path] | None = None,
+    max_files: int = 60,
+    max_bytes: int = 220_000,
+    max_items: int = 10,
+) -> list[dict]:
+    if get_parser is None:
+        return []
+
+    data: list[dict] = []
+    for entry in repo_map:
+        raw_path = Path(getattr(entry, "path", ""))
+        path = raw_path if raw_path.is_absolute() else (repo_root / raw_path)
+        if not path.is_file():
+            continue
+        if focus_files is not None:
+            try:
+                if path.resolve() not in focus_files:
+                    continue
+            except Exception:
+                continue
+        if _should_skip_ast_path(path):
+            continue
+        suffix = path.suffix.lower()
+        language = _AST_LANG_BY_EXT.get(suffix)
+        if not language:
+            continue
+        try:
+            if path.stat().st_size > max_bytes:
+                continue
+        except Exception:
+            continue
+        parser = _get_tree_sitter_parser(language)
+        if parser is None:
+            continue
+        try:
+            source = path.read_bytes()
+        except Exception:
+            continue
+
+        try:
+            tree = parser.parse(source)
+        except Exception:
+            continue
+
+        imports: list[str] = []
+        functions: list[str] = []
+        classes: list[str] = []
+        seen_imports: set[str] = set()
+        seen_functions: set[str] = set()
+        seen_classes: set[str] = set()
+
+        stack = [tree.root_node]
+        while stack:
+            node = stack.pop()
+            ntype = getattr(node, "type", "")
+            if ntype in _AST_IMPORT_NODES and len(imports) < max_items:
+                text = _node_text(node, source)
+                if text and text not in seen_imports:
+                    imports.append(text)
+                    seen_imports.add(text)
+            if ntype in _AST_FUNCTION_NODES and len(functions) < max_items:
+                name = _node_name(node, source) or _node_text(node, source, limit=80)
+                if name and name not in seen_functions:
+                    functions.append(name)
+                    seen_functions.add(name)
+            if ntype in _AST_CLASS_NODES and len(classes) < max_items:
+                name = _node_name(node, source) or _node_text(node, source, limit=80)
+                if name and name not in seen_classes:
+                    classes.append(name)
+                    seen_classes.add(name)
+            if len(imports) >= max_items and len(functions) >= max_items and len(classes) >= max_items:
+                continue
+            stack.extend(reversed(getattr(node, "children", []) or []))
+
+        if not imports and not functions and not classes:
+            continue
+
+        try:
+            rel = str(path.resolve().relative_to(repo_root))
+        except Exception:
+            rel = str(path)
+        data.append(
+            {
+                "path": rel,
+                "imports": imports,
+                "functions": functions,
+                "classes": classes,
+            }
+        )
+        if len(data) >= max_files:
+            break
+
+    return data
+
+
+def _summarize_ast(ast_data: list[dict]) -> dict:
+    return {
+        "total_files": len(ast_data),
+        "total_functions": sum(len(f.get("functions", [])) for f in ast_data),
+        "total_classes": sum(len(f.get("classes", [])) for f in ast_data),
+        "imports": list(
+            {
+                imp
+                for f in ast_data
+                for imp in f.get("imports", [])
+                if isinstance(imp, str)
+            }
+        )[:20],
+    }
+
+
+def _truncate_text(text: str, limit: int) -> str:
+    if not text:
+        return ""
+    if len(text) <= limit:
+        return text
+    return text[:limit]
+
+
+def _tail_lines(text: str, max_lines: int) -> str:
+    lines = (text or "").splitlines()
+    if len(lines) <= max_lines:
+        return "\n".join(lines)
+    return "\n".join(lines[-max_lines:])
+
+
+def _extract_import_errors(test_output: str) -> str:
+    lines = (test_output or "").splitlines()
+    errors = [l for l in lines if "ImportError" in l or "ModuleNotFoundError" in l]
+    return "\n".join(errors[:10])
+
+
+def _summarize_errors(test_output: str) -> str:
+    lines = (test_output or "").splitlines()
+    hits = [l for l in lines if any(tok in l for tok in ("ERROR", "FAILED", "Traceback", "Exception"))]
+    return "\n".join(hits[-10:])
+
+
+def _check_quota_status() -> str:
+    """Check remaining Codex quota and log warning if low."""
+    try:
+        result = subprocess.run(
+            ["codex"],
+            input="/status\n/exit\n",
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+        logging.info("[QUOTA] Status check:\n%s", result.stdout)
+        stdout = (result.stdout or "").lower()
+        if "0%" in stdout or "exhausted" in stdout:
+            logging.critical("[QUOTA] ChatGPT Pro quota exhausted!")
+            logging.critical("[QUOTA] Wait for refresh or reduce usage")
+            return "exhausted"
+        if any(f"{p}%" in stdout for p in range(1, 20)):
+            logging.warning("[QUOTA] Running low (<20%% remaining)")
+            return "low"
+        return "ok"
+    except Exception as exc:
+        logging.error("[QUOTA] Failed to check status: %s", exc)
+        return "unknown"
 
 
 def _find_dependent_files(
@@ -907,6 +1086,92 @@ def _parse_confidence_lines(text: str) -> list[dict]:
     return results
 
 
+def _extract_json_from_text(text: str) -> dict | None:
+    if not text:
+        return None
+    stripped = text.strip()
+    try:
+        if stripped.startswith("{") and stripped.endswith("}"):
+            return json.loads(stripped)
+    except Exception:
+        pass
+    start = stripped.find("{")
+    end = stripped.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    snippet = stripped[start : end + 1]
+    try:
+        return json.loads(snippet)
+    except Exception:
+        return None
+
+
+def _extract_entities_from_text(text: str) -> set[str]:
+    if not text:
+        return set()
+    candidates: set[str] = set()
+    patterns = [
+        r"(?:[A-Za-z]:)?[\\/][^\s]+?\.[A-Za-z0-9]{1,6}",
+        r"[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,6}",
+    ]
+    for pattern in patterns:
+        for match in re.findall(pattern, text):
+            token = match.strip().strip("`'\"()[]{}.,;")
+            token = re.sub(r":\d+$", "", token)
+            token = re.sub(r"#L\d+$", "", token)
+            if token:
+                candidates.add(token)
+    return candidates
+
+
+def _normalize_findings_for_validation(agent_findings: Any) -> list[dict]:
+    if isinstance(agent_findings, dict):
+        gaps = agent_findings.get("gaps")
+        if isinstance(gaps, list):
+            normalized = []
+            for item in gaps:
+                if isinstance(item, dict):
+                    normalized.append(item)
+                else:
+                    normalized.append({"description": str(item)})
+            return normalized
+        return [{"description": json.dumps(agent_findings, ensure_ascii=False)}]
+    if isinstance(agent_findings, str):
+        parsed = _extract_json_from_text(agent_findings)
+        if isinstance(parsed, dict):
+            return _normalize_findings_for_validation(parsed)
+        return [{"description": agent_findings}]
+    if isinstance(agent_findings, list):
+        return [{"description": str(item)} for item in agent_findings]
+    return [{"description": str(agent_findings)}]
+
+
+def validate_model_adherence(agent_model: dict, agent_findings: Any) -> dict:
+    """Check if findings use only entities/actions from model."""
+    declared_entities = set(str(item) for item in agent_model.get("entities", []) if item)
+    violations: list[dict] = []
+    findings_list = _normalize_findings_for_validation(agent_findings)
+    if not declared_entities:
+        return {"adherence_score": 1.0, "violations": []}
+    for finding in findings_list:
+        description = str(finding.get("description", ""))
+        evidence = str(finding.get("evidence", ""))
+        mentioned = _extract_entities_from_text(f"{description} {evidence}")
+        if not mentioned:
+            continue
+        undeclared = mentioned - declared_entities
+        if undeclared:
+            violations.append(
+                {
+                    "finding": description,
+                    "undeclared_entities": sorted(undeclared),
+                    "severity": "model_violation",
+                }
+            )
+    adherence_score = 1.0 - (len(violations) / max(len(findings_list), 1))
+    return {"adherence_score": max(0.0, adherence_score), "violations": violations}
+
+
 def _confidence_stats(gaps: list[dict]) -> tuple[float | None, dict[str, float], list[dict]]:
     avg_values = [g["avg"] for g in gaps if isinstance(g.get("avg"), (int, float))]
     global_avg = sum(avg_values) / len(avg_values) if avg_values else None
@@ -991,10 +1256,63 @@ def mode_swarm_simple(
     timeout_seconds: int | None = None,
 ) -> None:
     """Simple swarm: deep repo analysis with supervisor/critic/synthesis."""
+    MFR_MODEL_TEMPLATE = """
+═══════════════════════════════════════════════════════════════
+PHASE 1: MODEL CONSTRUCTION (complete this BEFORE any analysis)
+═══════════════════════════════════════════════════════════════
+Build an explicit problem model by defining:
+
+1. ENTITIES (concrete components in scope):
+   List specific: files, modules, classes, functions, tests, claims
+   Example: "Entity: README.md claims 'closed-loop architecture'"
+   
+2. STATE VARIABLES (measurable properties):
+   What can you check/count/verify?
+   Example: "Variable: count of TODO markers in codebase"
+   Example: "Variable: test_integration.py import success (bool)"
+   
+3. ACTIONS (operations available to you):
+   What tools/data can you use?
+   Example: "Action: compare README claim against file tree"
+   Example: "Action: parse AST for function definitions"
+   
+4. CONSTRAINTS (what must be true):
+   Define quality requirements explicitly
+   Example: "Constraint: every README claim must have code evidence"
+   Example: "Constraint: every test file must be in CI configuration"
+   
+5. GAP DEFINITION (when does a gap exist):
+   Precise criteria for identifying gaps
+   Example: "Gap exists when: claim is made BUT supporting code is absent"
+   Example: "Gap exists when: TODO exists BUT no tracking in issues"
+
+OUTPUT FORMAT:
+Return your model as structured JSON:
+{
+  "entities": ["entity1", "entity2", ...],
+  "state_variables": ["var1", "var2", ...],
+  "actions": ["action1", "action2", ...],
+  "constraints": ["constraint1", "constraint2", ...],
+  "gap_definition": "A gap exists when..."
+}
+
+═══════════════════════════════════════════════════════════════
+PHASE 2: REASONING (complete AFTER model construction)
+═══════════════════════════════════════════════════════════════
+Using ONLY the model you defined above:
+- Use only the entities you listed
+- Perform only the actions you defined
+- Check only the constraints you specified
+- Identify gaps matching your gap definition
+
+CRITICAL: Do not introduce new entities, actions, or constraints in Phase 2.
+Your reasoning must stay strictly within your Phase 1 model.
+"""
     _load_dotenv()
     repo_root = Path(__file__).resolve().parents[2]
     run_root = repo_root / "runs" / "swarm_simple" / datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    # Rule of Two: analysis is read-only; all generated artifacts stay under runs/swarm_simple.
+    # Rule of Two: A=reads untrusted code (yes), B=no secrets/env access (not enforced),
+    # C=read-only analysis (no repo writes; outputs stay under runs/swarm_simple).
     run_root.mkdir(parents=True, exist_ok=True)
 
     repo_hash = _resolve_repo_hash(repo_root)
@@ -1057,18 +1375,218 @@ def mode_swarm_simple(
     else:
         print("[SWARM SIMPLE] Incremental focus: none (full scan)")
 
-    ast_summary = _extract_ast_summary(
+    ast_data = _extract_ast_data(
         repo_root,
         repo_map,
         focus_files=focus_files_set if focus_files else None,
         max_files=_int_env("SWARM_SIMPLE_AST_MAX_FILES", 60),
         max_items=_int_env("SWARM_SIMPLE_AST_MAX_ITEMS", 10),
     )
+    ast_summary = _summarize_ast(ast_data)
     roles = ["Static", "Dynamic", "Research"]
 
     print("\n[SWARM SIMPLE] Objective:", objective)
     print("[SWARM SIMPLE] Agents:", ", ".join(roles + ["Critic", "Synthesis"]))
 
+    def _format_items(items: list[str]) -> str:
+        if not items:
+            return "- (none)"
+        return "\n".join(f"- {item}" for item in items)
+
+    def _build_mfr_prompt(agent_role: str, context: str, fingerprint: dict) -> str:
+        return (
+            _workspace_override()
+            + MFR_MODEL_TEMPLATE
+            + "\nCONTEXT FOR YOUR MODEL:\n"
+            f"Role: {agent_role}\n\n"
+            "Shared Constraints (from repo fingerprint):\n"
+            f"{_format_items(fingerprint.get('mfr_constraints', []))}\n\n"
+            "Entities in Scope:\n"
+            f"{_format_items(fingerprint.get('mfr_entities', []))}\n\n"
+            "Gap Definition (apply to your domain):\n"
+            f"{fingerprint.get('mfr_gap_definition', '')}\n\n"
+            "Domain-Specific Data:\n"
+            f"{context}\n\n"
+            "Build your model now.\n"
+        )
+
+    def _build_minimal_context(
+        agent_name: str,
+        *,
+        repo_path: Path,
+        fingerprint: dict,
+        ast_data: list[dict],
+        test_output: str,
+        arch_claims: list[str],
+        features: list[str],
+    ) -> str:
+        if agent_name == "Static":
+            changed = fingerprint.get("changed_files", [])[:10]
+            constraints = fingerprint.get("mfr_constraints", [])[:5]
+            return (
+                "Changed Files:\n"
+                f"{_format_items(changed)}\n"
+                "AST Summary:\n"
+                f"{json.dumps(_summarize_ast(ast_data), ensure_ascii=False)}\n"
+                "Claims:\n"
+                f"{_format_items(constraints)}\n"
+            )
+        if agent_name == "Dynamic":
+            output_tail = _tail_lines(test_output, 100)
+            return (
+                "Test Output (last 100 lines):\n"
+                f"{output_tail}\n"
+                "Failed Imports:\n"
+                f"{_extract_import_errors(test_output)}\n"
+                "Error Summary:\n"
+                f"{_summarize_errors(test_output)}\n"
+            )
+        if agent_name == "Research":
+            claims = _truncate_text(" | ".join(fingerprint.get("claims", [])), 500)
+            arch = _truncate_text(" | ".join(arch_claims), 500)
+            feats = features[:5]
+            return (
+                "README Claims:\n"
+                f"{claims}\n"
+                "Architecture Claims:\n"
+                f"{arch}\n"
+                "Documented Features:\n"
+                f"{_format_items(feats)}\n"
+            )
+        return (
+            f"Repo: {repo_path}\n"
+            f"Changed Files: {len(fingerprint.get('changed_files', []))}\n"
+        )
+
+    def _build_reasoning_prompt(agent_name: str, model: dict, context: str) -> str:
+        return (
+            _workspace_override()
+            + "Your problem model from Phase 1:\n"
+            f"{json.dumps(model, indent=2, ensure_ascii=False)}\n\n"
+            "CRITICAL: Reason ONLY within this model.\n"
+            "- Use only entities listed in your model\n"
+            "- Perform only actions you defined\n"
+            "- Check only constraints you specified\n"
+            "- Apply only your gap definition\n\n"
+            "Now identify gaps and return structured findings:\n"
+            "{\n"
+            '  "gaps": [\n'
+            "    {\n"
+            '      "description": "specific gap found",\n'
+            '      "evidence": "file:line or concrete data",\n'
+            '      "confidence": 0.0\n'
+            "    }\n"
+            "  ]\n"
+            "}\n"
+            f"{_output_limit_note(agent_name)}\n"
+            "Domain context:\n"
+            f"{context}\n"
+        )
+
+    def _handle_agent_error(agent_name: str, error_result: dict, phase: str) -> dict:
+        error_type = error_result.get("error")
+        if error_type == "rate_limit":
+            logging.critical("[%s] ChatGPT Pro quota exhausted!", agent_name)
+            logging.info("Check quota: Run 'codex' and type '/status'")
+            return {
+                "agent": agent_name,
+                "model": {},
+                "findings": {"error": "quota_exhausted", "gaps": []},
+                "skipped": True,
+            }
+        if error_type == "timeout":
+            logging.warning("[%s] Timeout in %s, retrying...", agent_name, phase)
+        return {"agent": agent_name, "error": error_result, "phase": phase, "skipped": True}
+
+    def _execute_agent_with_mfr(
+        agent_name: str,
+        context: str,
+        fingerprint: dict,
+        *,
+        log_prefix: str,
+        reasoning_effort: str = "medium",
+        enable_search: bool = False,
+        timeout_model: int | None = None,
+        timeout_reason: int | None = None,
+    ) -> dict:
+        enable_search = agent_name == "Research"
+
+        phase1_prompt = _build_mfr_prompt(agent_name, context, fingerprint)
+        started = time.monotonic()
+        with _temporary_env_var("CODEX_AGENT_NAME", f"{agent_name}-Model"), _temporary_env_var(
+            "CODEX_ENABLE_WEB_SEARCH", None
+        ):
+            _debug_agent_banner(f"{agent_name}-Model")
+            model_output = call_codex(
+                prompt=phase1_prompt,
+                agent=f"{agent_name}-Model",
+                schema_path=None,
+                timeout=timeout_model or 60,
+                enable_search=False,
+            )
+        duration = time.monotonic() - started
+        if "error" in model_output:
+            return _handle_agent_error(agent_name, model_output, phase="model")
+        model_raw = model_output.get("result", "")
+        model = _extract_json_from_text(model_raw)
+        if model is None:
+            model = {"raw_model": model_raw}
+        _write_agent_log(
+            repo_root,
+            f"{agent_name}-Model",
+            {
+                "agent": f"{agent_name}-Model",
+                "status": "success",
+                "duration_sec": round(duration, 2),
+                "model": _current_model_effort(f"{agent_name}-Model")[0],
+                "effort": _current_model_effort(f"{agent_name}-Model")[1],
+                "prompt_chars": len(phase1_prompt),
+                "response_chars": len(model_raw),
+                "usage": None,
+                "tokens": None,
+                "cached": False,
+            },
+        )
+
+        phase2_prompt = _build_reasoning_prompt(agent_name, model, context)
+        schema_file = repo_root / "agent" / "llm" / "schemas" / f"{agent_name.lower()}_output.json"
+        started = time.monotonic()
+        with _temporary_env_var("CODEX_AGENT_NAME", f"{agent_name}-Reasoning"), _temporary_env_var(
+            "CODEX_ENABLE_WEB_SEARCH", "1" if enable_search else None
+        ):
+            _debug_agent_banner(f"{agent_name}-Reasoning")
+            findings = call_codex(
+                prompt=phase2_prompt,
+                agent=f"{agent_name}-Reasoning",
+                schema_path=str(schema_file),
+                timeout=timeout_reason or 180,
+                enable_search=enable_search,
+            )
+        duration = time.monotonic() - started
+        if "error" in findings:
+            return _handle_agent_error(agent_name, findings, phase="reasoning")
+        _write_agent_log(
+            repo_root,
+            f"{agent_name}-Reasoning",
+            {
+                "agent": f"{agent_name}-Reasoning",
+                "status": "success",
+                "duration_sec": round(duration, 2),
+                "model": _current_model_effort(f"{agent_name}-Reasoning")[0],
+                "effort": _current_model_effort(f"{agent_name}-Reasoning")[1],
+                "prompt_chars": len(phase2_prompt),
+                "response_chars": len(json.dumps(findings, ensure_ascii=False)),
+                "usage": None,
+                "tokens": None,
+                "cached": False,
+            },
+        )
+        return {
+            "agent": agent_name,
+            "model": model,
+            "findings": findings,
+            "profile_used": "research" if enable_search else "fast/heavy",
+        }
     def _max_tokens_for(label: str) -> int:
         key = f"SWARM_SIMPLE_MAX_TOKENS_{label.upper()}"
         raw = os.getenv(key) or os.getenv("SWARM_SIMPLE_MAX_TOKENS")
@@ -1099,7 +1617,7 @@ def mode_swarm_simple(
         compressed = _compress_prompt(prompt, max_chars=prompt_max_chars)
         if cached_output is not None:
             duration = time.monotonic() - started
-            model, effort_used = _current_model_effort()
+            model, effort_used = _current_model_effort(label)
             _write_agent_log(
                 repo_root,
                 label,
@@ -1120,13 +1638,13 @@ def mode_swarm_simple(
             return cached_output
         with _temporary_reasoning_effort(effort), _temporary_env_var(
             "CODEX_ENABLE_WEB_SEARCH", "1" if enable_search else None
-        ):
+        ), _temporary_env_var("CODEX_AGENT_NAME", label):
             _debug_agent_banner(label)
             llm = CodexCliClient.from_env(workdir=repo_root, log_dir=run_root / log_name)
             data = llm.reason_json(compressed, schema_path=llm_schemas.CHAT_RESPONSE, timeout_seconds=timeout)
         response = (data.get("response") or "").strip()
         duration = time.monotonic() - started
-        model, effort_used = _current_model_effort()
+        model, effort_used = _current_model_effort(label)
         usage = data.get("usage") if isinstance(data, dict) else None
         tokens = None
         if isinstance(usage, dict):
@@ -1153,6 +1671,63 @@ def mode_swarm_simple(
             },
         )
         return response
+
+    def _execute_reanalysis_with_session(
+        agent_name: str,
+        guidance: str,
+        *,
+        schema_path: str | None,
+        timeout: int | None,
+    ) -> dict:
+        """Attempt a session-resume reanalysis via Codex CLI. Falls back on failure."""
+        profile_name = _resolve_profile_name(agent_name)
+        cmd = [
+            "codex",
+            "--profile",
+            profile_name,
+            "--color",
+            "never",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--disable",
+            "unified_exec",
+            "--disable",
+            "streamable_shell",
+        ]
+        if agent_name == "Research":
+            cmd.append("--search")
+        if schema_path:
+            cmd += ["--output-schema", schema_path]
+        cmd += ["exec", "resume", "--last", "-"]
+        prompt = (
+            "Your previous analysis had issues:\n"
+            f"{guidance}\n\n"
+            "Please re-analyze with these corrections in mind.\n"
+        )
+        _debug_agent_banner(f"{agent_name}-Resume")
+        try:
+            result = subprocess.run(
+                cmd,
+                input=prompt,
+                text=True,
+                capture_output=True,
+                timeout=timeout or 180,
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            return {"error": "resume_failed", "exception": str(exc)}
+        if result.returncode != 0:
+            return {
+                "error": "resume_failed",
+                "stderr": result.stderr,
+                "returncode": result.returncode,
+            }
+        output = (result.stdout or "").strip()
+        if schema_path:
+            try:
+                return json.loads(output)
+            except Exception:
+                return {"error": "invalid_json", "raw_output": output}
+        return {"result": output}
 
     # Fingerprint extraction
     docs = _find_key_docs(repo_root)
@@ -1207,6 +1782,43 @@ def mode_swarm_simple(
     claims = _extract_bullets(_extract_section(fingerprint_text, "CLAIMS"))
     promises = _extract_bullets(_extract_section(fingerprint_text, "PROMISES"))
     checklist = _extract_bullets(_extract_section(fingerprint_text, "CHECKLIST"))
+    readme_claims = claims
+    mfr_constraints = [
+        f"Constraint: {claim} must have code evidence" for claim in readme_claims
+    ]
+    mfr_entities = []
+    if "README.md" in docs:
+        mfr_entities.append("README.md")
+    if "ARCHITECTURE.md" in docs:
+        mfr_entities.append("ARCHITECTURE.md")
+    for path in changed_files:
+        try:
+            rel = str(path.resolve().relative_to(repo_root))
+        except Exception:
+            rel = str(path)
+        if rel not in mfr_entities:
+            mfr_entities.append(rel)
+    mfr_changed_files = []
+    for path in changed_files:
+        try:
+            rel = str(path.resolve().relative_to(repo_root))
+        except Exception:
+            rel = str(path)
+        if rel not in mfr_changed_files:
+            mfr_changed_files.append(rel)
+    mfr_gap_definition = (
+        "A gap exists when: "
+        "(1) documentation claims feature BUT code lacks implementation, OR "
+        "(2) code exists BUT lacks documentation, OR "
+        "(3) future improvement documented BUT no TODO tracking exists"
+    )
+    fingerprint_mfr = {
+        "claims": claims,
+        "mfr_constraints": mfr_constraints,
+        "mfr_entities": mfr_entities,
+        "changed_files": mfr_changed_files,
+        "mfr_gap_definition": mfr_gap_definition,
+    }
 
     fingerprint_digest = hashlib.sha256(fingerprint_text.encode("utf-8", errors="ignore")).hexdigest()
     problem_model_prompt = (
@@ -1218,6 +1830,7 @@ def mode_swarm_simple(
         "MODEL:\n- Scope: ...\n- Claims: ...\n- Gap Criteria: ...\n- Evidence Rules: ...\n- Checklist: ...\n- Unknowns: ...\n"
         f"{_output_limit_note('ProblemModel')}\n"
         f"Objective: {objective}\n"
+        f"MFR Fingerprint:\n{json.dumps(fingerprint_mfr, ensure_ascii=False)}\n"
         f"Fingerprint:\n{fingerprint_text}\n"
     )
     problem_model_input_hash = _hash_agent_input(
@@ -1273,52 +1886,98 @@ def mode_swarm_simple(
             return False, guidance
         return True, ""
 
+    agent_models: dict[str, dict] = {}
+
     def _run_static(extra_guidance: str | None = None) -> str:
         todo_hits = _scan_todos(
             repo_root,
             repo_map,
             focus_files=focus_files_set if focus_files else None,
         )
-        prompt = (
-            _workspace_override()
-            + "You are the Static Analysis agent.\n"
-            "Use ONLY the AST summary and TODO/FIXME list to find structure gaps.\n"
-            f"{_repo_access_instruction()}\n"
-            f"{_output_limit_note('Static')}\n"
-            "Return bullets with file references.\n\n"
-            f"Objective: {objective}\n"
-            f"Problem Model:\n{problem_model_text}\n"
-            f"AST summary:\n{ast_summary}\n"
-            f"TODO/FIXME hits:\n{todo_hits or '- None found'}\n"
+        minimal_context = _build_minimal_context(
+            "Static",
+            repo_path=repo_root,
+            fingerprint=fingerprint_mfr,
+            ast_data=ast_data,
+            test_output="",
+            arch_claims=promises,
+            features=checklist,
         )
+        todo_lines = [ln for ln in (todo_hits or "").splitlines() if ln.strip().startswith("- ")]
+        todo_summary = f"TODO count: {len(todo_lines)}; FIXME count: {sum('FIXME' in ln for ln in todo_lines)}"
+        static_context = (
+            "Your domain: Static analysis (AST, file structure, documentation)\n\n"
+            "Available data:\n"
+            f"{minimal_context}\n"
+            f"{todo_summary}\n\n"
+            "Your actions should include:\n"
+            "- Compare documentation claims against file existence\n"
+            "- Match claimed modules/functions against AST\n"
+            "- Count TODO/FIXME markers\n"
+            "- Verify directory structure matches documentation\n\n"
+            "Your state variables should include:\n"
+            "- Files mentioned in docs vs files that exist (set difference)\n"
+            "- Functions claimed vs functions in AST (set difference)\n"
+            "- TODO count, FIXME count\n\n"
+            "Build your model, then identify structural gaps.\n"
+        )
+        prompt = _build_mfr_prompt("Static", static_context, fingerprint_mfr) + f"{_output_limit_note('Static')}\n"
         if extra_guidance:
             prompt += f"\nSupervisor guidance: {extra_guidance}\n"
         static_files = focus_files if focus_files else []
         static_hashes = _collect_file_hashes(static_files)
+        problem_model_hash = hashlib.sha256(problem_model_text.encode("utf-8", errors="ignore")).hexdigest()
         static_input_hash = _hash_agent_input(
             "Static",
             static_hashes,
-            {"objective": objective, "repo_hash": repo_hash},
+            {"objective": objective, "repo_hash": repo_hash, "problem_model": problem_model_hash},
         )
         static_cached = _cache_lookup(analysis_db, "Static", static_input_hash)
-        output = _call_llm(
-            "Static",
-            prompt,
-            effort="low",
-            timeout=timeout_static,
-            log_name="static",
-            cached_output=static_cached,
-            cache_meta={"input_hash": static_input_hash, "repo_hash": repo_hash},
-        )
-        if static_cached is None:
-            _cache_store(
-                analysis_db,
-                agent="Static",
-                input_hash=static_input_hash,
-                repo_hash=repo_hash,
-                file_hashes=static_hashes,
-                output=output,
+        if static_cached:
+            try:
+                cached_bundle = json.loads(static_cached)
+            except Exception:
+                cached_bundle = {"model": {"raw_model": static_cached}, "findings": static_cached}
+            agent_models["Static"] = cached_bundle.get("model", {})
+            _write_agent_log(
+                repo_root,
+                "Static",
+                {
+                    "agent": "Static",
+                    "status": "cached",
+                    "duration_sec": 0.0,
+                    "model": _current_model_effort("Static")[0],
+                    "effort": _current_model_effort("Static")[1],
+                    "prompt_chars": len(prompt),
+                    "response_chars": len(static_cached),
+                    "usage": None,
+                    "tokens": None,
+                    "cached": True,
+                    "cache_meta": {"input_hash": static_input_hash, "repo_hash": repo_hash},
+                },
             )
+            return cached_bundle.get("findings", static_cached)
+
+        bundle = _execute_agent_with_mfr(
+            "Static",
+            static_context,
+            fingerprint_mfr,
+            log_prefix="static",
+            reasoning_effort="medium",
+            enable_search=False,
+            timeout_model=timeout_static,
+            timeout_reason=timeout_static,
+        )
+        agent_models["Static"] = bundle.get("model", {})
+        output = bundle.get("findings", "")
+        _cache_store(
+            analysis_db,
+            agent="Static",
+            input_hash=static_input_hash,
+            repo_hash=repo_hash,
+            file_hashes=static_hashes,
+            output=json.dumps(bundle, ensure_ascii=False),
+        )
         return output
 
     def _run_dynamic(extra_guidance: str | None = None) -> str:
@@ -1330,54 +1989,106 @@ def mode_swarm_simple(
         tests_present = any(p.exists() for p in test_candidates)
         dynamic_files = focus_files if focus_files else []
         dynamic_hashes = _collect_file_hashes(dynamic_files)
+        problem_model_hash = hashlib.sha256(problem_model_text.encode("utf-8", errors="ignore")).hexdigest()
         dynamic_input_hash = _hash_agent_input(
             "Dynamic",
             dynamic_hashes,
-            {"objective": objective, "repo_hash": repo_hash, "tests_present": tests_present},
+            {
+                "objective": objective,
+                "repo_hash": repo_hash,
+                "tests_present": tests_present,
+                "problem_model": problem_model_hash,
+            },
         )
         dynamic_cached = _cache_lookup(analysis_db, "Dynamic", dynamic_input_hash)
         dynamic_log = ""
         if dynamic_cached is None:
             dynamic_log = _run_dynamic_checks(repo_root, run_root)
-        prompt = (
-            _workspace_override()
-            + "You are the Dynamic Verification agent.\n"
-            "Use ONLY the runtime check log below (imports/tests).\n"
-            "Do NOT inspect code or docs. Do NOT ask for permission.\n"
-            "Return bullets with command outputs and implications.\n\n"
-            f"{_output_limit_note('Dynamic')}\n"
-            f"Objective: {objective}\n"
-            f"Problem Model:\n{problem_model_text}\n"
-            f"Runtime log:\n{dynamic_log or '- (cached)'}\n"
+        minimal_context = _build_minimal_context(
+            "Dynamic",
+            repo_path=repo_root,
+            fingerprint=fingerprint_mfr,
+            ast_data=ast_data,
+            test_output=dynamic_log or "",
+            arch_claims=promises,
+            features=checklist,
         )
+        dynamic_context = (
+            "Your domain: Runtime analysis (test execution, imports, behavior)\n\n"
+            "Available data:\n"
+            f"{minimal_context}\n\n"
+            "Your actions should include:\n"
+            "- Parse test failure messages for root cause\n"
+            "- Identify missing imports or dependencies\n"
+            "- Check test coverage vs code coverage\n\n"
+            "Your state variables should include:\n"
+            "- Tests passing vs failing (counts)\n"
+            "- Import errors (list of modules)\n"
+            "- Coverage percentage\n\n"
+            "Build your model, then identify runtime gaps.\n"
+        )
+        prompt = _build_mfr_prompt("Dynamic", dynamic_context, fingerprint_mfr) + f"{_output_limit_note('Dynamic')}\n"
         if extra_guidance:
             prompt += f"\nSupervisor guidance: {extra_guidance}\n"
-        output = _call_llm(
-            "Dynamic",
-            prompt,
-            effort="medium",
-            timeout=timeout_dynamic,
-            log_name="dynamic",
-            cached_output=dynamic_cached,
-            cache_meta={"input_hash": dynamic_input_hash, "repo_hash": repo_hash},
-        )
-        if dynamic_cached is None:
-            _cache_store(
-                analysis_db,
-                agent="Dynamic",
-                input_hash=dynamic_input_hash,
-                repo_hash=repo_hash,
-                file_hashes=dynamic_hashes,
-                output=output,
+        if dynamic_cached:
+            try:
+                cached_bundle = json.loads(dynamic_cached)
+            except Exception:
+                cached_bundle = {"model": {"raw_model": dynamic_cached}, "findings": dynamic_cached}
+            agent_models["Dynamic"] = cached_bundle.get("model", {})
+            _write_agent_log(
+                repo_root,
+                "Dynamic",
+                {
+                    "agent": "Dynamic",
+                    "status": "cached",
+                    "duration_sec": 0.0,
+                    "model": _current_model_effort("Dynamic")[0],
+                    "effort": _current_model_effort("Dynamic")[1],
+                    "prompt_chars": len(prompt),
+                    "response_chars": len(dynamic_cached),
+                    "usage": None,
+                    "tokens": None,
+                    "cached": True,
+                    "cache_meta": {"input_hash": dynamic_input_hash, "repo_hash": repo_hash},
+                },
             )
+            return cached_bundle.get("findings", dynamic_cached)
+
+        bundle = _execute_agent_with_mfr(
+            "Dynamic",
+            dynamic_context,
+            fingerprint_mfr,
+            log_prefix="dynamic",
+            reasoning_effort="medium",
+            enable_search=False,
+            timeout_model=timeout_dynamic,
+            timeout_reason=timeout_dynamic,
+        )
+        agent_models["Dynamic"] = bundle.get("model", {})
+        output = bundle.get("findings", "")
+        _cache_store(
+            analysis_db,
+            agent="Dynamic",
+            input_hash=dynamic_input_hash,
+            repo_hash=repo_hash,
+            file_hashes=dynamic_hashes,
+            output=json.dumps(bundle, ensure_ascii=False),
+        )
         return output
 
     def _run_research(gap_topics: list[str], extra_guidance: str | None = None) -> str:
         research_snippets: list[str] = []
+        problem_model_hash = hashlib.sha256(problem_model_text.encode("utf-8", errors="ignore")).hexdigest()
         research_input_hash = _hash_agent_input(
             "Research",
             {},
-            {"objective": objective, "repo_hash": repo_hash, "gap_topics": gap_topics[:6]},
+            {
+                "objective": objective,
+                "repo_hash": repo_hash,
+                "gap_topics": gap_topics[:6],
+                "problem_model": problem_model_hash,
+            },
         )
         research_cached = _cache_lookup(analysis_db, "Research", research_input_hash)
         if research_cached is None:
@@ -1404,39 +2115,79 @@ def mode_swarm_simple(
             except Exception as exc:
                 research_snippets.append(f"- [ERROR] web_search failed: {exc}")
 
-        prompt = (
-            _workspace_override()
-            + "You are the Research agent.\n"
-            "Use ONLY web search to find best practices (no code analysis).\n"
-            "Do NOT ask for permission.\n"
-            "Return bullets with citations (raw URLs).\n\n"
-            f"{_output_limit_note('Research')}\n"
-            f"Objective: {objective}\n"
-            f"Problem Model:\n{problem_model_text}\n"
+        minimal_context = _build_minimal_context(
+            "Research",
+            repo_path=repo_root,
+            fingerprint=fingerprint_mfr,
+            ast_data=ast_data,
+            test_output="",
+            arch_claims=promises,
+            features=checklist,
+        )
+        research_context = (
+            "Your domain: Best practices validation (web research, industry standards)\n\n"
+            "Available data:\n"
+            f"{minimal_context}\n\n"
+            "Your actions should include:\n"
+            "- Web search for best practices on claimed features\n"
+            "- Find authoritative sources (docs, papers)\n"
+            "- Compare repo claims against industry standards\n\n"
+            "Your state variables should include:\n"
+            "- Claims with citations vs claims without\n"
+            "- Best practices followed vs violated\n"
+            "- Documentation completeness score\n\n"
+            "Build your model, then identify practice gaps with citations.\n"
             f"Gap topics: {gap_topics}\n"
             f"Research snippets:\n{chr(10).join(research_snippets) if research_snippets else '- None'}\n"
         )
+        prompt = _build_mfr_prompt("Research", research_context, fingerprint_mfr) + f"{_output_limit_note('Research')}\n"
         if extra_guidance:
             prompt += f"\nSupervisor guidance: {extra_guidance}\n"
-        output = _call_llm(
-            "Research",
-            prompt,
-            effort="medium",
-            timeout=timeout_research,
-            log_name="research",
-            cached_output=research_cached,
-            cache_meta={"input_hash": research_input_hash, "repo_hash": repo_hash},
-            enable_search=True,
-        )
-        if research_cached is None:
-            _cache_store(
-                analysis_db,
-                agent="Research",
-                input_hash=research_input_hash,
-                repo_hash=repo_hash,
-                file_hashes={},
-                output=output,
+        if research_cached:
+            try:
+                cached_bundle = json.loads(research_cached)
+            except Exception:
+                cached_bundle = {"model": {"raw_model": research_cached}, "findings": research_cached}
+            agent_models["Research"] = cached_bundle.get("model", {})
+            _write_agent_log(
+                repo_root,
+                "Research",
+                {
+                    "agent": "Research",
+                    "status": "cached",
+                    "duration_sec": 0.0,
+                    "model": _current_model_effort("Research")[0],
+                    "effort": _current_model_effort("Research")[1],
+                    "prompt_chars": len(prompt),
+                    "response_chars": len(research_cached),
+                    "usage": None,
+                    "tokens": None,
+                    "cached": True,
+                    "cache_meta": {"input_hash": research_input_hash, "repo_hash": repo_hash},
+                },
             )
+            return cached_bundle.get("findings", research_cached)
+
+        bundle = _execute_agent_with_mfr(
+            "Research",
+            research_context,
+            fingerprint_mfr,
+            log_prefix="research",
+            reasoning_effort="medium",
+            enable_search=True,
+            timeout_model=timeout_research,
+            timeout_reason=timeout_research,
+        )
+        agent_models["Research"] = bundle.get("model", {})
+        output = bundle.get("findings", "")
+        _cache_store(
+            analysis_db,
+            agent="Research",
+            input_hash=research_input_hash,
+            repo_hash=repo_hash,
+            file_hashes={},
+            output=json.dumps(bundle, ensure_ascii=False),
+        )
         return output
 
     # Seed research topics from fingerprint so Research can run in parallel
@@ -1477,7 +2228,11 @@ def mode_swarm_simple(
         outputs.get("Dynamic", ""),
         outputs.get("Research", ""),
     ):
-        gap_topics.extend(_extract_gap_topics(source, limit=6))
+        if isinstance(source, dict):
+            source_text = json.dumps(source, ensure_ascii=False)
+        else:
+            source_text = str(source)
+        gap_topics.extend(_extract_gap_topics(source_text, limit=6))
     # de-dupe
     deduped = []
     for topic in gap_topics:
@@ -1485,27 +2240,56 @@ def mode_swarm_simple(
             deduped.append(topic)
     gap_topics = deduped[:6]
 
+    model_validations = {
+        "Static": validate_model_adherence(agent_models.get("Static", {}), outputs.get("Static", "")),
+        "Dynamic": validate_model_adherence(agent_models.get("Dynamic", {}), outputs.get("Dynamic", "")),
+        "Research": validate_model_adherence(agent_models.get("Research", {}), outputs.get("Research", "")),
+    }
+
     # Critic agent
     def _build_critic_prompt() -> str:
+        all_agent_results = {
+            "Static": {
+                "model": agent_models.get("Static"),
+                "findings": outputs.get("Static", ""),
+                "model_validation": model_validations.get("Static"),
+            },
+            "Dynamic": {
+                "model": agent_models.get("Dynamic"),
+                "findings": outputs.get("Dynamic", ""),
+                "model_validation": model_validations.get("Dynamic"),
+            },
+            "Research": {
+                "model": agent_models.get("Research"),
+                "findings": outputs.get("Research", ""),
+                "model_validation": model_validations.get("Research"),
+            },
+        }
         return (
             _workspace_override()
-            + "You are the Critic agent.\n"
-            "Verify each finding: is it real, important, and supported?\n"
-            "Score confidence per agent (static/dynamic/research) from 0-1 and overall avg.\n"
-            "Measure disagreement by the spread of scores.\n"
-            "If average confidence <0.70, include REANALYZE: Agent -> guidance.\n"
-            "Return sections:\n"
-            "VERIFY:\n- Gap: ... | static=0.xx | dynamic=0.xx | research=0.xx | avg=0.xx | notes: ...\n"
-            "REFLECT:\nREANALYZE: <Agent> -> <guidance>\n"
-            "AVERAGE_CONFIDENCE: 0.xx\n"
-            "Do NOT ask for permission.\n"
+            + "You are reviewing gap findings from multiple agents.\n\n"
+            "Each agent declared an explicit problem model, then reasoned within it.\n\n"
+            "VALIDATION CHECKS:\n"
+            "1. Model Consistency: Did agent stay within their declared model?\n"
+            "   - Used only entities they listed?\n"
+            "   - Performed only actions they defined?\n"
+            "   - Checked only constraints they specified?\n\n"
+            "2. Evidence Quality: Is evidence concrete and verifiable?\n"
+            "   - File:line references?\n"
+            "   - Specific function/module names?\n"
+            "   - Quantitative measurements?\n\n"
+            "3. Gap Definition Alignment: Does finding match agent's gap definition?\n\n"
+            "For each finding, score:\n"
+            "- model_adherence: 0.0-1.0 (did agent follow their own model?)\n"
+            "- evidence_quality: 0.0-1.0 (how concrete is the evidence?)\n"
+            "- confidence: 0.0-1.0 (overall reliability)\n\n"
+            "FINDINGS TO REVIEW:\n"
+            f"{json.dumps(all_agent_results, indent=2, ensure_ascii=False)}\n\n"
+            "Return scores and identify findings with:\n"
+            "- Low model adherence (<0.5) = agent violated their own model\n"
+            "- High variance across agents (>0.4) = needs re-analysis\n"
+            "- Low confidence (<0.7) = uncertain finding\n"
             f"{_output_limit_note('Critic')}\n"
-            f"Objective: {objective}\n"
-            f"Problem Model:\n{problem_model_text}\n"
-            f"Fingerprint:\n{fingerprint_text}\n"
-            f"Static findings:\n{outputs.get('Static','')}\n"
-            f"Dynamic findings:\n{outputs.get('Dynamic','')}\n"
-            f"Research findings:\n{outputs.get('Research','')}\n"
         )
 
     def _log_uncertain(uncertain: list[dict]) -> None:
@@ -1536,11 +2320,38 @@ def mode_swarm_simple(
     if reanalysis:
         for agent, guidance in reanalysis.items():
             if agent == "Static":
-                outputs["Static"] = _run_static(guidance)
+                resume = _execute_reanalysis_with_session(
+                    "Static",
+                    guidance,
+                    schema_path=str(repo_root / "agent" / "llm" / "schemas" / "static_output.json"),
+                    timeout=timeout_static,
+                )
+                if isinstance(resume, dict) and "error" not in resume:
+                    outputs["Static"] = resume.get("result", resume)
+                else:
+                    outputs["Static"] = _run_static(guidance)
             elif agent == "Dynamic":
-                outputs["Dynamic"] = _run_dynamic(guidance)
+                resume = _execute_reanalysis_with_session(
+                    "Dynamic",
+                    guidance,
+                    schema_path=str(repo_root / "agent" / "llm" / "schemas" / "dynamic_output.json"),
+                    timeout=timeout_dynamic,
+                )
+                if isinstance(resume, dict) and "error" not in resume:
+                    outputs["Dynamic"] = resume.get("result", resume)
+                else:
+                    outputs["Dynamic"] = _run_dynamic(guidance)
             elif agent == "Research":
-                outputs["Research"] = _run_research(gap_topics, guidance)
+                resume = _execute_reanalysis_with_session(
+                    "Research",
+                    guidance,
+                    schema_path=str(repo_root / "agent" / "llm" / "schemas" / "research_output.json"),
+                    timeout=timeout_research,
+                )
+                if isinstance(resume, dict) and "error" not in resume:
+                    outputs["Research"] = resume.get("result", resume)
+                else:
+                    outputs["Research"] = _run_research(gap_topics, guidance)
         # Re-run critic once after reanalysis
         critic_prompt = _build_critic_prompt()
         critic_text = _call_llm("Critic", critic_prompt, effort="high", timeout=timeout_critic, log_name="critic_retry")
@@ -1551,35 +2362,49 @@ def mode_swarm_simple(
     # Synthesis agent
     synthesis_prompt = (
         _workspace_override()
-        + "You are the Synthesis agent.\n"
-        "Combine findings and prioritize by impact × confidence.\n"
-        "Return:\n"
-        "PRIORITIZED GAPS (with citations)\n"
-        "RECOMMENDATIONS (actionable, cited)\n"
-        "QUESTIONS (clarifying)\n"
-        "Do NOT ask for permission.\n"
+        + "You have gap findings from multiple agents, each with explicit models.\n\n"
+        "PRIORITIZATION FORMULA:\n"
+        "priority = impact x confidence x model_adherence\n\n"
+        "Where:\n"
+        "- impact: How critical is this gap? (0.0-1.0)\n"
+        "- confidence: Agent's confidence score (from critic)\n"
+        "- model_adherence: Did agent follow their model? (from critic)\n\n"
+        "SYNTHESIS RULES:\n"
+        "1. Findings with model_adherence < 0.5 are DISCARDED (agent hallucinated)\n"
+        "2. Findings with variance > 0.5 are FLAGGED for review\n"
+        "3. Prioritize by (impact x confidence x model_adherence)\n\n"
+        "AGENTS' MODELS AND FINDINGS:\n"
+        f"{json.dumps({'Static': {'model': agent_models.get('Static'), 'findings': outputs.get('Static', '')}, 'Dynamic': {'model': agent_models.get('Dynamic'), 'findings': outputs.get('Dynamic', '')}, 'Research': {'model': agent_models.get('Research'), 'findings': outputs.get('Research', '')}, 'Critic': critic_text}, indent=2, ensure_ascii=False)}\n\n"
+        "Output:\n"
+        "{\n"
+        '  "high_priority": [gaps with priority > 0.7],\n'
+        '  "medium_priority": [gaps with priority 0.4-0.7],\n'
+        '  "low_priority": [gaps with priority < 0.4],\n'
+        '  "flagged_for_review": [gaps with high variance],\n'
+        '  "discarded": [gaps with low model adherence]\n'
+        "}\n"
         f"{_output_limit_note('Synthesis')}\n"
-        f"Objective: {objective}\n"
-        f"Problem Model:\n{problem_model_text}\n"
-        f"Fingerprint:\n{fingerprint_text}\n"
-        f"Static findings:\n{outputs.get('Static','')}\n"
-        f"Dynamic findings:\n{outputs.get('Dynamic','')}\n"
-        f"Research findings:\n{outputs.get('Research','')}\n"
-        f"Critic review:\n{critic_text}\n"
     )
-    synthesis_text = _call_llm("Synthesis", synthesis_prompt, effort="medium", timeout=timeout_synthesis, log_name="synthesis")
+    synthesis_text = _call_llm("Synthesis", synthesis_prompt, effort="high", timeout=timeout_synthesis, log_name="synthesis")
 
     print("\n[SWARM SIMPLE] Results:")
     for role in ["Static", "Dynamic", "Research"]:
         out = outputs.get(role, "[FAILED - no result]")
-        if out.startswith("[FAILED"):
+        if isinstance(out, dict):
+            print(f"\n[{role}]\n{json.dumps(out, indent=2, ensure_ascii=False)}")
+        elif isinstance(out, str) and out.startswith("[FAILED"):
             print(f"\n[{role}] {out}")
-        elif _is_incomplete_observation(out):
+        elif isinstance(out, str) and _is_incomplete_observation(out):
             print(f"\n[{role}] [INCOMPLETE] Observation-only response")
         else:
             print(f"\n[{role}]\n{out}")
     print(f"\n[Critic]\n{critic_text}")
     print(f"\n[Synthesis]\n{synthesis_text}")
+    quota_status = _check_quota_status()
+    if quota_status == "exhausted":
+        print("\n⚠️  WARNING: ChatGPT Pro quota exhausted!")
+        print("Your next Codex calls will fail until quota refreshes.")
+        print("Tip: Use 'codex' and type '/status' to see refresh time")
     if analysis_db is not None:
         try:
             analysis_db.close()

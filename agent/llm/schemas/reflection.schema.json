@@ -1,32 +1,27 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
-  "additionalProperties": false,
-  "required": ["status", "explanation_short", "next_hint", "failure_type", "lesson", "memory_write"],
   "properties": {
-    "status": { "type": "string", "enum": ["success", "minor_repair", "replan"] },
-    "explanation_short": { "type": "string" },
-    "next_hint": { "type": "string" },
-    "failure_type": {
-      "type": "string",
-      "enum": ["none", "tool_error", "precondition_failed", "postcondition_failed", "unsafe_blocked", "unknown"]
+    "status": {
+      "type": "string"
     },
-    "lesson": { "type": "string" },
+    "explanation_short": {
+      "type": "string"
+    },
+    "next_hint": {
+      "type": "string"
+    },
+    "failure_type": {
+      "type": "string"
+    },
+    "lesson": {
+      "type": "string"
+    },
     "memory_write": {
-      "anyOf": [
-        { "type": "null" },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind", "key", "content", "metadata"],
-          "properties": {
-            "kind": { "type": "string", "enum": ["experience", "procedure", "knowledge", "user_info"] },
-            "key": { "type": "string" },
-            "content": { "type": "string" },
-            "metadata": { "type": "object", "additionalProperties": false }
-          }
-        }
-      ]
+      "type": "object"
     }
-  }
+  },
+  "required": [
+    "status"
+  ]
 }

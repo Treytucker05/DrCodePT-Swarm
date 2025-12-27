@@ -1,42 +1,70 @@
 {
+  "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
-  "additionalProperties": false,
   "properties": {
-    "ready_to_run": { "type": "boolean" },
-    "normalized_objective": { "type": "string" },
-    "task_type": {
-      "type": "string",
-      "enum": ["find_filepath", "repo_review", "research", "other"]
+    "ready_to_run": {
+      "type": "boolean"
     },
-    "search_terms": { "type": "array", "items": { "type": "string" } },
-    "glob_patterns": { "type": "array", "items": { "type": "string" } },
-    "candidate_roots": { "type": "array", "items": { "type": "string" } },
+    "normalized_objective": {
+      "type": "string"
+    },
+    "task_type": {
+      "type": "string"
+    },
+    "search_terms": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "glob_patterns": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "candidate_roots": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
     "blocking_questions": {
       "type": "array",
       "items": {
         "type": "object",
-        "additionalProperties": false,
         "properties": {
-          "id": { "type": "string" },
-          "question": { "type": "string" },
-          "why": { "type": "string" },
-          "default": { "type": ["string", "null"] }
-        },
-        "required": ["id", "question", "why", "default"]
+          "id": {
+            "type": "string"
+          },
+          "question": {
+            "type": "string"
+          },
+          "why": {
+            "type": "string"
+          },
+          "default": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
       }
     },
-    "assumptions_if_no_answer": { "type": "array", "items": { "type": "string" } },
-    "expected_output": { "type": "string" }
+    "assumptions_if_no_answer": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "expected_output": {
+      "type": "string"
+    }
   },
   "required": [
     "ready_to_run",
     "normalized_objective",
-    "task_type",
-    "search_terms",
-    "glob_patterns",
-    "candidate_roots",
-    "blocking_questions",
-    "assumptions_if_no_answer",
-    "expected_output"
+    "task_type"
   ]
 }
