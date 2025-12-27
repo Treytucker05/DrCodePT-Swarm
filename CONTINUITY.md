@@ -1,19 +1,26 @@
-Goal (incl. success criteria):
-- Critic-verify provided findings for gap_analysis; output JSON with VERIFY/REFLECT/(REANALYZE if avg<0.70) plus Ledger Snapshot in response.
-Constraints/Assumptions:
-- Respond in required JSON schema with response/action; include Ledger Snapshot in response.
-- Do not execute shell commands; tool use only as needed to read/update ledger.
-- At turn start, read/update CONTINUITY.md.
-Key decisions:
-- Evaluate each reported finding for reality/importance/support based on given prompt only (no repo reads requested).
-State:
-  - Done:
-    - Read CONTINUITY.md.
-  - Now:
-    - Verify each provided finding and score confidence.
-  - Next:
-    - Deliver JSON response/action with required sections.
-Open questions (UNCONFIRMED if needed):
-- None.
-Working set (files/ids/commands):
-- `C:\Users\treyt\OneDrive\Desktop\DrCodePT-Swarm\CONTINUITY.md`
+# CONTINUITY.md
+
+## Current Task
+Debugging Codex CLI integration - all agents timing out despite authentication working.
+
+## Status
+- ? Authentication: Working (ChatGPT Pro login)
+- ? Command structure: Correct flags in correct order
+- ? DEBUG logging: pre-run + post-run stdout/stderr previews
+- ? Timeout handler: prints partial stdout/stderr on TimeoutExpired
+- ? MCP config: mcp=false and mcp_servers commented out in config.toml
+- ? Reasoning prompt hardening: still executes tools (reads CONTINUITY.md)
+- ? Single-agent test: still timed out at 60s
+- ? Git status includes unexpected modified files (not from current edits)
+
+## Next Steps
+1. Decide whether to include unexpected modified files in commit/push
+2. Commit and push intended changes
+3. Continue debugging (disable tool exec or adjust model/timeout)
+
+## Recent Changes
+- Hardened reason_json prompt to forbid tool use
+- Added TimeoutExpired partial stdout/stderr logging
+- Updated C:\Users\treyt\.codex\config.toml (mcp=false; mcp_servers commented out)
+- Ran test_single_agent.py with DEBUG=1 (timeout at 60s; partial stderr shows tool exec)
+- Found extra modified files via git status (needs user direction)

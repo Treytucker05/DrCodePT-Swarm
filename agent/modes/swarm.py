@@ -1336,9 +1336,9 @@ Your reasoning must stay strictly within your Phase 1 model.
 
     # Timing + reasoning layers
     timeout_fingerprint = None
-    timeout_static = None
-    timeout_dynamic = None
-    timeout_research = None
+    timeout_static = 180  # Static agent - needs more time for AST analysis
+    timeout_dynamic = 180  # Dynamic agent - needs time to run tests
+    timeout_research = 240  # Research agent - needs time for web search
     timeout_supervisor = None
     timeout_critic = None
     timeout_synthesis = None
@@ -1685,19 +1685,19 @@ Your reasoning must stay strictly within your Phase 1 model.
             "codex",
             "--profile",
             profile_name,
-            "--color",
-            "never",
             "--dangerously-bypass-approvals-and-sandbox",
-            "--disable",
-            "unified_exec",
-            "--disable",
-            "streamable_shell",
+            "-c",
+            "sandbox_mode=danger-full-access",
+            "-c",
+            "approval_policy=never",
+            "exec",
+            "--skip-git-repo-check",
         ]
-        if agent_name == "Research":
-            cmd.append("--search")
         if schema_path:
             cmd += ["--output-schema", schema_path]
-        cmd += ["exec", "resume", "--last", "-"]
+        if agent_name == "Research":
+            cmd.append("--search")
+        cmd += ["resume", "--last", "-"]
         prompt = (
             "Your previous analysis had issues:\n"
             f"{guidance}\n\n"

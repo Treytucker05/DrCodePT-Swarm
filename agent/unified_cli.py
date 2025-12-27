@@ -120,6 +120,7 @@ def call_codex(prompt: str, save_to: Optional[Path] = None) -> str:
         "--dangerously-bypass-approvals-and-sandbox",
         "--search",
         "exec",
+        "--skip-git-repo-check",
         "-c",
         f'model_reasoning_effort="{CODEX_REASONING_EFFORT}"',
         "--disable",

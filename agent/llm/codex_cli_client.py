@@ -35,6 +35,15 @@ PROFILE_MAP = {
     "Main": "heavy",
 }
 
+DEFAULT_CODEX_EXE_PATHS = [
+    Path(
+        r"C:\Users\treyt\AppData\Roaming\npm\node_modules\@openai\codex\vendor\x86_64-pc-windows-msvc\codex\codex.exe"
+    ),
+    Path(
+        r"C:\Users\treyt\AppData\Roaming\npm\node_modules\@openai\codex\vendor\aarch64-pc-windows-msvc\codex\codex.exe"
+    ),
+]
+
 
 def _snippet(text: str | None, *, limit: int = 500) -> str:
     t = (text or "").strip()
@@ -107,24 +116,25 @@ def build_codex_command(
         codex_bin,
         "--profile",
         resolved_profile,
-        "--color",
-        "never",
         "--dangerously-bypass-approvals-and-sandbox",
-        "--disable",
-        "unified_exec",
-        "--disable",
-        "streamable_shell",
+        "-c",
+        "sandbox_mode=danger-full-access",
+        "-c",
+        "approval_policy=never",
     ]
-    if enable_search:
-        cmd.append("--search")
-    cmd += ["--skip-git-repo-check"]
+    if model:
+        cmd += ["--model", model]
+    cmd += [
+        "exec",
+        "--skip-git-repo-check",
+    ]
     if schema_path:
         cmd += ["--output-schema", schema_path]
     if out_path:
         cmd += ["--output-last-message", out_path]
-    if model:
-        cmd += ["--model", model]
-    cmd += ["exec", "-"]
+    if enable_search:
+        cmd.append("--search")
+    cmd.append("-")
     return cmd
 
 
@@ -139,7 +149,18 @@ def call_codex(
     """
     Execute Codex CLI with optimized settings.
     """
-    codex_bin = shutil.which(os.getenv("CODEX_BIN") or "codex") or "codex"
+    env_bin = (os.getenv("CODEX_BIN") or "").strip()
+    env_exe = (os.getenv("CODEX_EXE_PATH") or "").strip()
+    if env_exe and Path(env_exe).is_file():
+        codex_bin = env_exe
+    else:
+        preferred = next((str(p) for p in DEFAULT_CODEX_EXE_PATHS if p.is_file()), None)
+        if preferred:
+            codex_bin = preferred
+        elif env_bin:
+            codex_bin = shutil.which(env_bin) or env_bin
+        else:
+            codex_bin = shutil.which("codex") or "codex"
     env_search = (os.getenv("CODEX_ENABLE_WEB_SEARCH") or "").strip().lower()
     enable_search = enable_search or env_search in {"1", "true", "yes", "y", "on"}
     cmd = build_codex_command(
@@ -232,6 +253,17 @@ class CodexCliClient(LLMClient):
         )
 
     def _resolve_bin(self) -> str:
+        env_bin = (os.getenv("CODEX_BIN") or "").strip()
+        env_exe = (os.getenv("CODEX_EXE_PATH") or "").strip()
+        if env_exe and Path(env_exe).is_file():
+            return env_exe
+        for path in DEFAULT_CODEX_EXE_PATHS:
+            if path.is_file():
+                return str(path)
+        if env_bin:
+            resolved = shutil.which(env_bin) or env_bin
+            if Path(resolved).is_file():
+                return resolved
         resolved = shutil.which(self.codex_bin)
         if not resolved:
             raise CodexCliNotFoundError(
@@ -339,6 +371,12 @@ class CodexCliClient(LLMClient):
         # build_codex_command includes schema/out paths and model if provided
 
         env = os.environ.copy()
+        if not env.get("USERPROFILE"):
+            env["USERPROFILE"] = os.path.expanduser("~")
+        if not env.get("CODEX_HOME"):
+            env["CODEX_HOME"] = os.path.join(env.get("USERPROFILE", ""), ".codex")
+        if not env.get("HOME"):
+            env["HOME"] = env.get("USERPROFILE", "")
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"] = "1"
 
@@ -352,7 +390,18 @@ class CodexCliClient(LLMClient):
                     spinner_ctx = nullcontext()
 
                 with spinner_ctx:
-                    return subprocess.run(
+                    if os.environ.get("DEBUG"):
+                        print(f"[DEBUG] CODEX_HOME: {env.get('CODEX_HOME')}")
+                        print(f"[DEBUG] Command: {' '.join(cmd_args)}")
+                        print(
+                            "[DEBUG] Auth file exists: "
+                            f"{os.path.exists(os.path.join(env['CODEX_HOME'], 'auth.json'))}"
+                        )
+                    print(f"\n[DEBUG] Codex command: {' '.join(cmd_args)}", file=sys.stderr)
+                    print(f"[DEBUG] Working dir: {os.getcwd()}", file=sys.stderr)
+                    print(f"[DEBUG] Env CODEX_HOME: {env.get('CODEX_HOME', 'NOT SET')}", file=sys.stderr)
+                    sys.stderr.flush()
+                    result = subprocess.run(
                         cmd_args,
                         input=prompt,
                         capture_output=True,
@@ -363,11 +412,41 @@ class CodexCliClient(LLMClient):
                         cwd=workdir,
                         timeout=timeout_seconds or self.timeout_seconds,
                     )
+                    if os.environ.get("DEBUG"):
+                        stdout = result.stdout or ""
+                        stderr = result.stderr or ""
+                        print(f"\n[DEBUG] Codex returncode: {result.returncode}")
+                        print(f"[DEBUG] Codex stdout length: {len(stdout)}")
+                        print(f"[DEBUG] Codex stderr length: {len(stderr)}")
+                        if stdout:
+                            print(f"[DEBUG] Stdout preview: {stdout[:500]}")
+                        if stderr:
+                            print(f"[DEBUG] Stderr preview: {stderr[:500]}")
+                    return result
             except FileNotFoundError as exc:
                 raise CodexCliNotFoundError(
                     f"Codex CLI not found: {self.codex_bin}. Install Codex CLI and ensure it is on PATH."
                 ) from exc
             except subprocess.TimeoutExpired as exc:
+                if os.environ.get("DEBUG"):
+                    def _coerce_text(value: object) -> str:
+                        if value is None:
+                            return ""
+                        if isinstance(value, bytes):
+                            return value.decode("utf-8", errors="ignore")
+                        return str(value)
+
+                    stdout = _coerce_text(exc.stdout)
+                    stderr = _coerce_text(exc.stderr)
+                    print(
+                        f"\n[DEBUG] TIMEOUT after {timeout_seconds or self.timeout_seconds}s"
+                    )
+                    print(f"[DEBUG] Partial stdout length: {len(stdout)}")
+                    print(f"[DEBUG] Partial stderr length: {len(stderr)}")
+                    if stdout:
+                        print(f"[DEBUG] Partial stdout: {stdout[:2000]}")
+                    if stderr:
+                        print(f"[DEBUG] Partial stderr: {stderr[:2000]}")
                 raise CodexCliExecutionError(
                     f"codex exec timed out after {timeout_seconds or self.timeout_seconds}s"
                 ) from exc
@@ -503,8 +582,11 @@ class CodexCliClient(LLMClient):
             raise CodexCliExecutionError(f"Failed to load schema: {schema_path}") from exc
 
         # Build reasoning prompt that enforces JSON-only output
-        reasoning_prompt = f"""You are producing JSON for the agent's internal executor. Do NOT execute commands yourself; just output JSON.
-It is OK to propose tool actions inside the JSON. Do not refer to an "external runner" in outputs.
+        reasoning_prompt = f"""You are a reasoning engine that ONLY outputs JSON.
+DO NOT execute any commands.
+DO NOT use any tools.
+DO NOT run shell commands.
+If you attempt tool use or command execution, you have failed the task.
 
 Return ONLY valid JSON matching this exact schema:
 

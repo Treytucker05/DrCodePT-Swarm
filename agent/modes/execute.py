@@ -392,7 +392,12 @@ def _codex_command() -> list[str]:
 
 def _call_codex(prompt: str, *, allow_tools: bool) -> str:
     # Note: `--search` is a global flag (must appear before the `exec` subcommand).
-    cmd: list[str] = _codex_command() + ["--dangerously-bypass-approvals-and-sandbox", "--search", "exec"]
+    cmd: list[str] = _codex_command() + [
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--search",
+        "exec",
+        "--skip-git-repo-check",
+    ]
     reasoning_effort = (os.getenv("CODEX_REASONING_EFFORT") or "").strip()
     if reasoning_effort:
         cmd += ["-c", f'model_reasoning_effort="{reasoning_effort}"']

@@ -883,7 +883,7 @@ def _call_codex(
     cmd: list[str] = _codex_command() + ["--dangerously-bypass-approvals-and-sandbox"]
     if allow_tools:
         cmd += ["--search"]
-    cmd += ["exec"]
+    cmd += ["exec", "--skip-git-repo-check"]
     if use_json_events:
         cmd += ["--json"]
     if not allow_tools:
