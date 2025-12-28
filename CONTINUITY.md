@@ -18,9 +18,9 @@
     - Switched Google OAuth playbook steps to Windows-MCP tools.
     - Added `.gitignore` entry and removed `agent/memory/autonomous_memory.sqlite3` from index.
   - Now:
-    - Ready to commit current state in git.
+    - Commit completed: "Document rebuild plan and current state".
   - Next:
-    - Run `git commit` for current state.
+    - None.
 - Open questions (UNCONFIRMED if needed):
   - None.
 - Working set (files/ids/commands):
