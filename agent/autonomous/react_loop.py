@@ -39,7 +39,7 @@ class ReActAgent:
         tool_descriptions: Optional[Dict[str, str]] = None,
         llm: Optional[CodexCliClient] = None,
         run_dir: Optional[Path] = None,
-        max_steps: int = 15,
+        max_steps: int = 50,  # Increased from 15 to allow complex tasks
         max_retries: int = 3,
     ):
         base = llm or CodexCliClient.from_env()

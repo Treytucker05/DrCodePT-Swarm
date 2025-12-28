@@ -731,6 +731,28 @@ def execute_playbook(playbook_id: str, playbook_data: dict, *, run_path: Optiona
             elif step_type in {"manual"}:
                 print(f"{YELLOW}    Manual step:{RESET} {desc}")
 
+            elif step_type == "mcp":
+                # MCP (Model Context Protocol) tool execution
+                # These are tools like Desktop Commander, Windows-MCP, etc.
+                tool_name = step.get("tool") or step.get("action") or ""
+                tool_params = step.get("params") or step.get("arguments") or {}
+                
+                if not tool_name:
+                    print(f"{RED}    Failed:{RESET} MCP step missing 'tool' or 'action'")
+                    return False
+                
+                # Try to import and use Desktop Commander or other MCP tools
+                try:
+                    # For now, provide helpful error message
+                    print(f"{YELLOW}    MCP Tool:{RESET} {tool_name}")
+                    print(f"{YELLOW}    Params:{RESET} {tool_params}")
+                    print(f"{YELLOW}    Note:{RESET} MCP tool execution not yet fully integrated")
+                    print(f"{YELLOW}    Manual action needed:{RESET} {desc}")
+                    # Don't fail - treat as manual step for now
+                except Exception as exc:
+                    print(f"{RED}    MCP Error:{RESET} {exc}")
+                    return False
+
             else:
                 print(f"{RED}    Failed:{RESET} Unsupported step type '{step_type}'")
                 return False

@@ -147,7 +147,8 @@ Only valid JSON. No markdown, no explanation, no code blocks.
                 },
                 "action_input": {
                     "type": "object",
-                    "description": "Parameters for the action"
+                    "description": "Parameters for the action",
+                    "additionalProperties": {"type": "string"}  # Flexible: any key with string value
                 },
                 "reasoning": {
                     "type": "string",
@@ -160,7 +161,7 @@ Only valid JSON. No markdown, no explanation, no code blocks.
                     "description": "Confidence in this decision"
                 }
             },
-            "required": ["thought", "action", "action_input", "reasoning", "confidence"],
+            "required": ["thought", "action", "reasoning", "confidence"],
             "additionalProperties": False
         }
     
@@ -180,31 +181,54 @@ Only valid JSON. No markdown, no explanation, no code blocks.
         - stdin for prompt
         """
         
+        print("🔍 Calling Codex with reason profile...")
+        print(f"⏱️  Timeout: {timeout}s")
+        
         # Write schema to temp file
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
             json.dump(schema, f, indent=2)
             schema_file = f.name
         
+        print(f"📄 Schema file: {schema_file}")
+        
         try:
             # Build command
+            # On Windows, use codex.cmd; on Unix, use codex
+            codex_bin = 'codex.cmd' if Path.cwd().drive else 'codex'
             cmd = [
-                'codex', 'exec',
+                codex_bin, 'exec',
                 '--profile', 'reason',
                 '--output-schema', schema_file,
                 '--dangerously-bypass-approvals-and-sandbox',
                 '--skip-git-repo-check',
-                '--path', self.working_dir,
                 '-'  # Read from stdin
             ]
             
-            # Run Codex
+            print(f"🚀 Running command: {' '.join(cmd[:3])}...")
+            
+            # Run Codex (in working directory)
             result = subprocess.run(
                 cmd,
                 input=prompt,
                 capture_output=True,
                 text=True,
-                timeout=timeout
+                encoding='utf-8',  # Force UTF-8 encoding
+                errors='replace',   # Replace invalid characters
+                timeout=timeout,
+                cwd=self.working_dir  # Set working directory here
             )
+            
+            print(f"✅ Codex completed with return code: {result.returncode}")
+            
+            # Check if we have output
+            if not result.stdout or not result.stdout.strip():
+                raise RuntimeError(
+                    f"Codex returned no output\n"
+                    f"Stderr: {result.stderr[:500]}"
+                )
+            
+            print(f"📊 Stderr length: {len(result.stderr)} chars")
+            print(f"📊 Stdout length: {len(result.stdout)} chars")
             
             if result.returncode != 0:
                 raise RuntimeError(
