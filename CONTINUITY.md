@@ -8,12 +8,12 @@ Key decisions:
 - None yet.
 State:
   - Done:
-- Read ledger.
-- Observed prior scan_repo action failed postconditions (no candidate OAuth files identified).
+ - Read ledger.
+ - Observed prior scan_repo action failed postconditions (no candidate OAuth files identified).
   - Now:
- - Locate project files relevant to Google Calendar OAuth setup.
+ - Classify last action outcome from provided evidence.
   - Next:
- - Propose next change based on findings.
+ - Proceed with Google Calendar OAuth setup after classification and after clarifying app type and redirect URI needs.
 Open questions (UNCONFIRMED if needed):
 - Target app type (web app, desktop, CLI) and callback/redirect URI requirements?
 - Where should credentials/config live (env vars, config file) and which Google API project?

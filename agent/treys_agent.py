@@ -1467,6 +1467,31 @@ def smart_orchestrator(user_input: str) -> Dict[str, Any]:
     lower = user_input.lower().strip()
     repo_debug = _repo_task_debug(user_input)
 
+    # TIER 0: Explicit mode prefixes (highest priority)
+    # Check for mode prefixes like "Auto:", "Plan:", "Team:", etc.
+    mode_prefixes = {
+        "auto:": "auto",
+        "plan:": "plan",
+        "team:": "team",
+        "swarm:": "swarm",
+        "research:": "research",
+        "think:": "think",
+        "execute:": "execute",
+        "mail:": "mail",
+    }
+    
+    for prefix, mode in mode_prefixes.items():
+        if lower.startswith(prefix):
+            # Remove prefix from task for cleaner processing
+            clean_task = user_input[len(prefix):].strip()
+            return {
+                "mode": mode,
+                "reason": f"Explicit {mode} mode requested",
+                "auto_execute": True,
+                "clean_task": clean_task,  # Pass cleaned task
+                "repo_debug": repo_debug,
+            }
+
     # Repo/codebase tasks should always take precedence over generic heuristics.
     if repo_debug.get("is_repo_task"):
         return {
@@ -2054,6 +2079,27 @@ def main() -> None:
             print("Routing to: chat")
             chat_history.append(("user", user_input))
             _run_chat(user_input, chat_history)
+            continue
+
+        if mode == "auto":
+            print("Routing to: autonomous")
+            # Use clean_task if provided (without prefix), otherwise use original input
+            task = routing.get("clean_task", user_input)
+            mode_autonomous(task, unsafe_mode=unsafe_mode)
+            continue
+
+        if mode == "plan":
+            print("Routing to: plan")
+            from agent.modes.autonomous_enhanced import mode_plan_and_execute
+            task = routing.get("clean_task", user_input)
+            mode_plan_and_execute(task)
+            continue
+
+        if mode == "team":
+            print("Routing to: team")
+            from agent.autonomous.supervisor.orchestrator import run_team
+            task = routing.get("clean_task", user_input)
+            run_team(task, unsafe_mode=unsafe_mode)
             continue
 
         # No special route claimed: fall back to playbook matching/generation.
