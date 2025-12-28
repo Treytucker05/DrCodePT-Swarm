@@ -242,3 +242,29 @@ Only valid JSON. No markdown, no explanation, no code blocks.
         finally:
             # Clean up schema file
             Path(schema_file).unlink(missing_ok=True)
+
+
+
+# Example usage
+if __name__ == '__main__':
+    client = CodexReActClient()
+    
+    decision = client.decide_next_action(
+        goal="Set up Google Calendar OAuth for the application",
+        context={
+            "current_state": "Starting OAuth setup",
+            "files_available": ["config.py", "main.py"],
+            "observations": "No OAuth credentials found"
+        },
+        available_tools=[
+            "web_search",
+            "read_file",
+            "write_file",
+            "execute_command"
+        ]
+    )
+    
+    print(f"Next Action: {decision.action}")
+    print(f"Thought: {decision.thought}")
+    print(f"Input: {json.dumps(decision.action_input, indent=2)}")
+    print(f"Confidence: {decision.confidence}")
