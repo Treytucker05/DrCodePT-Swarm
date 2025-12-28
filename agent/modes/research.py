@@ -880,7 +880,11 @@ def _call_codex(
         return f"[CODEX ERROR] {msg}"
 
     # Note: `--search` is a global flag (must appear before the `exec` subcommand).
-    cmd: list[str] = _codex_command() + ["--dangerously-bypass-approvals-and-sandbox"]
+    cmd: list[str] = _codex_command() + [
+        "--profile",
+        "research",
+        "--dangerously-bypass-approvals-and-sandbox",
+    ]
     if allow_tools:
         cmd += ["--search"]
     cmd += ["exec", "--skip-git-repo-check"]

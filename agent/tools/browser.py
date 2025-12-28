@@ -50,6 +50,32 @@ class BrowserTool(ToolAdapter):
     async def _run_steps(self, context, page, steps: List[Dict[str, Any]], run_path: Optional[str], session_state_path: Optional[str]) -> ToolResult:
         extracts: Dict[str, Any] = {}
         evidence_dir = _mk_evidence(run_path)
+        downloads_dir = evidence_dir / "downloads"
+        downloads_dir.mkdir(parents=True, exist_ok=True)
+        downloads: List[str] = []
+        download_tasks: List[asyncio.Task] = []
+
+        async def _save_download(download) -> None:
+            try:
+                suggested = download.suggested_filename
+                target = downloads_dir / suggested
+                await download.save_as(str(target))
+                downloads.append(str(target))
+            except Exception:
+                # Best-effort; downloads should not fail the whole run.
+                pass
+
+        def _on_download(download) -> None:
+            try:
+                task = asyncio.create_task(_save_download(download))
+                download_tasks.append(task)
+            except Exception:
+                pass
+
+        try:
+            page.on("download", _on_download)
+        except Exception:
+            pass
 
         try:
             for idx, step in enumerate(steps):
@@ -202,6 +228,12 @@ class BrowserTool(ToolAdapter):
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 await context.storage_state(path=str(dest))
 
+            if download_tasks:
+                try:
+                    await asyncio.wait(download_tasks, timeout=20)
+                except Exception:
+                    pass
+
             final_url = page.url
             dom_snapshot = await self._get_dom_snapshot(page)
             html_path = None
@@ -214,7 +246,7 @@ class BrowserTool(ToolAdapter):
 
             return ToolResult(
                 True,
-                output={"final_url": final_url, "extracts": extracts},
+                output={"final_url": final_url, "extracts": extracts, "downloads": downloads},
                 evidence={"html": str(html_path) if html_path else None},
                 metadata={"dom_snapshot": dom_snapshot},
             )
@@ -307,9 +339,9 @@ class BrowserTool(ToolAdapter):
                 if exe:
                     launch_kwargs["executable_path"] = exe
                 browser = await p.chromium.launch(**launch_kwargs)
-                context_kwargs = {}
-                if session_state_path and Path(session_state_path).is_file():
-                    context_kwargs["storage_state"] = str(session_state_path)
+                context_kwargs = {"accept_downloads": True}
+                if session_state_path and Path(session_state_path).is_file():   
+                    context_kwargs["storage_state"] = str(session_state_path)   
                 context = await browser.new_context(**context_kwargs)
                 page = await context.new_page()
                 result = await self._run_steps(context, page, steps, run_path, session_state_path)

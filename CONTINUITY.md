@@ -1,30 +1,30 @@
 # CONTINUITY.md
-
 - Goal (incl. success criteria):
-  - Run full swarm audit (security, code quality, architecture, dependency/license, docs) with static review only and 3600s timeouts; capture issue list w/ severity.
+  - Document rebuild plan and snapshot current system state; preserve current state in git.
 - Constraints/Assumptions:
-  - Use Codex CLI via subprocess; approval_policy=never; sandbox_mode=danger-full-access; MCP disabled; no destructive actions.
-  - Keep audit static (no pytest) per user.
+  - Create new docs: `REBUILD_PLAN.md`, `CURRENT_STATE.md`.
+  - Commit current state after updates.
 - Key decisions:
-  - Pass env vars (CODEX_HOME/HOME/USERPROFILE) to subprocess; add debug logging and timeout handler.
-  - Disable MCP servers via CLI config/flags; set swarm timeouts to 3600s.
-  - Bulk-fix schemas to strict JSON Schema (additionalProperties=false, required list); hand-fix plan_candidates scores + reflection memory_write.
+  - Use current dates (Dec 28, 2025+) in rebuild timeline to avoid past-date confusion.
+  - Capture what works vs broken and list tools/integrations.
+  - Exclude `agent/memory/autonomous_memory.sqlite3` from version control and add it to `.gitignore`.
 - State:
   - Done:
-    - Updated `agent/llm/codex_cli_client.py` with env propagation, debug logging, timeout handling.
-    - Added `fix_schemas.py`, `test_single_agent.py`; updated all schemas in `agent/llm/schemas`.
-    - Disabled MCP in `C:\Users\treyt\.codex\config.toml`; updated swarm timeouts in `agent/modes/swarm.py`.
+    - Read `CONTINUITY.md` and refreshed goal/constraints to current task.
+    - Created `REBUILD_PLAN.md`.
+    - Created `CURRENT_STATE.md`.
+    - Updated docs to reflect current reality (chat ok, playbooks partial, swarm broken, manual Google OAuth).
+    - Updated model profiles and routing in config and code.
+    - Switched Google OAuth playbook steps to Windows-MCP tools.
+    - Added `.gitignore` entry and removed `agent/memory/autonomous_memory.sqlite3` from index.
   - Now:
-    - Run full audit with clarified prompt and monitor completion.
+    - Ready to commit current state in git.
   - Next:
-    - If audit fails (e.g., missing output-last-message), capture logs and adjust.
-    - Report audit findings and/or rerun if needed.
+    - Run `git commit` for current state.
 - Open questions (UNCONFIRMED if needed):
-  - Is a prior audit process still running and needs termination?
-  - Does codex exec still fail to emit output-last-message?
+  - None.
 - Working set (files/ids/commands):
-  - `agent/llm/codex_cli_client.py`
-  - `agent/modes/swarm.py`
-  - `agent/llm/schemas/*.json`
-  - `fix_schemas.py`, `test_single_agent.py`
-  - Command: `python -c "from agent.modes.swarm import mode_swarm; mode_swarm('audit my repo: all aspects (security, code quality, architecture, dependency/license, docs). Output as issue list with severity. Static review only, no running tests.', unsafe_mode=False, profile='audit')"`
+  - `REBUILD_PLAN.md`
+  - `CURRENT_STATE.md`
+  - `CONTINUITY.md`
+  - `git status`, `git add`, `git commit`

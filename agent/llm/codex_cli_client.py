@@ -25,14 +25,14 @@ from contextlib import nullcontext
 
 
 PROFILE_MAP = {
-    "Fingerprint": "fast",
-    "Static": "fast",
-    "Dynamic": "fast",
-    "Research": "research",
-    "Supervisor": "fast",
-    "Critic": "heavy",
-    "Synthesis": "heavy",
-    "Main": "heavy",
+    "Fingerprint": "reason",
+    "Static": "reason",
+    "Dynamic": "reason",
+    "Research": "reason",
+    "Supervisor": "reason",
+    "Critic": "reason",
+    "Synthesis": "reason",
+    "Main": "chat",
 }
 
 DEFAULT_CODEX_EXE_PATHS = [
@@ -96,6 +96,28 @@ def _profile_for_agent(agent_name: str, default_profile: str) -> str:
         return default_profile
     base = agent_name.split("-", 1)[0].strip()
     return PROFILE_MAP.get(base, default_profile)
+
+
+_SWARM_REASONING_AGENTS = {
+    "Fingerprint",
+    "ProblemModel",
+    "Static",
+    "Dynamic",
+    "Research",
+    "Supervisor",
+    "Critic",
+    "Synthesis",
+}
+
+
+def _should_wrap_reasoning(agent_name: str) -> bool:
+    if not agent_name:
+        return False
+    base = agent_name.split("-", 1)[0].strip()
+    if base in _SWARM_REASONING_AGENTS:
+        return True
+    lowered = agent_name.strip().lower()
+    return lowered.startswith("swarm") or lowered.startswith("swarm_simple")
 
 
 def build_codex_command(
@@ -229,7 +251,7 @@ class CodexCliClient(LLMClient):
     model: str = ""
     timeout_seconds: int = 120
     profile_reason: str = "reason"
-    profile_exec: str = "exec"
+    profile_exec: str = "playbook"
     workdir: Optional[Path] = None
     log_dir: Optional[Path] = None
 
@@ -247,7 +269,7 @@ class CodexCliClient(LLMClient):
             model=(os.getenv("CODEX_MODEL") or "").strip(),
             timeout_seconds=int((os.getenv("CODEX_TIMEOUT_SECONDS") or "120").strip()),
             profile_reason=(os.getenv("CODEX_PROFILE_REASON") or "reason").strip(),
-            profile_exec=(os.getenv("CODEX_PROFILE_EXEC") or "exec").strip(),
+            profile_exec=(os.getenv("CODEX_PROFILE_EXEC") or "playbook").strip(),
             workdir=workdir,
             log_dir=log_dir,
         )
@@ -361,6 +383,12 @@ class CodexCliClient(LLMClient):
             enable_search=enable_search,
             model=self.model,
         )
+        try:
+            exec_index = cmd.index("exec")
+        except ValueError:
+            exec_index = len(cmd)
+        if "mcp.enabled=false" not in cmd:
+            cmd[exec_index:exec_index] = ["-c", "mcp.enabled=false", "-c", "features.mcp=false"]
         reasoning_effort = (os.getenv("CODEX_REASONING_EFFORT") or "").strip()
         if reasoning_effort:
             try:
@@ -555,7 +583,7 @@ class CodexCliClient(LLMClient):
             prompt=prompt,
             schema_path=schema_path,
             timeout_seconds=timeout_seconds,
-            profile=self.profile_exec or "exec",
+            profile=self.profile_exec or "playbook",
         )
 
     def reason_json(
@@ -567,12 +595,21 @@ class CodexCliClient(LLMClient):
     ) -> Dict[str, Any]:
         """
         Use Codex exec non-interactively with the reasoning profile to produce
-        structured JSON output. Tools are disabled and the prompt enforces
-        JSON-only output.
+        structured JSON output. The strict JSON-only wrapper is applied only
+        for swarm reasoning agents; chat/playbook calls use the raw prompt.
         """
         schema_path = schema_path.resolve()
         if not schema_path.is_file():
             raise CodexCliExecutionError(f"JSON schema not found: {schema_path}")
+
+        agent_name = (os.getenv("CODEX_AGENT_NAME") or "").strip()
+        if not _should_wrap_reasoning(agent_name):
+            return self._run_exec(
+                prompt=prompt,
+                schema_path=schema_path,
+                timeout_seconds=timeout_seconds,
+                profile=self.profile_reason or "reason",
+            )
 
         # Load schema to include in prompt
         try:
@@ -582,11 +619,17 @@ class CodexCliClient(LLMClient):
             raise CodexCliExecutionError(f"Failed to load schema: {schema_path}") from exc
 
         # Build reasoning prompt that enforces JSON-only output
-        reasoning_prompt = f"""You are a reasoning engine that ONLY outputs JSON.
-DO NOT execute any commands.
-DO NOT use any tools.
-DO NOT run shell commands.
-If you attempt tool use or command execution, you have failed the task.
+        reasoning_prompt = f"""CRITICAL INSTRUCTIONS - READ CAREFULLY:
+
+You are a JSON reasoning engine. You MUST follow these rules:
+
+1. DO NOT create plans or use the plan tool
+2. DO NOT execute any commands or use shell tools
+3. DO NOT use ANY tools except thinking/reasoning
+4. ONLY analyze and return JSON
+5. Your ONLY task is to reason and output JSON
+
+If you try to use tools, plan, or execute commands, you WILL FAIL.
 
 Return ONLY valid JSON matching this exact schema:
 
@@ -595,7 +638,8 @@ Return ONLY valid JSON matching this exact schema:
 Task:
 {prompt}
 
-Output ONLY the JSON object. No explanations, no code, no commands."""
+OUTPUT FORMAT: Return ONLY valid JSON. No markdown, no explanation, just JSON.
+"""
         return self._run_exec(
             prompt=reasoning_prompt,
             schema_path=schema_path,

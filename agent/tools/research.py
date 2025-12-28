@@ -69,7 +69,16 @@ class ResearchTool(ToolAdapter):
 
         try:
             try:
-                llm = CodexCliClient.from_env()
+                base = CodexCliClient.from_env()
+                llm = CodexCliClient(
+                    codex_bin=base.codex_bin,
+                    model=base.model,
+                    timeout_seconds=base.timeout_seconds,
+                    profile_reason="research",
+                    profile_exec=base.profile_exec,
+                    workdir=base.workdir,
+                    log_dir=base.log_dir,
+                )
                 prompt = (
                     "Summarize the following sources into a concise Markdown report.\n"
                     "Return JSON only.\n\n"

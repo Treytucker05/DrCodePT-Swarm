@@ -393,6 +393,8 @@ def _codex_command() -> list[str]:
 def _call_codex(prompt: str, *, allow_tools: bool) -> str:
     # Note: `--search` is a global flag (must appear before the `exec` subcommand).
     cmd: list[str] = _codex_command() + [
+        "--profile",
+        "playbook",
         "--dangerously-bypass-approvals-and-sandbox",
         "--search",
         "exec",

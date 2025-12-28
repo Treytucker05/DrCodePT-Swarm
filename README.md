@@ -32,9 +32,17 @@ When Codex is working in this repo, these files are the required rules:
 - `CONTINUITY.md` - the continuity ledger Codex must maintain.
 
 ## Execution defaults
-- LLM calls use `codex exec` with `--dangerously-bypass-approvals-and-sandbox` and `--search` (mandatory flags for this repo); prompts enforce JSON-only structured outputs.
+- LLM calls use the local Codex CLI; model selection comes from `~/.codex/config.toml` profiles.
+- JSON-only outputs are enforced only for schema-bound reasoning tasks (e.g., swarm reasoning agents). Chat/playbook flows are freeform.
 - Memory uses embeddings with FAISS acceleration when available (falls back gracefully if disabled).
 - Built-in tools include `web_search`, `web_fetch` with HTML stripping, and `delegate_task` for sub-agent handoffs.
+
+## Current status (Dec 2025)
+- Chat mode: ✅ stable
+- Playbooks: ⚠️ partially working (some flows still require manual steps)
+- Swarm: ❌ broken (repo audits currently fail)
+- Google OAuth setup: ⚠️ requires manual browser steps for login/2FA and download
+- "DO NOT execute" wrapper is applied only to swarm reasoning agents (chat/playbook are not wrapped).
 
 ## Run artifacts and concurrency safety
 - The agent no longer uses `os.chdir()` in concurrent code paths; all subprocesses run with explicit `cwd=` and absolute paths.
@@ -52,10 +60,8 @@ These are contractual guarantees (not suggestions):
 - Task execution uses the backend seam (LLMBackend.run). Internal helper calls may use CodexCliClient convenience methods directly.
 
 ## Execution profiles
-Profiles tune budgets without ever disabling timeouts (all profiles remain finite):
-- fast (default): bounded, quick, low-risk
-- deep: higher budgets for staged repo reviews
-- audit: maximum rigor with checkpoints, still finite
+Runtime profiles (fast/deep/audit) tune agent budgets (timeouts, retries), not models.
+Codex model/effort profiles live in `~/.codex/config.toml` (chat/reason/playbook/research/heavy).
 
 Use `--profile fast|deep|audit` on `python -m agent.run`. Swarm reads `SWARM_PROFILE`/`AUTO_PROFILE`/`AGENT_PROFILE`.
 Swarm workers are non-interactive; if a question is required they return `interaction_required` instead of prompting.

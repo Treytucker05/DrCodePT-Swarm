@@ -766,7 +766,16 @@ def _run_chat(user_input: str, history: list[tuple[str, str]]) -> None:
     from agent.llm import schemas as llm_schemas
 
     try:
-        llm = CodexCliClient.from_env()
+        base = CodexCliClient.from_env()
+        llm = CodexCliClient(
+            codex_bin=base.codex_bin,
+            model=base.model,
+            timeout_seconds=base.timeout_seconds,
+            profile_reason="chat",
+            profile_exec=base.profile_exec,
+            workdir=base.workdir,
+            log_dir=base.log_dir,
+        )
     except CodexCliNotFoundError as exc:
         print(f"{RED}[ERROR]{RESET} {exc}")
         return

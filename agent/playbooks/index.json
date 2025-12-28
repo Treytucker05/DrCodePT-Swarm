@@ -261,7 +261,7 @@
   },
   "setup-google-apis": {
     "name": "Google APIs: Setup OAuth2 (Tasks, Gmail, Calendar)",
-    "description": "Research Google API requirements, guide OAuth2 setup for Tasks/Gmail/Calendar, and save credentials.",
+    "description": "Google OAuth2 setup using Desktop Commander (real Chrome)",
     "triggers": [
       "setup google apis",
       "setup google tasks",
@@ -277,28 +277,181 @@
     "steps": [
       {
         "type": "python",
-        "description": "Research: Check what's needed for Google APIs",
-        "code": "print('\\n=== Google APIs Setup Requirements ===')\nprint('\\n1. Google Cloud Project with APIs enabled:')\nprint('   - Google Tasks API')\nprint('   - Gmail API')\nprint('   - Google Calendar API')\nprint('\\n2. OAuth 2.0 Client ID (Desktop app type)')\nprint('\\n3. Download credentials.json from Google Cloud Console')\nprint('\\n4. Required Python packages:')\nprint('   pip install google-auth google-auth-oauthlib google-auth-httplib2 google-api-python-client')\nprint('\\n5. OAuth Scopes needed:')\nprint('   - https://www.googleapis.com/auth/tasks')\nprint('   - https://www.googleapis.com/auth/gmail.readonly')\nprint('   - https://www.googleapis.com/auth/gmail.modify')\nprint('   - https://www.googleapis.com/auth/calendar')\nprint('   - https://www.googleapis.com/auth/calendar.events')\nprint('\\n=== Next Steps ===')\nprint('1. Go to: https://console.cloud.google.com/')\nprint('2. Create/select project')\nprint('3. Enable APIs (Tasks, Gmail, Calendar)')\nprint('4. Create OAuth 2.0 credentials (Desktop app)')\nprint('5. Download credentials.json')\nprint('6. Save to: agent/memory/google_credentials.json')\nprint('\\nPress Enter when ready to continue...')\n"
+        "description": "Research: web_search and plan for OAuth setup",
+        "code": "from pathlib import Path\nfrom agent.autonomous.tools.builtins import WebSearchArgs, web_search\nfrom agent.autonomous.config import RunContext\n\nquery = 'create Google Cloud OAuth credentials'\nrun_dir = Path('agent') / 'runs' / 'treys_agent'\nrun_dir.mkdir(parents=True, exist_ok=True)\nctx = RunContext(run_id='setup_google_apis_search', run_dir=run_dir, workspace_dir=run_dir, profile=None, usage=None)\nresult = web_search(ctx, WebSearchArgs(query=query, max_results=5))\nresults = []\nif getattr(result, 'success', False) and isinstance(result.output, dict):\n    results = result.output.get('results') or []\nprint('=== Web Search Results ===')\nfor r in results:\n    title = r.get('title') or ''\n    url = r.get('url') or ''\n    print(f'- {title} | {url}')\nprint('')\nplan = [\n    'Open Google Cloud Console and select/create a project.',\n    'Enable APIs: Google Tasks API, Gmail API, Google Calendar API.',\n    'Open APIs & Services > Credentials.',\n    'Create Credentials > OAuth client ID (Desktop app).',\n    'Download the client JSON to agent/memory/google_credentials.json.'\n]\nprint('=== Plan (from search results) ===')\nfor i, step in enumerate(plan, 1):\n    print(f'{i}. {step}')\n"
       },
       {
-        "type": "browser",
-        "description": "Open Google Cloud Console",
-        "action": "goto",
-        "url": "https://console.cloud.google.com/apis/dashboard",
-        "timeout_ms": 60000,
-        "wait_until": "domcontentloaded"
+        "type": "mcp",
+        "description": "Launch real Chrome (Desktop Commander)",
+        "tool": "Windows-MCP:App-Tool",
+        "args": {
+          "mode": "launch",
+          "name": "chrome"
+        }
       },
       {
-        "type": "browser",
-        "description": "Wait for you to sign in and navigate",
-        "action": "sleep",
-        "seconds": 3
+        "type": "mcp",
+        "description": "Open Google Cloud APIs dashboard",
+        "tool": "Windows-MCP:App-Tool",
+        "args": {
+          "mode": "launch",
+          "name": "chrome",
+          "url": "https://console.cloud.google.com/apis/dashboard"
+        }
       },
       {
-        "type": "browser",
-        "description": "Pause for API enablement and credential download",
-        "action": "pause_for_user",
-        "message": "1. Enable APIs: Tasks, Gmail, Calendar\\n2. Create OAuth 2.0 Client ID (Desktop app)\\n3. Download credentials.json\\n4. Save to: agent/memory/google_credentials.json\\n\\nPress Enter when done."
+        "type": "mcp",
+        "description": "Capture UI state (login check)",
+        "tool": "Windows-MCP:State-Tool",
+        "args": {}
+      },
+      {
+        "type": "mcp",
+        "description": "Scrape page content (login check)",
+        "tool": "Windows-MCP:Scrape-Tool",
+        "args": {
+          "mode": "visible_text",
+          "output_path": "agent/runs/treys_agent/google_oauth/login_check.txt"
+        }
+      },
+      {
+        "type": "python",
+        "description": "Pause only if login/2FA appears",
+        "code": "from pathlib import Path\ntext_path = Path('agent/runs/treys_agent/google_oauth/login_check.txt')\nif text_path.exists():\n    text = text_path.read_text(encoding='utf-8', errors='ignore').lower()\n    if any(k in text for k in ('sign in', 'choose an account', '2-step', '2-step verification', 'verify', 'login')):\n        input('Login required. Press Enter after you complete 2FA.')\n"
+      },
+      {
+        "type": "mcp",
+        "description": "Open Google Tasks API library",
+        "tool": "Windows-MCP:App-Tool",
+        "args": {
+          "mode": "launch",
+          "name": "chrome",
+          "url": "https://console.cloud.google.com/apis/library/tasks.googleapis.com"
+        }
+      },
+      {
+        "type": "mcp",
+        "description": "Enable Google Tasks API (if needed)",
+        "tool": "Windows-MCP:Click-Tool",
+        "args": {
+          "text": "Enable",
+          "match": "contains",
+          "optional": true
+        }
+      },
+      {
+        "type": "mcp",
+        "description": "Open Gmail API library",
+        "tool": "Windows-MCP:App-Tool",
+        "args": {
+          "mode": "launch",
+          "name": "chrome",
+          "url": "https://console.cloud.google.com/apis/library/gmail.googleapis.com"
+        }
+      },
+      {
+        "type": "mcp",
+        "description": "Enable Gmail API (if needed)",
+        "tool": "Windows-MCP:Click-Tool",
+        "args": {
+          "text": "Enable",
+          "match": "contains",
+          "optional": true
+        }
+      },
+      {
+        "type": "mcp",
+        "description": "Open Google Calendar API library",
+        "tool": "Windows-MCP:App-Tool",
+        "args": {
+          "mode": "launch",
+          "name": "chrome",
+          "url": "https://console.cloud.google.com/apis/library/calendar-json.googleapis.com"
+        }
+      },
+      {
+        "type": "mcp",
+        "description": "Enable Google Calendar API (if needed)",
+        "tool": "Windows-MCP:Click-Tool",
+        "args": {
+          "text": "Enable",
+          "match": "contains",
+          "optional": true
+        }
+      },
+      {
+        "type": "mcp",
+        "description": "Open Credentials page",
+        "tool": "Windows-MCP:App-Tool",
+        "args": {
+          "mode": "launch",
+          "name": "chrome",
+          "url": "https://console.cloud.google.com/apis/credentials"
+        }
+      },
+      {
+        "type": "mcp",
+        "description": "Click Create credentials",
+        "tool": "Windows-MCP:Click-Tool",
+        "args": {
+          "text": "Create credentials",
+          "match": "contains"
+        }
+      },
+      {
+        "type": "mcp",
+        "description": "Select OAuth client ID",
+        "tool": "Windows-MCP:Click-Tool",
+        "args": {
+          "text": "OAuth client ID",
+          "match": "contains"
+        }
+      },
+      {
+        "type": "mcp",
+        "description": "Choose Desktop app type",
+        "tool": "Windows-MCP:Click-Tool",
+        "args": {
+          "text": "Desktop app",
+          "match": "contains"
+        }
+      },
+      {
+        "type": "mcp",
+        "description": "Set OAuth client name",
+        "tool": "Windows-MCP:Type-Tool",
+        "args": {
+          "text": "DrCodePT"
+        }
+      },
+      {
+        "type": "mcp",
+        "description": "Create OAuth client",
+        "tool": "Windows-MCP:Click-Tool",
+        "args": {
+          "text": "Create",
+          "match": "exact"
+        }
+      },
+      {
+        "type": "mcp",
+        "description": "Download client JSON",
+        "tool": "Windows-MCP:Click-Tool",
+        "args": {
+          "text": "Download JSON",
+          "match": "contains"
+        }
+      },
+      {
+        "type": "mcp",
+        "description": "Capture UI state (download check)",
+        "tool": "Windows-MCP:State-Tool",
+        "args": {}
+      },
+      {
+        "type": "python",
+        "description": "Capture downloaded credentials.json",
+        "code": "from pathlib import Path\nimport shutil\nimport sys\n\ntarget = Path('agent/memory/google_credentials.json')\ntarget.parent.mkdir(parents=True, exist_ok=True)\n\ndef _latest_in(dir_path: Path):\n    if not dir_path.is_dir():\n        return None\n    files = sorted(dir_path.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True)\n    for f in files:\n        name = f.name.lower()\n        if 'client_secret' in name or 'credentials' in name:\n            return f\n    return None\n\nsrc = _latest_in(Path.home() / 'Downloads')\nif not src:\n    print('ERROR: No credentials JSON found in Downloads.')\n    sys.exit(1)\n\nshutil.copy2(src, target)\nprint(f'Saved credentials JSON to {target} (from {src})')\n"
       },
       {
         "type": "python",

@@ -13,6 +13,7 @@ agent/memory/credential_store.json
 agent/memory/credential_key.key
 agent/memory/agent_memory.json
 agent/memory/failure_cases.jsonl
+agent/memory/autonomous_memory.sqlite3
 credential_key.key
 *.key
 agent/recordings/
