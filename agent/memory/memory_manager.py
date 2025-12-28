@@ -8,7 +8,9 @@ Fields: completed_tasks, facts, preferences, credentials (site -> credential_id 
 import json
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
+
+from agent.autonomous.memory.sqlite_store import SqliteMemoryStore
 
 ROOT = Path(__file__).resolve().parent
 MEMORY_PATH = ROOT / "agent_memory.json"
@@ -74,3 +76,42 @@ def update_memory(key: str, value: Any) -> Dict[str, Any]:
 
 
 __all__ = ["load_memory", "save_memory", "update_memory", "MEMORY_PATH"]
+
+
+class MemoryManager:
+    """Lightweight wrapper for long-term memory with similarity search."""
+
+    def __init__(self, path: Optional[Path] = None):
+        self.path = path or (ROOT / "autonomous_memory.sqlite3")
+        self._store = SqliteMemoryStore(self.path)
+
+    def store(self, key: str, value: Any, *, kind: str = "experience") -> None:
+        content = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+        self._store.upsert(kind=kind, key=key, content=content, metadata={"key": key})
+
+    def retrieve_similar(self, query: str, k: int = 3, *, kinds: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        records = self._store.search(query, kinds=kinds, limit=k)
+        results: List[Dict[str, Any]] = []
+        for rec in records:
+            content = rec.content
+            try:
+                parsed = json.loads(content)
+            except Exception:
+                parsed = content
+            results.append(
+                {
+                    "key": rec.key,
+                    "content": parsed,
+                    "metadata": rec.metadata,
+                }
+            )
+        return results
+
+    def close(self) -> None:
+        try:
+            self._store.close()
+        except Exception:
+            pass
+
+
+__all__.append("MemoryManager")

@@ -33,6 +33,9 @@ PROFILE_MAP = {
     "Critic": "reason",
     "Synthesis": "reason",
     "Main": "chat",
+    "ReActQuick": "quick",
+    "ReActReason": "reason",
+    "ReAct": "react",
 }
 
 DEFAULT_CODEX_EXE_PATHS = [
@@ -185,6 +188,7 @@ def call_codex(
             codex_bin = shutil.which("codex") or "codex"
     env_search = (os.getenv("CODEX_ENABLE_WEB_SEARCH") or "").strip().lower()
     enable_search = enable_search or env_search in {"1", "true", "yes", "y", "on"}
+    resolved_profile = _profile_for_agent(agent, "reason")
     cmd = build_codex_command(
         codex_bin=codex_bin,
         agent_name=agent,
@@ -192,15 +196,25 @@ def call_codex(
         schema_path=schema_path,
         enable_search=enable_search,
     )
+    cwd = os.getcwd()
+    timeout_seconds = timeout
+    print(f"[DEBUG] Codex command: {' '.join(cmd)}")
+    print(f"[DEBUG] Profile: {resolved_profile}")
+    print(f"[DEBUG] Working dir: {cwd}")
+    print(f"[DEBUG] Timeout: {timeout_seconds}s")
     try:
         result = subprocess.run(
             cmd,
             input=prompt,
             text=True,
             capture_output=True,
-            timeout=timeout,
+            timeout=timeout_seconds,
+            cwd=cwd,
+            env=os.environ.copy(),
             encoding="utf-8",
         )
+        print(f"[DEBUG] Return code: {result.returncode}")
+        print(f"[DEBUG] Stderr: {(result.stderr or '')[:500]}")
         if "429" in (result.stderr or "") or "rate limit" in (result.stderr or "").lower():
             logging.warning("[%s] Hit rate limit - quota exhausted", agent)
             return {
@@ -713,3 +727,175 @@ Now respond with ONLY the JSON object:"""
             schema_path=schema_path,
             timeout_seconds=timeout_seconds,
         )
+
+    def call_codex(
+        self,
+        prompt: str,
+        *,
+        timeout_seconds: Optional[int] = None,
+        agent_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        agent = agent_name
+        if not agent:
+            if self.profile_reason == "quick":
+                agent = "ReActQuick"
+            elif self.profile_reason == "react":
+                agent = "ReAct"
+            elif self.profile_reason == "reason":
+                agent = "ReActReason"
+            else:
+                agent = "Main"
+        return call_codex(
+            prompt=prompt,
+            agent=agent,
+            timeout=timeout_seconds or self.timeout_seconds,
+        )
+
+    def chat(self, prompt: str, timeout_seconds: int = 30) -> Optional[str]:
+        """Simple chat call without exec mode."""
+        env_bin = (os.getenv("CODEX_BIN") or "").strip()
+        env_exe = (os.getenv("CODEX_EXE_PATH") or "").strip()
+        if env_exe and Path(env_exe).is_file():
+            codex_bin = env_exe
+        elif self.codex_bin and Path(self.codex_bin).is_file():
+            codex_bin = str(Path(self.codex_bin))
+        else:
+            preferred = next((str(p) for p in DEFAULT_CODEX_EXE_PATHS if p.is_file()), None)
+            if preferred:
+                codex_bin = preferred
+            elif env_bin:
+                codex_bin = shutil.which(env_bin) or env_bin
+            else:
+                codex_bin = shutil.which("codex") or "codex"
+        cmd = [
+            codex_bin,
+            "--profile",
+            self.profile_reason or "chat",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "-c",
+            "sandbox_mode=danger-full-access",
+            "-c",
+            "approval_policy=never",
+            prompt,
+        ]
+        cwd = str(self.workdir) if self.workdir else os.getcwd()
+        env = os.environ.copy()
+        print(f"[DEBUG] Codex command: codex --profile {self.profile_reason} [prompt]")
+        print(f"[DEBUG] Timeout: {timeout_seconds}s")
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                cwd=cwd,
+                env=env,
+                encoding="utf-8",
+            )
+            print(f"[DEBUG] Return code: {result.returncode}")
+            if result.returncode != 0:
+                if result.stderr:
+                    print(f"[DEBUG] Stderr: {result.stderr[:500]}")
+                return None
+            return (result.stdout or "").strip()
+        except subprocess.TimeoutExpired:
+            print(f"[ERROR] Chat timeout after {timeout_seconds}s")
+            return None
+
+    def chat_simple(self, prompt: str, timeout_seconds: int = 30) -> Optional[Dict[str, Any]]:
+        """
+        Use exec mode but force chat-only behavior (no tool execution).
+        """
+        schema = {
+            "type": "object",
+            "properties": {
+                "thought": {"type": "string"},
+                "action": {"type": "string"},
+                "action_input": {"type": "object"},
+            },
+            "required": ["thought", "action", "action_input"],
+        }
+        schema_path = Path(tempfile.gettempdir()) / f"react_action_{uuid4().hex[:8]}.json"
+        schema_path.write_text(json.dumps(schema), encoding="utf-8")
+
+        env_bin = (os.getenv("CODEX_BIN") or "").strip()
+        env_exe = (os.getenv("CODEX_EXE_PATH") or "").strip()
+        if env_exe and Path(env_exe).is_file():
+            codex_bin = env_exe
+        elif self.codex_bin and Path(self.codex_bin).is_file():
+            codex_bin = str(Path(self.codex_bin))
+        else:
+            preferred = next((str(p) for p in DEFAULT_CODEX_EXE_PATHS if p.is_file()), None)
+            if preferred:
+                codex_bin = preferred
+            elif env_bin:
+                codex_bin = shutil.which(env_bin) or env_bin
+            else:
+                codex_bin = shutil.which("codex") or "codex"
+
+        cmd = [
+            codex_bin,
+            "--profile",
+            self.profile_reason or "chat",
+            "--dangerously-bypass-approvals-and-sandbox",
+            "-c",
+            "sandbox_mode=danger-full-access",
+            "-c",
+            "approval_policy=never",
+            "exec",
+            "--skip-git-repo-check",
+            "--output-schema",
+            str(schema_path),
+            "-",
+        ]
+        cwd = str(self.workdir) if self.workdir else os.getcwd()
+        env = os.environ.copy()
+        full_prompt = (
+            "RESPOND ONLY WITH JSON. DO NOT execute any tools or commands.\n\n" + prompt
+        )
+        try:
+            print(f"[DEBUG CHAT_SIMPLE] Command: {' '.join(cmd[:8])}...")
+            print(f"[DEBUG CHAT_SIMPLE] Schema: {schema_path}")
+            print(f"[DEBUG CHAT_SIMPLE] Timeout: {timeout_seconds}s")
+            result = subprocess.run(
+                cmd,
+                input=full_prompt,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                cwd=cwd,
+                env=env,
+                encoding="utf-8",
+            )
+            print(f"[DEBUG CHAT_SIMPLE] Return code: {result.returncode}")
+            print(f"[DEBUG CHAT_SIMPLE] Stdout length: {len(result.stdout or '')}")
+            print(f"[DEBUG CHAT_SIMPLE] Stdout preview: {(result.stdout or '')[:200]}")
+            print(f"[DEBUG CHAT_SIMPLE] Stderr: {(result.stderr or '')[:500]}")
+            if result.returncode != 0:
+                print("[DEBUG CHAT_SIMPLE] Failed with non-zero return code")
+                return None
+            raw = (result.stdout or "").strip()
+            if not raw:
+                print("[DEBUG CHAT_SIMPLE] Empty stdout")
+                return None
+            parsed = json.loads(raw)
+            print(f"[DEBUG CHAT_SIMPLE] Parsed JSON keys: {list(parsed.keys())}")
+            return parsed
+        except subprocess.TimeoutExpired:
+            print(f"[DEBUG CHAT_SIMPLE] Timeout after {timeout_seconds}s")
+            return None
+        except json.JSONDecodeError as exc:
+            print(f"[DEBUG CHAT_SIMPLE] JSON parse error: {exc}")
+            try:
+                print(f"[DEBUG CHAT_SIMPLE] Raw output: {(result.stdout or '')[:500]}")
+            except Exception:
+                pass
+            return None
+        except Exception as exc:
+            print(f"[DEBUG CHAT_SIMPLE] Unexpected error: {exc}")
+            return None
+        finally:
+            try:
+                schema_path.unlink(missing_ok=True)  # type: ignore[call-arg]
+            except Exception:
+                pass

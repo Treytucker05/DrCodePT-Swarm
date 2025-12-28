@@ -15,7 +15,8 @@ def _load_dotenv() -> None:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python -m agent.run", description="Run the autonomous agent loop.")
-    p.add_argument("--task", required=True, help="Goal/task for the agent to accomplish.")
+    p.add_argument("--task", help="Goal/task for the agent to accomplish.")
+    p.add_argument("--react", help="Run the ReAct + Reflexion loop for the provided task.")
     p.add_argument("--profile", choices=["fast", "deep", "audit"], default="fast")
     p.add_argument("--planner-mode", choices=["react", "plan_first"], default="react")
     p.add_argument("--num-candidates", type=int, default=1, help="Plan-first: number of candidate plans to generate.")
@@ -37,7 +38,44 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     _load_dotenv()
-    args = build_arg_parser().parse_args(argv)
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+
+    if not args.task and not args.react:
+        parser.error("One of --task or --react is required.")
+
+    if args.react:
+        from agent.autonomous.react_loop import ReActAgent
+        from agent.llm import CodexCliAuthError, CodexCliNotFoundError
+        from agent.memory.memory_manager import MemoryManager
+        from agent.tools.registry import build_react_tool_map
+
+        run_dir = Path(args.run_dir).resolve() if args.run_dir else Path.cwd() / "runs" / "react"
+        tools, tool_descriptions = build_react_tool_map(
+            run_dir=run_dir,
+            unsafe_mode=bool(args.unsafe_mode),
+            enable_web_gui=bool(args.enable_web_gui),
+            enable_desktop=bool(args.enable_desktop),
+            memory_db_path=Path(args.memory_db) if args.memory_db else None,
+        )
+        memory = MemoryManager(path=Path(args.memory_db) if args.memory_db else None)
+        try:
+            agent = ReActAgent(
+                tools=tools,
+                memory=memory,
+                tool_descriptions=tool_descriptions,
+                run_dir=run_dir,
+                max_steps=int(args.max_steps),
+            )
+        except (CodexCliNotFoundError, CodexCliAuthError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        output = agent.execute_task(args.react)
+        print(output)
+        lowered = output.lower().strip()
+        if lowered.startswith("unable to complete") or lowered.startswith("task failed"):
+            return 1
+        return 0
 
     # Import startup flow
     from agent.autonomous.startup_flow import StartupFlow

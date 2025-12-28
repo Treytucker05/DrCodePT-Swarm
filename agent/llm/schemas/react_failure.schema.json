@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "should_retry": {
+      "type": "boolean"
+    },
+    "adjusted_approach": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "root_cause": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "should_retry",
+    "adjusted_approach",
+    "root_cause"
+  ],
+  "additionalProperties": false
+}

@@ -1,30 +1,14 @@
-# CONTINUITY.md
-- Goal (incl. success criteria):
-  - Document rebuild plan and snapshot current system state; preserve current state in git.
-- Constraints/Assumptions:
-  - Create new docs: `REBUILD_PLAN.md`, `CURRENT_STATE.md`.
-  - Commit current state after updates.
-- Key decisions:
-  - Use current dates (Dec 28, 2025+) in rebuild timeline to avoid past-date confusion.
-  - Capture what works vs broken and list tools/integrations.
-  - Exclude `agent/memory/autonomous_memory.sqlite3` from version control and add it to `.gitignore`.
-- State:
+Goal (incl. success criteria):
+- Provide a brief critique of the scan_repo fallback action report, describing what worked, what failed, and next steps.
+Constraints/Assumptions:
+- Follow existing instructions; no destructive actions; approval policy never (no escalations).
+Key decisions:
+- Created ledger to track task and status.
+State:
   - Done:
-    - Read `CONTINUITY.md` and refreshed goal/constraints to current task.
-    - Created `REBUILD_PLAN.md`.
-    - Created `CURRENT_STATE.md`.
-    - Updated docs to reflect current reality (chat ok, playbooks partial, swarm broken, manual Google OAuth).
-    - Updated model profiles and routing in config and code.
-    - Switched Google OAuth playbook steps to Windows-MCP tools.
-    - Added `.gitignore` entry and removed `agent/memory/autonomous_memory.sqlite3` from index.
   - Now:
-    - Commit completed: "Document rebuild plan and current state".
   - Next:
-    - None.
-- Open questions (UNCONFIRMED if needed):
-  - None.
-- Working set (files/ids/commands):
-  - `REBUILD_PLAN.md`
-  - `CURRENT_STATE.md`
-  - `CONTINUITY.md`
-  - `git status`, `git add`, `git commit`
+Open questions (UNCONFIRMED if needed):
+- None.
+Working set (files/ids/commands):
+- CONTINUITY.md (new)

@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "thought": {
+      "type": "string"
+    },
+    "action": {
+      "type": "string"
+    },
+    "action_input": {
+      "type": [
+        "object",
+        "array"
+      ],
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "value"
+        ],
+        "additionalProperties": false
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "thought",
+    "action",
+    "action_input"
+  ],
+  "additionalProperties": false
+}
