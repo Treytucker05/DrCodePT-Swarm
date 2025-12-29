@@ -30,12 +30,18 @@ import subprocess
 import tempfile
 import time
 import webbrowser
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
+try:
+    from pydantic import ConfigDict
+except Exception:
+    ConfigDict = None
+
+from agent.llm.json_enforcer import build_repair_prompt, enforce_json_response
 
 # Load .env file for API keys
 try:
@@ -71,7 +77,7 @@ INTENT_SCHEMA = {
     "properties": {
         "action": {
             "type": "string",
-            "description": "The action to perform (e.g., get_calendar_events, send_email, create_event)"
+            "description": "The action to perform (e.g., calendar.list_events, send_email, create_event)"
         },
         "service": {
             "type": "string",
@@ -106,6 +112,11 @@ INTENT_SCHEMA = {
 PLAN_SCHEMA = {
     "type": "object",
     "properties": {
+        "plan_type": {
+            "type": "string",
+            "enum": ["EXECUTE", "SETUP_GUIDE"],
+            "description": "EXECUTE for automation, SETUP_GUIDE for manual setup instructions"
+        },
         "summary": {
             "type": "string",
             "description": "Brief summary of the plan"
@@ -117,7 +128,7 @@ PLAN_SCHEMA = {
                 "properties": {
                     "phase": {"type": "string", "enum": ["SETUP", "EXECUTE", "VERIFY"]},
                     "description": {"type": "string"},
-                    "action": {"type": "string", "enum": ["open_browser", "vision_guided", "api_call", "wait"]},
+                    "action": {"type": "string", "enum": ["open_browser", "vision_guided", "api_call", "wait", "manual"]},
                     "url": {"type": "string"},
                     "details": {"type": "string"}
                 },
@@ -134,7 +145,7 @@ PLAN_SCHEMA = {
             "description": "Potential issues to watch for"
         }
     },
-    "required": ["summary", "steps"]
+    "required": ["plan_type", "summary", "steps"]
 }
 
 
@@ -152,12 +163,57 @@ class TaskResult(BaseModel):
 
 class ParsedIntent(BaseModel):
     """Parsed user intent."""
-    action: str  # e.g., "get_calendar_events", "send_email", "search_web"
+    action: str  # e.g., "calendar.list_events", "send_email", "search_web"
     service: Optional[str] = None  # e.g., "google_calendar", "outlook", "gmail"
     parameters: Dict[str, Any] = Field(default_factory=dict)
     needs_auth: bool = False
     auth_provider: Optional[str] = None  # "google", "microsoft"
     clarifying_questions: List[str] = Field(default_factory=list)
+
+
+class IntentPayload(BaseModel):
+    """Strict intent payload expected from the LLM."""
+    action: str
+    service: Optional[str] = None
+    auth_provider: Optional[str] = None
+    needs_auth: bool
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+    clarifying_questions: List[str] = Field(default_factory=list)
+    confidence: Optional[float] = None
+
+    if ConfigDict:
+        model_config = ConfigDict(extra="forbid")
+    else:
+        class Config:
+            extra = "forbid"
+
+
+class PlanStepPayload(BaseModel):
+    phase: Literal["SETUP", "EXECUTE", "VERIFY"]
+    description: str
+    action: Literal["open_browser", "vision_guided", "api_call", "wait", "manual"]
+    url: Optional[str] = None
+    details: Optional[str] = None
+
+    if ConfigDict:
+        model_config = ConfigDict(extra="forbid")
+    else:
+        class Config:
+            extra = "forbid"
+
+
+class PlanPayload(BaseModel):
+    plan_type: Literal["EXECUTE", "SETUP_GUIDE"] = "EXECUTE"
+    summary: str
+    steps: List[PlanStepPayload] = Field(default_factory=list)
+    estimated_time: Optional[str] = None
+    risks: List[str] = Field(default_factory=list)
+
+    if ConfigDict:
+        model_config = ConfigDict(extra="forbid")
+    else:
+        class Config:
+            extra = "forbid"
 
 
 class ExecutionPlan(BaseModel):
@@ -167,6 +223,7 @@ class ExecutionPlan(BaseModel):
     steps: List[Dict[str, Any]] = Field(default_factory=list)
     research_summary: Optional[str] = None
     approved: bool = False
+    plan_type: str = "EXECUTE"
 
 
 class LearningAgent:
@@ -190,6 +247,7 @@ class LearningAgent:
         self.vision_executor = None
         self.memory_store = None
         self._initialized = False
+        self._disable_codex = False
 
         # Callbacks
         self.on_status: Optional[Callable[[str], None]] = None
@@ -294,6 +352,10 @@ class LearningAgent:
         else:
             self._status(f"  [X] No {intent.auth_provider} credentials found")
 
+        calendar_result = self._handle_calendar_request(intent)
+        if calendar_result is not None:
+            return calendar_result
+
         # Check skill library
         matching_skills = self.skill_library.search(user_request, k=3)
         if matching_skills:
@@ -339,6 +401,13 @@ class LearningAgent:
             self._status(f"  {i}. [{step['phase']}] {step['description']}")
         self._status("=" * 50 + "\n")
 
+        if plan.plan_type == "SETUP_GUIDE":
+            return TaskResult(
+                success=False,
+                summary="Setup required. Follow the steps above and re-run your request.",
+                steps_taken=0,
+            )
+
         approval = self._ask_user("Do you want me to execute this plan? (yes/no)")
         if approval.lower() not in ("yes", "y"):
             return TaskResult(
@@ -372,39 +441,40 @@ class LearningAgent:
 
     def _get_llm(self):
         """Get or create an LLM client for reasoning."""
-        if self.llm:
+        if self.llm and not self._disable_codex:
             return self.llm
 
-        # Try Codex first
-        try:
-            from agent.llm.codex_cli_client import CodexCliClient
-            self.llm = CodexCliClient.from_env()
-            # Quick test to see if it's authenticated
-            return self.llm
-        except Exception as e:
-            error_str = str(e).lower()
-            if "not authenticated" in error_str:
-                # Try auto-login
-                if self._try_codex_auto_login():
-                    # Retry after login
-                    try:
-                        from agent.llm.codex_cli_client import CodexCliClient
-                        self.llm = CodexCliClient.from_env()
-                        return self.llm
-                    except Exception:
-                        pass
-            logger.warning(f"Codex CLI not available: {e}")
+        if os.getenv("OPENROUTER_API_KEY"):
+            try:
+                from agent.llm.openrouter_client import OpenRouterClient
+                self.llm = OpenRouterClient.from_env()
+                self._status(f"[LLM] provider=openrouter model={self.llm.model}")
+                return self.llm
+            except Exception as e:
+                logger.warning(f"OpenRouter not available: {e}")
 
-        # Fall back to OpenRouter
-        try:
-            from agent.llm.openrouter_client import OpenRouterClient
-            self.llm = OpenRouterClient.from_env()
-            self._status("Using OpenRouter for LLM calls")
-            return self.llm
-        except Exception as e:
-            logger.warning(f"OpenRouter not available: {e}")
+        if not self._disable_codex:
+            try:
+                from agent.llm.codex_cli_client import CodexCliClient
+                client = CodexCliClient.from_env()
+                if hasattr(client, "check_auth") and not client.check_auth():
+                    self._disable_codex = True
+                    raise RuntimeError("Codex CLI auth check failed")
+                self.llm = client
+                self._status("[LLM] provider=codex_cli model=default")
+                return self.llm
+            except Exception as e:
+                error_str = str(e).lower()
+                if "not authenticated" in error_str:
+                    self._disable_codex = True
+                logger.warning(f"Codex CLI not available: {e}")
 
         return None
+
+    def _log_llm_use(self, llm, purpose: str) -> None:
+        provider = getattr(llm, "provider", getattr(llm, "provider_name", "unknown"))
+        model = getattr(llm, "model", "unknown")
+        self._status(f"[LLM] purpose={purpose} provider={provider} model={model}")
 
     def _try_codex_auto_login(self) -> bool:
         """
@@ -464,45 +534,104 @@ class LearningAgent:
             logger.warning(f"Auto-login failed: {e}")
             return False
 
-    def _call_llm_json(self, prompt: str, schema: Dict[str, Any], timeout: int = 60) -> Optional[Dict[str, Any]]:
-        """Call LLM and get structured JSON output."""
+    def _call_llm_json(
+        self,
+        prompt: str,
+        schema: Dict[str, Any],
+        timeout: int = 60,
+        model_cls: Optional[type] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Call LLM and get structured JSON output with schema enforcement."""
         llm = self._get_llm()
         if not llm:
             return None
 
+        schema_path = Path(tempfile.gettempdir()) / f"schema_{uuid4().hex[:8]}.json"
+        schema_path.write_text(json.dumps(schema), encoding="utf-8")
+
+        def _call(current_llm, message: str) -> Optional[Dict[str, Any]]:
+            if hasattr(current_llm, "reason_json"):
+                return current_llm.reason_json(
+                    message,
+                    schema_path=schema_path,
+                    timeout_seconds=timeout,
+                )
+            if hasattr(current_llm, "complete_json"):
+                return current_llm.complete_json(
+                    message,
+                    schema_path=schema_path,
+                    timeout_seconds=timeout,
+                )
+            return None
+
+        active_llm = llm
+
+        def _retry_call(repair_prompt: str) -> Optional[str]:
+            try:
+                self._log_llm_use(active_llm, "json_repair")
+                repaired = _call(active_llm, repair_prompt)
+                if repaired is None:
+                    return None
+                return json.dumps(repaired)
+            except Exception:
+                return None
+
         try:
-            # Write schema to temp file
-            schema_path = Path(tempfile.gettempdir()) / f"schema_{uuid4().hex[:8]}.json"
-            schema_path.write_text(json.dumps(schema), encoding="utf-8")
+            self._log_llm_use(llm, "json")
+            raw = _call(llm, prompt)
+        except Exception as e:
+            error_str = str(e).lower()
+            if "not authenticated" in error_str or "codex" in error_str:
+                self._disable_codex = True
+                try:
+                    from agent.llm.openrouter_client import OpenRouterClient
+                    fallback_llm = OpenRouterClient.from_env()
+                    self._log_llm_use(fallback_llm, "json_fallback")
+                    raw = _call(fallback_llm, prompt)
+                    if raw is not None:
+                        active_llm = fallback_llm
+                except Exception as fallback_e:
+                    logger.error(f"OpenRouter fallback also failed: {fallback_e}")
+                    raw = None
+            else:
+                logger.error(f"LLM call failed: {e}")
+                raw = None
 
-            # Use reason_json for structured output - pass Path object, not string
-            result = llm.reason_json(prompt, schema_path=schema_path, timeout_seconds=timeout)
-
-            # Clean up
+        if raw is None:
             try:
                 schema_path.unlink()
             except Exception:
                 pass
-
-            return result
-        except Exception as e:
-            # If Codex failed, try OpenRouter as fallback
-            if "not authenticated" in str(e).lower() or "codex" in str(e).lower():
-                logger.warning(f"Codex failed, trying OpenRouter: {e}")
-                try:
-                    from agent.llm.openrouter_client import OpenRouterClient
-                    fallback_llm = OpenRouterClient.from_env()
-                    result = fallback_llm.reason_json(prompt, schema_path=schema_path, timeout_seconds=timeout)
-                    try:
-                        schema_path.unlink()
-                    except Exception:
-                        pass
-                    return result
-                except Exception as fallback_e:
-                    logger.error(f"OpenRouter fallback also failed: {fallback_e}")
-            else:
-                logger.error(f"LLM call failed: {e}")
             return None
+
+        if not model_cls:
+            try:
+                schema_path.unlink()
+            except Exception:
+                pass
+            return raw if isinstance(raw, dict) else None
+
+        raw_text = json.dumps(raw) if isinstance(raw, dict) else str(raw)
+        validated, error = enforce_json_response(
+            raw_text,
+            model_cls=model_cls,
+            schema=schema,
+            retry_call=_retry_call,
+            max_retries=2,
+        )
+        if validated is not None:
+            try:
+                schema_path.unlink()
+            except Exception:
+                pass
+            return validated
+
+        logger.warning(f"LLM JSON validation failed after repair: {error}")
+        try:
+            schema_path.unlink()
+        except Exception:
+            pass
+        return {"error": "invalid_json", "details": error}
 
     def _call_llm_chat(self, prompt: str, timeout: int = 60) -> Optional[str]:
         """Call LLM for free-form chat."""
@@ -513,6 +642,7 @@ class LearningAgent:
         try:
             # OpenRouter uses different signature
             if hasattr(llm, 'chat'):
+                self._log_llm_use(llm, "chat")
                 try:
                     return llm.chat(prompt, timeout_seconds=timeout)
                 except TypeError:
@@ -522,9 +652,11 @@ class LearningAgent:
         except Exception as e:
             # Try OpenRouter fallback
             if "not authenticated" in str(e).lower() or "codex" in str(e).lower():
+                self._disable_codex = True
                 try:
                     from agent.llm.openrouter_client import OpenRouterClient
                     fallback_llm = OpenRouterClient.from_env()
+                    self._log_llm_use(fallback_llm, "chat_fallback")
                     return fallback_llm.chat(prompt)
                 except Exception:
                     pass
@@ -554,7 +686,7 @@ class LearningAgent:
 USER REQUEST: "{request}"
 
 Determine:
-1. What action they want (e.g., get_calendar_events, send_email, create_event, search_web, open_app)
+1. What action they want (e.g., calendar.list_events, send_email, create_event, search_web, open_app)
 2. What service is needed (e.g., google_calendar, outlook, gmail, notion, slack)
 3. What authentication provider is needed (google, microsoft, or null if none)
 4. Whether authentication is required
@@ -566,7 +698,7 @@ If they mention "tomorrow" or "today", extract that as a time_range parameter.
 
 Return a JSON object matching the schema."""
 
-        result = self._call_llm_json(prompt, INTENT_SCHEMA, timeout=30)
+        result = self._call_llm_json(prompt, INTENT_SCHEMA, timeout=30, model_cls=IntentPayload)
 
         if not result:
             return None
@@ -577,8 +709,12 @@ Return a JSON object matching the schema."""
             return None
 
         try:
+            action = self._normalize_intent_action(
+                result.get("action", "unknown"),
+                result.get("service"),
+            )
             return ParsedIntent(
-                action=result.get("action", "unknown"),
+                action=action,
                 service=result.get("service"),
                 parameters=result.get("parameters", {}),
                 needs_auth=result.get("needs_auth", False),
@@ -588,6 +724,15 @@ Return a JSON object matching the schema."""
         except Exception as e:
             logger.warning(f"Could not create ParsedIntent from LLM result: {e}")
             return None
+
+    def _normalize_intent_action(self, action: str, service: Optional[str]) -> str:
+        """Normalize intent action names for internal routing."""
+        action_clean = (action or "").strip()
+        if action_clean in {"get_calendar_events", "list_calendar_events", "calendar_list_events"}:
+            return "calendar.list_events"
+        if service and "calendar" in service and action_clean == "list_events":
+            return "calendar.list_events"
+        return action_clean or "unknown"
 
     def _parse_intent_fallback(self, request: str) -> ParsedIntent:
         """Fallback pattern-based intent parsing."""
@@ -619,7 +764,7 @@ Return a JSON object matching the schema."""
         action = "unknown"
         if "calendar" in request_lower:
             if any(w in request_lower for w in ["what", "show", "list", "get", "tell"]):
-                action = "get_calendar_events"
+                action = "calendar.list_events"
             elif any(w in request_lower for w in ["add", "create", "schedule"]):
                 action = "create_calendar_event"
         elif "email" in request_lower:
@@ -643,7 +788,7 @@ Return a JSON object matching the schema."""
             questions.append("Which calendar service do you use - Google Calendar or Microsoft Outlook?")
 
         return ParsedIntent(
-            action=action,
+            action=self._normalize_intent_action(action, service),
             service=service,
             parameters=parameters,
             needs_auth=needs_auth,
@@ -657,13 +802,94 @@ Return a JSON object matching the schema."""
             return False
 
         if provider == "google":
-            token_path = CREDENTIALS_DIR / "token.json"
-            creds_path = CREDENTIALS_DIR / "credentials.json"
-            return token_path.exists() or creds_path.exists()
+            try:
+                from agent.skills.google_calendar import GoogleCalendarSkill
+                from agent.skills.base import AuthStatus
+            except Exception:
+                return False
+
+            skill = GoogleCalendarSkill()
+            status = skill.auth_status()
+            return status in {AuthStatus.AUTHENTICATED, AuthStatus.AUTH_EXPIRED}
         elif provider == "microsoft":
             # TODO: Check Microsoft credentials
             return False
         return False
+
+    def _handle_calendar_request(self, intent: ParsedIntent) -> Optional[TaskResult]:
+        """Handle Google Calendar list requests directly via the skill."""
+        if intent.action not in {"calendar.list_events", "get_calendar_events"}:
+            return None
+        if intent.auth_provider != "google":
+            return None
+
+        try:
+            from agent.skills.google_calendar import GoogleCalendarSkill
+            from agent.skills.base import AuthStatus
+        except Exception as exc:
+            return TaskResult(
+                success=False,
+                summary=f"Google Calendar skill unavailable: {exc}",
+                error=str(exc),
+            )
+
+        skill = GoogleCalendarSkill()
+        status = skill.auth_status()
+        if status == AuthStatus.NOT_CONFIGURED:
+            guide = skill.setup_guide()
+            return TaskResult(
+                success=False,
+                summary=guide,
+                error="Google Calendar not configured",
+            )
+
+        time_range = intent.parameters.get("time_range", "tomorrow")
+        now = datetime.now().astimezone()
+        if time_range == "tomorrow":
+            result = skill.list_tomorrow_events()
+        else:
+            if time_range == "today":
+                start = datetime.combine(now.date(), datetime.min.time(), tzinfo=now.tzinfo)
+                end = start + timedelta(days=1)
+            elif time_range == "this_week":
+                start = datetime.combine(now.date(), datetime.min.time(), tzinfo=now.tzinfo)
+                end = start + timedelta(days=7)
+            else:
+                start = datetime.combine(now.date(), datetime.min.time(), tzinfo=now.tzinfo)
+                end = start + timedelta(days=1)
+            result = skill.list_events(time_min=start, time_max=end)
+
+        if result.ok:
+            events = result.data or []
+            if events:
+                lines = []
+                for evt in events:
+                    start = evt.get("start", {})
+                    when = start.get("dateTime") or start.get("date") or "unknown time"
+                    lines.append(f"- {evt.get('summary', 'Untitled')} at {when}")
+                summary = f"Found {len(events)} events:\n" + "\n".join(lines[:10])
+            else:
+                summary = f"No events found for {time_range}"
+            return TaskResult(
+                success=True,
+                summary=summary,
+                steps_taken=1,
+                evidence={"events": events},
+            )
+
+        if result.needs_auth:
+            guide = skill.setup_guide()
+            return TaskResult(
+                success=False,
+                summary=guide,
+                error=result.error or "Calendar authentication required",
+            )
+
+        return TaskResult(
+            success=False,
+            summary=result.error or "Failed to list calendar events",
+            error=result.error,
+        )
 
     def _generate_search_query(self, request: str, intent: ParsedIntent) -> str:
         """Use LLM to generate an optimal search query."""
@@ -693,7 +919,7 @@ Return ONLY the search query, nothing else. Keep it under 10 words.""",
         service = intent.service or "API"
         auth = intent.auth_provider or ""
 
-        if intent.action == "get_calendar_events":
+        if intent.action in {"get_calendar_events", "calendar.list_events"}:
             return f"{auth} calendar API Python setup tutorial OAuth"
         elif intent.action == "create_calendar_event":
             return f"{auth} calendar API create event Python"
@@ -847,13 +1073,14 @@ Be specific and actionable.""",
     def _get_setup_steps(self, intent: ParsedIntent) -> List[str]:
         """Get setup steps based on intent."""
         if intent.auth_provider == "google":
+            creds_path = Path.home() / ".drcodept_swarm" / "google_calendar" / "credentials.json"
             return [
                 "Open Google Cloud Console in browser",
                 "Create or select a project",
                 "Enable Google Calendar API",
                 "Configure OAuth consent screen",
                 "Create OAuth 2.0 credentials",
-                "Download credentials.json",
+                f"Download credentials.json and save to: {creds_path}",
                 "Run OAuth flow to get token",
             ]
         elif intent.auth_provider == "microsoft":
@@ -870,7 +1097,7 @@ Be specific and actionable.""",
 
     def _get_execution_steps(self, intent: ParsedIntent) -> List[str]:
         """Get execution steps based on intent."""
-        if intent.action == "get_calendar_events":
+        if intent.action in {"get_calendar_events", "calendar.list_events"}:
             return [
                 "Authenticate with OAuth token",
                 "Call calendar list events API",
@@ -937,13 +1164,10 @@ CURRENT STATE:
 - Needs authentication: {intent.needs_auth}
 
 IMPORTANT RULES:
-1. If credentials don't exist and auth is needed, the FIRST step must be "open_browser" to the appropriate console:
-   - For Google: https://console.cloud.google.com/
-   - For Microsoft: https://portal.azure.com/
-2. Browser must be opened BEFORE any vision_guided steps can work
-3. Use "vision_guided" for steps that require looking at and interacting with a browser
-4. Use "api_call" for steps that can be done programmatically (only if creds exist)
-5. Each step should be specific and actionable
+1. If credentials don't exist and auth is needed, set plan_type="SETUP_GUIDE"
+2. SETUP_GUIDE plans must contain manual setup steps only (no open_browser or vision_guided)
+3. Use "api_call" only when credentials exist
+4. Each step should be specific and actionable
 
 Create a plan with these phases:
 - SETUP: Authentication and credential setup (if needed)
@@ -952,15 +1176,30 @@ Create a plan with these phases:
 
 Return a JSON object with the plan."""
 
-        result = self._call_llm_json(prompt, PLAN_SCHEMA, timeout=45)
+        result = self._call_llm_json(prompt, PLAN_SCHEMA, timeout=45, model_cls=PlanPayload)
 
         if not result or "error" in result:
             return None
 
-        try:
-            steps = result.get("steps", [])
+        return self._plan_from_payload(
+            request=request,
+            intent=intent,
+            payload=result,
+            default_summary=research.get("summary"),
+        )
 
-            # Validate and convert steps
+    def _plan_from_payload(
+        self,
+        *,
+        request: str,
+        intent: ParsedIntent,
+        payload: Dict[str, Any],
+        default_summary: Optional[str] = None,
+    ) -> Optional[ExecutionPlan]:
+        """Build ExecutionPlan from a validated payload dict."""
+        try:
+            steps = payload.get("steps", [])
+
             validated_steps = []
             for step in steps:
                 validated_steps.append({
@@ -975,7 +1214,8 @@ Return a JSON object with the plan."""
                 request=request,
                 intent=intent,
                 steps=validated_steps,
-                research_summary=result.get("summary", research.get("summary")),
+                research_summary=payload.get("summary", default_summary),
+                plan_type=payload.get("plan_type", "EXECUTE"),
             )
         except Exception as e:
             logger.warning(f"Could not create plan from LLM result: {e}")
@@ -990,38 +1230,17 @@ Return a JSON object with the plan."""
     ) -> ExecutionPlan:
         """Fallback hardcoded plan generation."""
         steps = []
+        plan_type = "EXECUTE"
 
         # If we need to set up credentials
         if not creds_exist and intent.needs_auth:
-            # First step: OPEN BROWSER
-            browser_step_desc = None
-            if intent.auth_provider == "google":
-                browser_step_desc = "Open Google Cloud Console in browser"
-                steps.append({
-                    "phase": "SETUP",
-                    "description": browser_step_desc,
-                    "action": "open_browser",
-                    "url": "https://console.cloud.google.com/",
-                })
-            elif intent.auth_provider == "microsoft":
-                browser_step_desc = "Open Azure Portal in browser"
-                steps.append({
-                    "phase": "SETUP",
-                    "description": browser_step_desc,
-                    "action": "open_browser",
-                    "url": "https://portal.azure.com/",
-                })
-
-            # Add setup steps from research, skipping the browser open step to avoid duplication
-            for step_desc in research.get("setup_steps", []):
-                # Skip if this is the same as the browser step we already added
-                if browser_step_desc and step_desc.lower().startswith("open"):
-                    if "console" in step_desc.lower() or "portal" in step_desc.lower():
-                        continue
+            plan_type = "SETUP_GUIDE"
+            setup_steps = research.get("setup_steps") or self._get_setup_steps(intent)
+            for step_desc in setup_steps:
                 steps.append({
                     "phase": "SETUP",
                     "description": step_desc,
-                    "action": "vision_guided",
+                    "action": "manual",
                 })
 
         # Add execution steps
@@ -1037,74 +1256,218 @@ Return a JSON object with the plan."""
             intent=intent,
             steps=steps,
             research_summary=research.get("summary"),
+            plan_type=plan_type,
         )
 
     def _execute_plan(self, plan: ExecutionPlan) -> TaskResult:
         """Execute the plan step by step."""
         steps_completed = 0
+        replan_attempts = 0
+        max_replans = 2
+        step_index = 0
 
-        for i, step in enumerate(plan.steps):
-            self._status(f"\n  Executing step {i+1}/{len(plan.steps)}: {step['description']}")
+        while step_index < len(plan.steps):
+            step = plan.steps[step_index]
+            self._status(f"\n  Executing step {step_index + 1}/{len(plan.steps)}: {step['description']}")
 
             action = step.get("action", "vision_guided")
+            success = True
+            message = ""
 
             if action == "open_browser":
-                # CRITICAL: Open browser FIRST so vision can see it
                 url = step.get("url", "")
-                success, msg = self._open_browser(url)
-                if not success:
-                    return TaskResult(
-                        success=False,
-                        summary=f"Failed to open browser: {msg}",
-                        steps_taken=steps_completed,
-                        error=msg,
-                    )
-                self._status(f"    [OK] Opened browser to {url}")
-                time.sleep(3)  # Wait for browser to load
-                steps_completed += 1
+                success, message = self._open_browser(url)
+                if success:
+                    self._status(f"    [OK] Opened browser to {url}")
+                    time.sleep(3)  # Wait for browser to load
+                    steps_completed += 1
 
             elif action == "vision_guided":
-                # Use hybrid executor (UI automation + vision fallback)
-                # This is MUCH better than vision-only
                 result = self.executor.run_task(
                     objective=step["description"],
                     context=f"Plan: {plan.research_summary}\nCurrent step: {step['description']}",
-                    on_step=lambda s: self._status(f"    [{s.get('method', 'Hybrid')}] {s.get('action', {}).get('reasoning', '')[:80]}"),
+                    on_step=lambda s: self._status(
+                        f"    [{s.get('method', 'Hybrid')}] {s.get('action', {}).get('reasoning', '')[:80]}"
+                    ),
                     on_user_input=self._ask_user,
                 )
 
                 if not result["success"]:
-                    # Check if it's just asking for user input
                     if result.get("summary", "").startswith("Need user input"):
                         continue
-                    return TaskResult(
-                        success=False,
-                        summary=f"Execution failed: {result.get('summary')}",
-                        steps_taken=steps_completed,
-                        error=result.get("summary"),
-                    )
-                steps_completed += 1
+                    success = False
+                    message = result.get("summary") or "Execution failed"
+                else:
+                    steps_completed += 1
 
             elif action == "api_call":
-                # Direct API call (credentials exist)
-                success, msg = self._execute_api_step(plan.intent, step)
-                if not success:
-                    return TaskResult(
-                        success=False,
-                        summary=f"API call failed: {msg}",
-                        steps_taken=steps_completed,
-                        error=msg,
-                    )
-                self._status(f"    [OK] {msg}")
-                steps_completed += 1
+                success, message = self._execute_api_step(plan.intent, step)
+                if success:
+                    self._status(f"    [OK] {message}")
+                    steps_completed += 1
 
-            time.sleep(0.5)
+            elif action == "wait":
+                time.sleep(2)
+                steps_completed += 1
+                message = "Waited"
+
+            elif action == "manual":
+                steps_completed += 1
+                message = "Manual step acknowledged"
+
+            else:
+                success = False
+                message = f"Unknown action type: {action}"
+
+            if success:
+                step_index += 1
+                time.sleep(0.5)
+                continue
+
+            # ============================================================
+            # STOP - THINK - REPLAN
+            # ============================================================
+            reflection = self._reflect_on_step_failure(plan, step, message)
+            self._save_step_reflexion(plan, step, message, reflection)
+
+            if replan_attempts < max_replans:
+                new_plan = self._replan_after_step_failure(plan, step, message, reflection)
+                if new_plan:
+                    replan_attempts += 1
+                    plan = new_plan
+                    if plan.plan_type == "SETUP_GUIDE":
+                        self._status("\n" + "=" * 50)
+                        self._status("SETUP GUIDE")
+                        self._status("=" * 50)
+                        for idx, step_info in enumerate(plan.steps, 1):
+                            self._status(f"  {idx}. [{step_info['phase']}] {step_info['description']}")
+                        self._status("=" * 50 + "\n")
+                        return TaskResult(
+                            success=False,
+                            summary="Setup required. Follow the steps above and re-run your request.",
+                            steps_taken=steps_completed,
+                            error=message,
+                        )
+                    steps_completed = 0
+                    step_index = 0
+                    self._status("  [REPLAN] New plan generated after failure")
+                    continue
+
+            return TaskResult(
+                success=False,
+                summary=f"Execution failed: {message}",
+                steps_taken=steps_completed,
+                error=message,
+            )
 
         return TaskResult(
             success=True,
             summary=f"Completed {steps_completed} steps successfully",
             steps_taken=steps_completed,
         )
+
+    def _reflect_on_step_failure(
+        self,
+        plan: ExecutionPlan,
+        step: Dict[str, Any],
+        error: str,
+    ) -> str:
+        """Analyze why a plan step failed to inform replanning."""
+        prompt = f"""A plan step failed during execution. Analyze WHY it failed.
+
+PLAN SUMMARY: {plan.research_summary}
+FAILED STEP: {step.get('description')}
+ACTION: {step.get('action')}
+ERROR: {error}
+
+Respond with:
+1. ROOT CAUSE
+2. LESSON
+3. SUGGESTION
+
+Keep it concise and actionable (<= 150 words)."""
+
+        response = self._call_llm_chat(prompt, timeout=20)
+        if response:
+            return response
+        return f"Step '{step.get('description')}' failed with error: {error}"
+
+    def _replan_after_step_failure(
+        self,
+        plan: ExecutionPlan,
+        step: Dict[str, Any],
+        error: str,
+        reflection: str,
+    ) -> Optional[ExecutionPlan]:
+        """Generate a revised plan after a failed step."""
+        creds_exist = self._check_credentials(plan.intent.auth_provider)
+        prompt = f"""A plan step failed. Create a NEW plan to achieve the objective.
+
+REQUEST: "{plan.request}"
+FAILED STEP: {step.get('description')}
+ERROR: {error}
+ANALYSIS: {reflection}
+
+CURRENT INTENT:
+- Action: {plan.intent.action}
+- Service: {plan.intent.service}
+- Auth provider: {plan.intent.auth_provider}
+- Parameters: {json.dumps(plan.intent.parameters)}
+
+CURRENT STATE:
+- Credentials exist: {creds_exist}
+
+IMPORTANT RULES:
+1. If credentials don't exist and auth is needed, set plan_type="SETUP_GUIDE"
+2. SETUP_GUIDE plans must contain manual setup steps only (no open_browser or vision_guided)
+3. Use "api_call" only when credentials exist
+4. Each step should be specific and actionable
+
+Return a JSON object with the plan."""
+
+        payload = self._call_llm_json(prompt, PLAN_SCHEMA, timeout=45, model_cls=PlanPayload)
+        if not payload or "error" in payload:
+            return None
+
+        return self._plan_from_payload(
+            request=plan.request,
+            intent=plan.intent,
+            payload=payload,
+            default_summary=plan.research_summary,
+        )
+
+    def _save_step_reflexion(
+        self,
+        plan: ExecutionPlan,
+        step: Dict[str, Any],
+        error: str,
+        reflection: str,
+    ) -> None:
+        """Persist step failure in reflexion memory for future runs."""
+        try:
+            from agent.autonomous.memory.reflexion import ReflexionEntry, write_reflexion
+            from uuid import uuid4
+            from datetime import datetime, timezone
+
+            entry = ReflexionEntry(
+                id=f"learn_{uuid4().hex[:8]}",
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                objective=plan.request,
+                context_fingerprint=f"plan_step_{step.get('action', 'unknown')}",
+                phase="execution",
+                tool_calls=[{
+                    "action": step.get("action"),
+                    "description": step.get("description"),
+                }],
+                errors=[error],
+                reflection=reflection,
+                fix="Replanned after step failure",
+                outcome="failure",
+                tags=["learning_agent", step.get("action", "unknown")],
+            )
+            write_reflexion(entry)
+        except Exception as exc:
+            logger.warning(f"Could not save step reflexion: {exc}")
 
     def _open_browser(self, url: str) -> Tuple[bool, str]:
         """Open a URL in Chrome (so we can see it with vision)."""
@@ -1130,7 +1493,7 @@ Return a JSON object with the plan."""
 
     def _execute_api_step(self, intent: ParsedIntent, step: Dict[str, Any]) -> Tuple[bool, str]:
         """Execute an API call step directly."""
-        if intent.auth_provider == "google" and intent.action == "get_calendar_events":
+        if intent.auth_provider == "google" and intent.action in {"get_calendar_events", "calendar.list_events"}:
             try:
                 from agent.tools.calendar import get_calendar_events, CalendarEventsArgs
                 from datetime import date, timedelta
@@ -1186,7 +1549,7 @@ Return a JSON object with the plan."""
 
                 if step.action == "api_call":
                     intent = ParsedIntent(
-                        action="get_calendar_events",
+                        action="calendar.list_events",
                         service=skill.tags[0] if skill.tags else None,
                         auth_provider=skill.requires_auth,
                     )

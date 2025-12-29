@@ -22,7 +22,11 @@ import shutil
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union, Literal
+
+from pydantic import BaseModel, Field
+
+from agent.llm.json_enforcer import enforce_json_response
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +34,47 @@ logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SCREENSHOTS_DIR = REPO_ROOT / "agent" / "screenshots"
 EVIDENCE_DIR = REPO_ROOT / "evidence"
+
+try:
+    from pydantic import ConfigDict
+except Exception:  # pragma: no cover - pydantic v1 fallback
+    ConfigDict = None
+
+
+class PixelTarget(BaseModel):
+    x: float
+    y: float
+
+    if ConfigDict is not None:
+        model_config = ConfigDict(extra="forbid")
+    else:
+        class Config:
+            extra = "forbid"
+
+
+class TextTarget(BaseModel):
+    text: str
+
+    if ConfigDict is not None:
+        model_config = ConfigDict(extra="forbid")
+    else:
+        class Config:
+            extra = "forbid"
+
+
+class VisionActionModel(BaseModel):
+    observation: str
+    reasoning: str
+    action: Literal["click", "type", "scroll", "press", "goto", "wait", "done", "ask_user", "error"]
+    target: Optional[Union[PixelTarget, TextTarget]] = None
+    value: Optional[str] = None
+    confidence: float = Field(ge=0.0, le=1.0)
+
+    if ConfigDict is not None:
+        model_config = ConfigDict(extra="forbid")
+    else:
+        class Config:
+            extra = "forbid"
 
 
 def _import_pyautogui():
@@ -94,6 +139,57 @@ class VisionExecutor:
 
         return True, "Initialized"
 
+    def _validate_action_data(
+        self,
+        data: Dict[str, Any],
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        try:
+            if hasattr(VisionActionModel, "model_validate"):
+                model = VisionActionModel.model_validate(data)  # type: ignore[attr-defined]
+                return model.model_dump(), None  # type: ignore[attr-defined]
+            model = VisionActionModel.parse_obj(data)  # type: ignore[attr-defined]
+            return model.dict(), None  # type: ignore[attr-defined]
+        except Exception as exc:
+            return None, str(exc)
+
+    def _action_error(
+        self,
+        message: str,
+        *,
+        raw_response: Optional[str] = None,
+        parse_error: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        try:
+            from agent.autonomous.models import ToolResult
+
+            metadata: Dict[str, Any] = {}
+            if raw_response:
+                metadata["raw_response"] = raw_response[:500]
+            if parse_error:
+                metadata["parse_error"] = parse_error
+            tool_result = ToolResult(success=False, error=message, metadata=metadata)
+            tool_payload = tool_result.model_dump() if hasattr(tool_result, "model_dump") else tool_result.dict()
+        except Exception:
+            tool_payload = {
+                "success": False,
+                "error": message,
+                "metadata": {"parse_error": parse_error, "raw_response": (raw_response or "")[:200]},
+            }
+
+        return {
+            "observation": message,
+            "reasoning": message,
+            "action": "error",
+            "value": parse_error or message,
+            "confidence": 0.0,
+            "tool_result": tool_payload,
+        }
+
+    def _log_llm_use(self, llm: Any, purpose: str) -> None:
+        provider = getattr(llm, "provider", getattr(llm, "provider_name", "unknown"))
+        model = getattr(llm, "model", None) or "default"
+        logger.info(f"[LLM] {purpose}: provider={provider} model={model}")
+
     def take_screenshot(self, name: str = "screen") -> ScreenState:
         """Take a screenshot of the current screen."""
         if not self.pyautogui:
@@ -130,16 +226,13 @@ class VisionExecutor:
 
         # Call LLM with screenshot
         try:
-            result = self._call_vision_llm(prompt, self.current_state)
-            return result
+            response = self._call_vision_llm(prompt, self.current_state)
+            if response is None:
+                return self._action_error("Vision LLM returned no response")
+            return self._parse_vision_response(response, self.current_state)
         except Exception as e:
             logger.error(f"Vision analysis failed: {e}")
-            return {
-                "observation": f"Error analyzing screen: {e}",
-                "reasoning": "Analysis failed",
-                "action": "error",
-                "confidence": 0.0,
-            }
+            return self._action_error("Vision analysis failed", parse_error=str(e))
 
     def _build_vision_prompt(self, objective: str, context: str) -> str:
         """Build the prompt for vision analysis."""
@@ -200,28 +293,17 @@ EXAMPLES:
 - To click the search bar at top: {{"x": 500, "y": 60}}
 """
 
-    def _call_vision_llm(self, prompt: str, state: ScreenState) -> Dict[str, Any]:
+    def _call_vision_llm(self, prompt: str, state: ScreenState) -> Optional[str]:
         """Call the LLM with the screenshot for analysis."""
-        # Try using Codex with vision
         if self.llm and hasattr(self.llm, "chat_with_image"):
-            response = self.llm.chat_with_image(prompt, state.screenshot_path)
-            return self._parse_vision_response(response)
+            self._log_llm_use(self.llm, "vision_action")
+            return self.llm.chat_with_image(prompt, state.screenshot_path)
 
-        # Fallback: Use Codex CLI directly with image
         try:
-            response = self._call_codex_vision(prompt, state)
-            return self._parse_vision_response(response)
+            return self._call_codex_vision(prompt, state)
         except Exception as e:
             logger.error(f"Codex vision call failed: {e}")
-
-        # Last resort: Ask user
-        return {
-            "observation": "Could not analyze screen with LLM",
-            "reasoning": "Vision analysis not available",
-            "action": "ask_user",
-            "value": "Please describe what you see and what I should click",
-            "confidence": 0.0,
-        }
+            return None
 
     def _call_codex_vision(self, prompt: str, state: ScreenState) -> str:
         """Call Codex CLI with an image."""
@@ -260,30 +342,29 @@ EXAMPLES:
 
         return result.stdout
 
-    def _parse_vision_response(self, response: str) -> Dict[str, Any]:
-        """Parse the LLM response into an action dict."""
-        # Try to extract JSON from response
-        try:
-            # Look for JSON block
-            if "```json" in response:
-                json_str = response.split("```json")[1].split("```")[0].strip()
-            elif "{" in response and "}" in response:
-                start = response.index("{")
-                end = response.rindex("}") + 1
-                json_str = response[start:end]
-            else:
-                raise ValueError("No JSON found in response")
-
-            return json.loads(json_str)
-        except Exception as e:
-            logger.warning(f"Failed to parse vision response: {e}")
-            return {
-                "observation": response[:500],
-                "reasoning": "Could not parse structured response",
-                "action": "error",
-                "value": f"Parse error: {e}",
-                "confidence": 0.0,
-            }
+    def _parse_vision_response(self, response: str, state: ScreenState) -> Dict[str, Any]:
+        """Parse the LLM response into an action dict with schema enforcement and repair."""
+        data, error = enforce_json_response(
+            response,
+            model_cls=VisionActionModel,
+            retry_call=lambda prompt: self._call_vision_llm(prompt, state),
+            max_retries=2,
+        )
+        if data:
+            validated, validation_error = self._validate_action_data(data)
+            if validated:
+                return validated
+            return self._action_error(
+                "Vision response failed schema validation",
+                raw_response=json.dumps(data),
+                parse_error=validation_error,
+            )
+        logger.warning(f"Failed to parse vision response after repair: {error}")
+        return self._action_error(
+            "Invalid JSON from vision model after repair attempts",
+            raw_response=response,
+            parse_error=error,
+        )
 
     def execute_action(self, action: Dict[str, Any]) -> Tuple[bool, str]:
         """Execute an action on the desktop."""

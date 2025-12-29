@@ -90,8 +90,8 @@ def get_skill_registry() -> SkillRegistry:
 def _register_default_skills(registry: SkillRegistry) -> None:
     """Register default skills."""
     try:
-        from .calendar import CalendarSkill
-        registry.register(CalendarSkill())
+        from .google_calendar import GoogleCalendarSkill
+        registry.register(GoogleCalendarSkill())
     except Exception as e:
         logger.debug(f"Failed to register calendar skill: {e}")
 

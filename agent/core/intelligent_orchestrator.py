@@ -281,7 +281,7 @@ class IntelligentOrchestrator:
                 risk_level=RiskLevel.NONE,
                 complexity=Complexity.SIMPLE,
                 preferred_skill="calendar",
-                intent="list_calendar_events",
+                intent="calendar.list_events",
                 reasoning="User wants to check calendar events",
                 confidence=0.95,
                 entities=self._extract_time_range(lower),

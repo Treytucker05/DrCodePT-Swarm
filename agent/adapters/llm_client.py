@@ -285,6 +285,12 @@ class MultiProviderClient(LLMClient):
                     max_tokens=max_tokens,
                     timeout=timeout,
                 )
+                try:
+                    logger.info(
+                        f"[LLM] provider={response.provider} model={response.model}"
+                    )
+                except Exception:
+                    logger.info(f"[LLM] provider={provider.provider_name}")
                 self._current_index = i  # Remember successful provider
                 return response
 
@@ -330,12 +336,15 @@ class MultiProviderClient(LLMClient):
         errors = []
         for provider in available:
             try:
-                return provider.chat_json(
+                result = provider.chat_json(
                     message,
                     system_prompt=system_prompt,
                     schema=schema,
                     timeout=timeout,
                 )
+                model = getattr(provider, "model", "unknown")
+                logger.info(f"[LLM] provider={provider.provider_name} model={model}")
+                return result
             except LLMAuthError as e:
                 errors.append(e)
                 continue

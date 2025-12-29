@@ -77,22 +77,24 @@ def _setup_logging(verbose: bool = False) -> None:
 def _get_llm_client():
     """Get the LLM client based on environment configuration.
 
-    Prefers Codex CLI (free, capable) for the agent loop.
-    Falls back to OpenRouter if Codex is not available.
+    Prefers OpenRouter when configured.
+    Falls back to Codex CLI if OpenRouter is unavailable.
     """
-    # Try CodexCliClient first (preferred - free and capable)
+    if os.getenv("OPENROUTER_API_KEY"):
+        try:
+            from agent.llm.openrouter_client import OpenRouterClient
+            return OpenRouterClient.from_env()
+        except Exception as e:
+            logger.debug(f"OpenRouterClient not available: {e}")
+
     try:
         from agent.llm.codex_cli_client import CodexCliClient
-        return CodexCliClient.from_env()
+        client = CodexCliClient.from_env()
+        if hasattr(client, "check_auth") and not client.check_auth():
+            raise RuntimeError("Codex CLI auth check failed")
+        return client
     except Exception as e:
         logger.debug(f"CodexCliClient not available: {e}")
-
-    # Fall back to OpenRouter
-    try:
-        from agent.llm.openrouter_client import OpenRouterClient
-        return OpenRouterClient.from_env()
-    except Exception as e:
-        logger.debug(f"OpenRouterClient not available: {e}")
 
     raise RuntimeError(
         "No LLM client available. Set OPENROUTER_API_KEY or configure Codex CLI."

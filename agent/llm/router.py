@@ -96,8 +96,11 @@ class ModelRouter:
         try:
             from agent.llm.codex_cli_client import CodexCliClient
             client = CodexCliClient.from_env()
-            self.codex_available = True
-            logger.debug("Codex CLI backend available")
+            self.codex_available = client.check_auth()
+            if self.codex_available:
+                logger.debug("Codex CLI backend available")
+            else:
+                logger.debug("Codex CLI auth check failed")
         except Exception as e:
             logger.debug(f"Codex CLI not available: {e}")
 

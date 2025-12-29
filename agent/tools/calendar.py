@@ -25,6 +25,26 @@ logger = logging.getLogger(__name__)
 # Pydantic Models for Tool Arguments
 # ============================================================================
 
+class CalendarEventsArgs(BaseModel):
+    """Arguments for listing calendar events via Google Calendar API."""
+    start_date: str = Field(
+        ...,
+        description="Start date (YYYY-MM-DD) in local time",
+    )
+    end_date: str = Field(
+        ...,
+        description="End date (YYYY-MM-DD) in local time",
+    )
+    calendar_id: str = Field(
+        default="primary",
+        description="Calendar ID. Use 'primary' for main calendar",
+    )
+    max_results: int = Field(
+        default=20,
+        description="Maximum number of events to return",
+    )
+
+
 class ListEventsArgs(BaseModel):
     """Arguments for listing calendar events."""
     time_min: Optional[str] = Field(
@@ -99,6 +119,69 @@ def _format_datetime(dt_str: Optional[str] = None, default_offset_days: int = 0)
         return dt_str
     dt = datetime.now() + timedelta(days=default_offset_days)
     return dt.isoformat() + "Z"
+
+
+def _parse_local_date(value: str) -> datetime:
+    """Parse a date or datetime string and return tz-aware datetime."""
+    if not value:
+        raise ValueError("Missing date value")
+    dt = datetime.fromisoformat(value)
+    local_tz = datetime.now().astimezone().tzinfo
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=local_tz)
+    return dt
+
+
+def get_calendar_events(ctx, args: CalendarEventsArgs) -> Dict[str, Any]:
+    """
+    List calendar events using the Google Calendar skill (read-only).
+
+    Returns dict with success, events, and optional setup guide on auth errors.
+    """
+    try:
+        from agent.skills.google_calendar import GoogleCalendarSkill
+        from agent.skills.base import AuthStatus
+    except Exception as exc:
+        return {"success": False, "error": f"Calendar skill unavailable: {exc}"}
+
+    skill = GoogleCalendarSkill()
+    status = skill.auth_status()
+    if status == AuthStatus.NOT_CONFIGURED:
+        return {
+            "success": False,
+            "error": "Google Calendar credentials.json missing",
+            "needs_auth": True,
+            "setup_guide": skill.setup_guide(),
+        }
+
+    try:
+        time_min = _parse_local_date(args.start_date)
+        time_max = _parse_local_date(args.end_date)
+    except Exception as exc:
+        return {"success": False, "error": f"Invalid date range: {exc}"}
+
+    result = skill.list_events(
+        time_min=time_min,
+        time_max=time_max,
+        max_results=args.max_results,
+        calendar_id=args.calendar_id,
+    )
+
+    if result.ok:
+        return {
+            "success": True,
+            "events": result.data or [],
+            "time_range": {"start": time_min.isoformat(), "end": time_max.isoformat()},
+        }
+
+    payload = {
+        "success": False,
+        "error": result.error or "Failed to list events",
+        "needs_auth": result.needs_auth,
+    }
+    if result.needs_auth:
+        payload["setup_guide"] = skill.setup_guide()
+    return payload
 
 
 def calendar_list_events(ctx, args: ListEventsArgs):
@@ -384,11 +467,13 @@ def register_calendar_tools(registry) -> None:
 
 
 __all__ = [
+    "CalendarEventsArgs",
     "ListEventsArgs",
     "CreateEventArgs",
     "UpdateEventArgs",
     "DeleteEventArgs",
     "FindFreeSlotsArgs",
+    "get_calendar_events",
     "calendar_list_events",
     "calendar_create_event",
     "calendar_update_event",

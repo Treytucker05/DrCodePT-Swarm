@@ -33,6 +33,13 @@ if errorlevel 1 (
   exit /b 1
 )
 
+echo [SETUP] Ensuring UI automation deps (pywinauto, uiautomation)...
+"%PY%" -m pip install -q pywinauto uiautomation >nul 2>nul
+if errorlevel 1 (
+  echo [ERROR] Failed to install UI automation dependencies.
+  exit /b 1
+)
+
 rem Install Playwright browsers (Chromium) if not present - silent mode
 "%PY%" -m playwright install chromium >nul 2>nul
 if errorlevel 1 (

@@ -13,13 +13,16 @@ Each skill:
 """
 
 from .base import Skill, SkillResult, AuthStatus
-from .calendar import CalendarSkill
+from .google_calendar import GoogleCalendarSkill
 from .registry import SkillRegistry, get_skill_registry
+
+CalendarSkill = GoogleCalendarSkill
 
 __all__ = [
     "Skill",
     "SkillResult",
     "AuthStatus",
+    "GoogleCalendarSkill",
     "CalendarSkill",
     "SkillRegistry",
     "get_skill_registry",

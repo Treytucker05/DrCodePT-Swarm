@@ -14,6 +14,13 @@ if errorlevel 1 (
   exit /b 1
 )
 
+rem Check Codex CLI auth status using the same invocation as runtime calls
+echo [CHECK] Codex CLI auth status (runtime check):
+"%PY%" -c "from agent.llm.codex_cli_client import CodexCliClient; import sys; sys.exit(0 if CodexCliClient.from_env().check_auth() else 1)"
+if errorlevel 1 (
+  echo [WARN] Codex CLI not authenticated or unavailable. Run: codex login
+)
+
 echo.
 echo [START] Launching Unified Agent...
 

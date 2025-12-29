@@ -356,10 +356,12 @@ class UnifiedAgent:
             if result.get("success"):
                 events = result.get("events", [])
                 if events:
-                    event_list = "\n".join(
-                        f"- {e.get('summary', 'Untitled')} at {e.get('start', {}).get('dateTime', 'unknown time')}"
-                        for e in events[:10]
-                    )
+                    def _format_event(evt):
+                        start = evt.get("start", {})
+                        when = start.get("dateTime") or start.get("date") or "unknown time"
+                        return f"- {evt.get('summary', 'Untitled')} at {when}"
+
+                    event_list = "\n".join(_format_event(e) for e in events[:10])
                     summary = f"Found {len(events)} events:\n{event_list}"
                 else:
                     summary = f"No events found for {time_range}"
@@ -372,6 +374,14 @@ class UnifiedAgent:
                 )
             else:
                 error = result.get("error", "Unknown error")
+                setup_guide = result.get("setup_guide")
+                if setup_guide:
+                    return AgentResult(
+                        success=False,
+                        summary=setup_guide,
+                        error=error,
+                        strategy=strategy,
+                    )
                 if "credentials" in error.lower() or "auth" in error.lower():
                     return AgentResult(
                         success=False,

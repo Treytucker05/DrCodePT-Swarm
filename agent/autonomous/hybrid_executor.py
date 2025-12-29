@@ -20,10 +20,17 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Literal
+from uuid import uuid4
+
+from pydantic import BaseModel, Field
+
+from agent.llm.json_enforcer import build_repair_prompt, enforce_json_response
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +44,36 @@ except ImportError:
     logger.debug("Guards module not available - stuck loop detection disabled")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+try:
+    from pydantic import ConfigDict
+except Exception:  # pragma: no cover - pydantic v1 fallback
+    ConfigDict = None
+
+
+class UIActionModel(BaseModel):
+    reasoning: str
+    action: Literal[
+        "launch",
+        "click",
+        "type",
+        "scroll",
+        "press",
+        "wait",
+        "done",
+        "error",
+        "ask_user",
+    ]
+    target_name: Optional[str] = None
+    target_type: Optional[str] = None
+    value: Optional[str] = None
+    confidence: float = Field(ge=0.0, le=1.0)
+
+    if ConfigDict is not None:
+        model_config = ConfigDict(extra="forbid")
+    else:
+        class Config:
+            extra = "forbid"
 
 
 class HybridExecutor:
@@ -55,6 +92,7 @@ class HybridExecutor:
         self.action_history: List[Dict[str, Any]] = []
         self.max_steps = 50
         self._initialized = False
+        self._disable_codex = False
 
         # Stuck loop detection (Gap #9)
         self._thrash_guard = None
@@ -104,51 +142,77 @@ class HybridExecutor:
 
     def _get_llm(self):
         """Get or create LLM client."""
-        if self.llm:
+        if self.llm and not self._disable_codex:
             return self.llm
 
-        # Try Codex first
-        try:
-            from agent.llm.codex_cli_client import CodexCliClient
-            self.llm = CodexCliClient.from_env()
-            return self.llm
-        except Exception as e:
-            logger.debug(f"Codex not available: {e}")
+        # Prefer OpenRouter if configured
+        if os.getenv("OPENROUTER_API_KEY"):
+            try:
+                from agent.llm.openrouter_client import OpenRouterClient
 
-        # Fall back to OpenRouter
-        try:
-            from agent.llm.openrouter_client import OpenRouterClient
-            self.llm = OpenRouterClient.from_env()
-            logger.info("Using OpenRouter for hybrid executor")
-            return self.llm
-        except Exception as e:
-            logger.warning(f"OpenRouter not available: {e}")
+                self.llm = OpenRouterClient.from_env()
+                self._log_llm_use(self.llm, "hybrid_executor")
+                return self.llm
+            except Exception as e:
+                logger.warning(f"OpenRouter not available: {e}")
+
+        # Fall back to Codex if allowed
+        if not self._disable_codex:
+            try:
+                from agent.llm.codex_cli_client import CodexCliClient
+
+                client = CodexCliClient.from_env()
+                if hasattr(client, "check_auth") and not client.check_auth():
+                    self._disable_codex = True
+                    logger.warning("Codex CLI auth check failed; disabling for this run")
+                else:
+                    self.llm = client
+                    self._log_llm_use(self.llm, "hybrid_executor")
+                    return self.llm
+            except Exception as e:
+                logger.debug(f"Codex not available: {e}")
 
         return None
 
-    def _call_llm(self, prompt: str, timeout: int = 30) -> Optional[str]:
+    def _log_llm_use(self, llm: Any, purpose: str) -> None:
+        provider = getattr(llm, "provider", getattr(llm, "provider_name", "unknown"))
+        model = getattr(llm, "model", None) or "default"
+        logger.info(f"[LLM] {purpose}: provider={provider} model={model}")
+
+    def _call_llm(
+        self,
+        prompt: str,
+        timeout: int = 30,
+        *,
+        llm_client: Optional[Any] = None,
+    ) -> Optional[str]:
         """Call LLM for text reasoning (NOT vision)."""
-        llm = self._get_llm()
+        llm = llm_client or self._get_llm()
         if not llm:
             return None
 
+        self._log_llm_use(llm, "ui_action")
+
         try:
-            # Try Codex-style call first
-            if hasattr(llm, 'chat'):
+            if hasattr(llm, "chat"):
                 try:
                     return llm.chat(prompt, timeout_seconds=timeout)
                 except TypeError:
-                    # OpenRouter doesn't take timeout_seconds
                     return llm.chat(prompt)
             return None
         except Exception as e:
             error_str = str(e).lower()
-            # If Codex failed, try OpenRouter as fallback
             if "not authenticated" in error_str or "codex" in error_str:
+                self._disable_codex = True
+                if getattr(llm, "provider", "") == "codex_cli":
+                    self.llm = None
                 logger.warning(f"Codex failed, trying OpenRouter: {e}")
                 try:
                     from agent.llm.openrouter_client import OpenRouterClient
+
                     fallback_llm = OpenRouterClient.from_env()
+                    self.llm = fallback_llm
+                    self._log_llm_use(fallback_llm, "ui_action_fallback")
                     return fallback_llm.chat(prompt)
                 except Exception as fallback_e:
                     logger.error(f"OpenRouter fallback failed: {fallback_e}")
@@ -179,6 +243,56 @@ class HybridExecutor:
         except Exception as e:
             return {"error": str(e)}
 
+    def _is_browser_window(self, ui_state: Dict[str, Any]) -> bool:
+        title = (ui_state.get("window_title") or "").lower()
+        class_name = (ui_state.get("window_class") or "").lower()
+        tokens = ["chrome", "edge", "firefox", "brave", "arc", "chromium"]
+        return any(token in title for token in tokens) or any(token in class_name for token in tokens)
+
+    def _validate_action_data(
+        self,
+        data: Dict[str, Any],
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        try:
+            if hasattr(UIActionModel, "model_validate"):
+                model = UIActionModel.model_validate(data)  # type: ignore[attr-defined]
+                return model.model_dump(), None  # type: ignore[attr-defined]
+            model = UIActionModel.parse_obj(data)  # type: ignore[attr-defined]
+            return model.dict(), None  # type: ignore[attr-defined]
+        except Exception as exc:
+            return None, str(exc)
+
+    def _action_error(
+        self,
+        message: str,
+        *,
+        raw_response: Optional[str] = None,
+        parse_error: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        try:
+            from agent.autonomous.models import ToolResult
+
+            metadata: Dict[str, Any] = {}
+            if raw_response:
+                metadata["raw_response"] = raw_response[:500]
+            if parse_error:
+                metadata["parse_error"] = parse_error
+            tool_result = ToolResult(success=False, error=message, metadata=metadata)
+            tool_payload = tool_result.model_dump() if hasattr(tool_result, "model_dump") else tool_result.dict()
+        except Exception:
+            tool_payload = {
+                "success": False,
+                "error": message,
+                "metadata": {"parse_error": parse_error, "raw_response": (raw_response or "")[:200]},
+            }
+
+        return {
+            "action": "error",
+            "reasoning": message,
+            "confidence": 0.0,
+            "tool_result": tool_payload,
+        }
+
     def decide_next_action(self, objective: str, context: str = "") -> Dict[str, Any]:
         """
         Use LLM to decide the next action based on UI STATE (text), not vision.
@@ -190,6 +304,9 @@ class HybridExecutor:
 
         if "error" in ui_state:
             # Fall back to vision if we can't read UI state
+            return self._decide_with_vision(objective, context)
+
+        if self._is_browser_window(ui_state):
             return self._decide_with_vision(objective, context)
 
         # Format UI state for LLM
@@ -239,11 +356,45 @@ RULES:
 5. For typing, first click the Edit field, then type
 """
 
-        response = self._call_llm(prompt, timeout=20)
-        if not response:
-            return self._decide_with_vision(objective, context)
+        llm = self._get_llm()
+        if not llm:
+            return self._action_error("No LLM available for UI action selection")
 
-        return self._parse_action_response(response)
+        if hasattr(llm, "reason_json"):
+            schema = (
+                UIActionModel.model_json_schema()
+                if hasattr(UIActionModel, "model_json_schema")
+                else UIActionModel.schema()
+            )
+            schema_path = Path(tempfile.gettempdir()) / f"ui_action_schema_{uuid4().hex[:8]}.json"
+            schema_path.write_text(json.dumps(schema), encoding="utf-8")
+            try:
+                error = None
+                data: Dict[str, Any] = {}
+                for attempt in range(3):
+                    data = llm.reason_json(prompt, schema_path=schema_path, timeout_seconds=20)
+                    validated, error = self._validate_action_data(data if isinstance(data, dict) else {})
+                    if validated:
+                        return validated
+                    prompt = build_repair_prompt(schema, previous=json.dumps(data))
+                return self._action_error(
+                    "Invalid JSON from model after repair attempts",
+                    raw_response=json.dumps(data),
+                    parse_error=error,
+                )
+            except Exception as exc:
+                logger.warning(f"LLM JSON action call failed: {exc}")
+            finally:
+                try:
+                    schema_path.unlink()
+                except Exception:
+                    pass
+
+        response = self._call_llm(prompt, timeout=20, llm_client=llm)
+        if not response:
+            return self._action_error("No response from LLM for UI action selection")
+
+        return self._parse_action_response(response, llm_client=llm)
 
     def _decide_with_vision(self, objective: str, context: str) -> Dict[str, Any]:
         """Fallback: Use vision to decide action when UI tree fails."""
@@ -258,26 +409,27 @@ RULES:
         self.vision_executor.take_screenshot("hybrid_fallback")
         return self.vision_executor.analyze_screen(objective, context)
 
-    def _parse_action_response(self, response: str) -> Dict[str, Any]:
-        """Parse LLM response into action dict."""
-        try:
-            if "```json" in response:
-                json_str = response.split("```json")[1].split("```")[0].strip()
-            elif "{" in response and "}" in response:
-                start = response.index("{")
-                end = response.rindex("}") + 1
-                json_str = response[start:end]
-            else:
-                raise ValueError("No JSON found")
-
-            return json.loads(json_str)
-        except Exception as e:
-            logger.warning(f"Failed to parse action response: {e}")
-            return {
-                "action": "error",
-                "reasoning": f"Failed to parse: {response[:200]}",
-                "confidence": 0.0,
-            }
+    def _parse_action_response(
+        self,
+        response: str,
+        *,
+        llm_client: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        """Parse LLM response into action dict with schema enforcement and repair."""
+        data, error = enforce_json_response(
+            response,
+            model_cls=UIActionModel,
+            retry_call=lambda prompt: self._call_llm(prompt, timeout=20, llm_client=llm_client),
+            max_retries=2,
+        )
+        if data:
+            return data
+        logger.warning(f"Failed to parse action response after repair: {error}")
+        return self._action_error(
+            "Invalid JSON from model after repair attempts",
+            raw_response=response,
+            parse_error=error,
+        )
 
     def execute_action(self, action: Dict[str, Any]) -> Tuple[bool, str]:
         """
@@ -737,6 +889,30 @@ RULES:
                 return {
                     "success": False,
                     "summary": action.get("reasoning", "Error occurred"),
+                    "steps_taken": steps_taken,
+                    "actions": self.action_history,
+                }
+
+            # Handle ask_user (vision fallback or clarification)
+            if action_type == "ask_user":
+                question = action.get("value") or action.get("reasoning") or "Need user input"
+                if on_user_input:
+                    user_help = on_user_input(question)
+                    self.action_history[-1]["result"] = "User input received"
+                    self._update_agent_state(action, True, "User input received")
+                    if user_help:
+                        context = f"{context}\n\nUSER INPUT: {user_help}"
+                        consecutive_failures = 0
+                        continue
+                    return {
+                        "success": False,
+                        "summary": "User did not provide input",
+                        "steps_taken": steps_taken,
+                        "actions": self.action_history,
+                    }
+                return {
+                    "success": False,
+                    "summary": f"Need user input: {question}",
                     "steps_taken": steps_taken,
                     "actions": self.action_history,
                 }

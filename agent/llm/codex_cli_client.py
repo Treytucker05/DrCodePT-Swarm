@@ -335,6 +335,33 @@ class CodexCliClient(LLMClient):
         except Exception:
             return Path.cwd()
 
+    def check_auth(self, timeout_seconds: int = 15) -> bool:
+        """Check Codex CLI auth using the same exec invocation as runtime."""
+        schema_path = Path(tempfile.gettempdir()) / f"codex_auth_{uuid4().hex}.json"
+        schema = {
+            "type": "object",
+            "properties": {"ok": {"type": "boolean"}},
+            "required": ["ok"],
+            "additionalProperties": False,
+        }
+        try:
+            schema_path.write_text(json.dumps(schema), encoding="utf-8")
+            self.reason_json(
+                "Return a JSON object {\"ok\": true}.",
+                schema_path=schema_path,
+                timeout_seconds=timeout_seconds,
+            )
+            return True
+        except CodexCliAuthError:
+            return False
+        except Exception:
+            return False
+        finally:
+            try:
+                schema_path.unlink()
+            except Exception:
+                pass
+
     def with_context(
         self,
         *,

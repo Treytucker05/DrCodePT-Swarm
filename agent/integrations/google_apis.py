@@ -44,11 +44,19 @@ def get_credentials() -> Optional[Credentials]:
     if not creds_data:
         return None
     
-    token_data = creds_data.get('token')
+    token_data = (
+        creds_data.get('token')
+        or creds_data.get('password')  # token is stored in password for google_apis
+    )
     if not token_data:
         return None
-    
-    creds = Credentials.from_authorized_user_info(json.loads(token_data), SCOPES)
+
+    try:
+        token_payload = json.loads(token_data)
+    except Exception:
+        return None
+
+    creds = Credentials.from_authorized_user_info(token_payload, SCOPES)
     
     if creds and creds.expired and creds.refresh_token:
         creds.refresh(Request())

@@ -84,48 +84,13 @@ class CodexCLIAdapter(LLMClient):
         if self._auth_checked:
             return self._is_authenticated
 
-        codex = self._find_codex()
-        if not codex:
-            self._auth_checked = True
-            self._is_authenticated = False
-            return False
-
         try:
-            # Run a simple command to check auth status
-            result = subprocess.run(
-                [codex, "--version"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
+            from agent.llm.codex_cli_client import CodexCliClient
 
-            if result.returncode != 0:
-                self._auth_checked = True
-                self._is_authenticated = False
-                return False
-
-            # Try a minimal chat to verify auth
-            result = subprocess.run(
-                [codex, "chat", "-m", "Say OK"],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-
-            if "not authenticated" in result.stderr.lower():
-                self._auth_checked = True
-                self._is_authenticated = False
-                return False
-
+            client = CodexCliClient.from_env()
+            self._is_authenticated = client.check_auth()
             self._auth_checked = True
-            self._is_authenticated = result.returncode == 0
             return self._is_authenticated
-
-        except subprocess.TimeoutExpired:
-            logger.warning("Codex auth check timed out")
-            self._auth_checked = True
-            self._is_authenticated = False
-            return False
 
         except Exception as e:
             logger.debug(f"Codex auth check failed: {e}")
