@@ -33,7 +33,8 @@ from .planning.plan_first import PlanFirstPlanner
 from .planning.react import ReActPlanner
 from .reflection import Reflector
 from .logging_config import configure_logging
-from .state import AgentState
+from .state import AgentState, UnifiedAgentState, StopReason
+from .guards import ThrashGuard, GuardConfig, EscalationAction
 from .tools.builtins import build_default_tool_registry
 from .tools.registry import ToolRegistry
 from .trace import JsonlTracer
@@ -41,6 +42,17 @@ from agent.autonomous.retry_utils import LLM_RETRY_CONFIG, TOOL_RETRY_CONFIG, re
 from agent.autonomous.monitoring import ResourceMonitor
 
 logger = logging.getLogger(__name__)
+
+
+def _is_quiet() -> bool:
+    """Check if we should suppress verbose output."""
+    return os.environ.get("AGENT_QUIET", "0") == "1"
+
+
+def _status_print(*args, **kwargs) -> None:
+    """Print status info only if not in quiet mode."""
+    if not _is_quiet():
+        print(*args, **kwargs)
 
 
 def _utc_ts_id() -> str:
@@ -174,6 +186,8 @@ class AgentRunner:
     memory_store: Optional[SqliteMemoryStore] = None
     mode_name: str = "autonomous"
     agent_id: Optional[str] = None
+    model_router: Optional[Any] = None  # Optional ModelRouter for smart LLM routing
+    thrash_guard: Optional[ThrashGuard] = None  # Optional anti-thrash guard
 
     def __init__(
         self,
@@ -186,6 +200,8 @@ class AgentRunner:
         memory_store: Optional[SqliteMemoryStore] = None,
         mode_name: str = "autonomous",
         agent_id: Optional[str] = None,
+        model_router: Optional[Any] = None,
+        use_thrash_guard: bool = True,
     ) -> None:
         self.cfg = cfg
         self.agent_cfg = agent_cfg
@@ -196,8 +212,20 @@ class AgentRunner:
         self.memory_store = memory_store
         self.mode_name = mode_name
         self.agent_id = agent_id
+        self.model_router = model_router
         self.resource_monitor = ResourceMonitor(memory_limit_mb=1024)
         self._step_count = 0
+
+        # Initialize thrash guard if enabled
+        if use_thrash_guard:
+            self.thrash_guard = ThrashGuard(GuardConfig(
+                max_repeated_actions=cfg.loop_repeat_threshold if hasattr(cfg, 'loop_repeat_threshold') else 3,
+                max_file_reads=3,
+                max_steps_no_progress=cfg.no_state_change_threshold if hasattr(cfg, 'no_state_change_threshold') else 5,
+                max_same_errors=2,
+            ))
+        else:
+            self.thrash_guard = None
 
     def run(self, task: str, *, resume_path: Optional[Path] = None) -> AgentRunResult:
         resume = self._load_checkpoint(resume_path) if resume_path else None
@@ -445,12 +473,12 @@ class AgentRunner:
         tool_summary = ""
         if self.cfg.llm_heartbeat_seconds:
             tool_summary = self._describe_tools_for_humans(tools)
-            print(f"[TOOLS] I can use: {tool_summary}.")
+            _status_print(f"[TOOLS] I can use: {tool_summary}.")
         heartbeat_label = self.cfg.llm_heartbeat_seconds
         plan_timeout = self.cfg.llm_plan_timeout_seconds
         retry_timeout = self.cfg.llm_plan_retry_timeout_seconds
         heartbeat_text = f"{heartbeat_label}s" if heartbeat_label else "off"
-        print(
+        _status_print(
             f"[CONFIG] plan_timeout={plan_timeout}s plan_retry_timeout={retry_timeout}s heartbeat={heartbeat_text}"
         )
         self._stats = {"tool_calls": 0, "retries": 0}
@@ -639,7 +667,7 @@ class AgentRunner:
                         timeout_seconds=self.cfg.llm_plan_timeout_seconds,
                     )
                     if plan is None:
-                        print("[THINKING] Planning is taking too long; trying a simpler, faster plan.")
+                        _status_print("[THINKING] Planning is taking too long; trying a simpler, faster plan.")
                         plan = self._call_llm_with_retry(
                             tracer=tracer,
                             where="plan_fast",
@@ -659,7 +687,7 @@ class AgentRunner:
                         exploration_nudge_next = False
                         exploration_reason = ""
                     if plan is None:
-                        print("[THINKING] Still no plan. This may be a tool/setup issue or a flawed approach. Stopping to avoid a hang.")
+                        _status_print("[THINKING] Still no plan. This may be a tool/setup issue or a flawed approach. Stopping to avoid a hang.")
                         return self._stop(
                             tracer=tracer,
                             memory_store=memory_store,
@@ -702,7 +730,7 @@ class AgentRunner:
                             timeout_seconds=self.cfg.llm_plan_timeout_seconds,
                         )
                         if current_plan is None:
-                            print("[THINKING] Planning is taking too long; trying a simpler, faster plan.")
+                            _status_print("[THINKING] Planning is taking too long; trying a simpler, faster plan.")
                             current_plan = self._call_llm_with_retry(
                                 tracer=tracer,
                                 where="plan_fast",
@@ -712,7 +740,7 @@ class AgentRunner:
                                 timeout_seconds=self.cfg.llm_plan_retry_timeout_seconds,
                             )
                         if current_plan is None:
-                            print("[THINKING] Still no plan. This may be a tool/setup issue or a flawed approach. Stopping to avoid a hang.")
+                            _status_print("[THINKING] Still no plan. This may be a tool/setup issue or a flawed approach. Stopping to avoid a hang.")
                             return self._stop(
                                 tracer=tracer,
                                 memory_store=memory_store,
@@ -754,7 +782,7 @@ class AgentRunner:
 
                 step = plan.steps[0] if self.planner_cfg.mode == "react" else plan.steps[state.current_step_idx]
                 if self.cfg.llm_heartbeat_seconds:
-                    print(f"[PLAN] Next tool: {step.tool_name} - {step.goal}")
+                    _status_print(f"[PLAN] Next tool: {step.tool_name} - {step.goal}")
 
                 preempted_tool_result: Optional[ToolResult] = None
                 # Approval gate for tools that require explicit confirmation
@@ -1269,9 +1297,17 @@ class AgentRunner:
                 pass
 
     def _make_planner(self, llm: LLMClient, tools: ToolRegistry) -> Any:
+        # If we have a model router, use it for planner LLM selection
+        planner_llm = llm
+        if self.model_router is not None:
+            try:
+                planner_llm = self.model_router.get_llm_for_task("plan next step") or llm
+            except Exception as e:
+                logger.warning(f"Model router failed, using default LLM: {e}")
+
         if self.planner_cfg.mode == "plan_first":
             return PlanFirstPlanner(
-                llm=llm,
+                llm=planner_llm,
                 tools=tools,
                 unsafe_mode=self.agent_cfg.unsafe_mode,
                 num_candidates=self.planner_cfg.num_candidates,
@@ -1279,7 +1315,44 @@ class AgentRunner:
                 use_dppm=self.planner_cfg.use_dppm,
                 use_tot=self.planner_cfg.use_tot,
             )
-        return ReActPlanner(llm=llm, tools=tools, unsafe_mode=self.agent_cfg.unsafe_mode)
+        return ReActPlanner(llm=planner_llm, tools=tools, unsafe_mode=self.agent_cfg.unsafe_mode)
+
+    def _check_thrash_guard(
+        self,
+        unified_state: UnifiedAgentState,
+        tracer: JsonlTracer,
+    ) -> Optional[Tuple[str, str]]:
+        """
+        Check thrash guard and return (reason, message) if agent should stop.
+
+        Returns None if no thrashing detected.
+        """
+        if self.thrash_guard is None:
+            return None
+
+        detection = self.thrash_guard.check(unified_state)
+        if not detection.detected:
+            return None
+
+        action, message = self.thrash_guard.get_escalation(detection)
+
+        tracer.log({
+            "type": "thrash_detected",
+            "thrash_type": detection.thrash_type.value,
+            "severity": detection.severity,
+            "details": detection.details,
+            "action": action.value,
+            "message": message,
+        })
+
+        if action == EscalationAction.STOP:
+            return ("thrash_guard_stop", message)
+        elif action == EscalationAction.ASK_USER:
+            return ("thrash_guard_ask_user", message)
+
+        # For other actions (WARN, SWITCH_STRATEGY, USE_CODEX), log but continue
+        logger.warning(f"[THRASH_GUARD] {message}")
+        return None
 
     def _open_default_memory_store(self) -> Optional[SqliteMemoryStore]:
         path = self.agent_cfg.memory_db_path
@@ -1443,7 +1516,7 @@ class AgentRunner:
         def _attempt() -> ToolResult:
             nonlocal last
             if self.cfg.llm_heartbeat_seconds and last is None:
-                print(f"[TOOL] {tool_name} {self._format_tool_args(tool_args)}")
+                _status_print(f"[TOOL] {tool_name} {self._format_tool_args(tool_args)}")
             if isinstance(getattr(self, "_stats", None), dict):
                 self._stats["tool_calls"] = self._stats.get("tool_calls", 0) + 1
             result = tools.call(tool_name, tool_args, ctx)
@@ -1729,15 +1802,15 @@ class AgentRunner:
                 done.set()
 
         label_msg = label or "Thinking"
-        print(f"[THINKING] {label_msg}")
+        _status_print(f"[THINKING] {label_msg}")
         if timeout_seconds:
-            print(f"[THINKING] Time limit: {timeout_seconds}s. If it takes longer, I will switch to a simpler approach.")
+            _status_print(f"[THINKING] Time limit: {timeout_seconds}s. If it takes longer, I will switch to a simpler approach.")
         thread = threading.Thread(target=_target, daemon=True)
         thread.start()
         start = time.monotonic()
         while not done.wait(timeout=heartbeat_seconds):
             elapsed = time.monotonic() - start
-            print(f"[THINKING] Still working on {label_msg}... elapsed={elapsed:.1f}s")
+            _status_print(f"[THINKING] Still working on {label_msg}... elapsed={elapsed:.1f}s")
         if error:
             raise error["exc"]
         return result.get("value")
@@ -1955,3 +2028,58 @@ class AgentRunner:
         if hasattr(obj, "dict"):
             return obj.dict()  # type: ignore[attr-defined]
         return obj
+
+
+def create_unified_runner(
+    *,
+    profile: str = "fast",
+    max_steps: int = 30,
+    timeout_seconds: int = 600,
+    use_router: bool = True,
+    use_thrash_guard: bool = True,
+) -> AgentRunner:
+    """
+    Factory function to create an AgentRunner with unified architecture.
+
+    Args:
+        profile: Agent profile (fast, deep, audit)
+        max_steps: Maximum steps before stopping
+        timeout_seconds: Timeout in seconds
+        use_router: Whether to use the model router
+        use_thrash_guard: Whether to enable anti-thrash detection
+
+    Returns:
+        Configured AgentRunner
+    """
+    from agent.llm.base import get_default_llm
+
+    # Get default LLM
+    llm = get_default_llm()
+
+    # Try to get model router if enabled
+    model_router = None
+    if use_router:
+        try:
+            from agent.llm.router import get_model_router
+            model_router = get_model_router()
+            logger.info("Model router enabled")
+        except ImportError as e:
+            logger.warning(f"Model router not available: {e}")
+
+    # Create configs
+    runner_cfg = RunnerConfig(
+        max_steps=max_steps,
+        timeout_seconds=timeout_seconds,
+        profile=profile,
+    )
+    agent_cfg = AgentConfig()
+    planner_cfg = PlannerConfig(mode="react")
+
+    return AgentRunner(
+        cfg=runner_cfg,
+        agent_cfg=agent_cfg,
+        planner_cfg=planner_cfg,
+        llm=llm,
+        model_router=model_router,
+        use_thrash_guard=use_thrash_guard,
+    )

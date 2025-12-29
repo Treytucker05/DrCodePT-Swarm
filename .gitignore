@@ -6,6 +6,8 @@
 agent/.env
 agent/runs/
 runs/
+logs/
+!logs/.gitkeep
 agent/failures/
 agent/handoff/
 agent/sessions/*_state.json

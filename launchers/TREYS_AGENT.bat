@@ -1,5 +1,5 @@
 @echo off
-title Trey's Agent
+title Trey's Agent (Unified)
 setlocal EnableExtensions EnableDelayedExpansion
 
 rem Ensure we run from repo root
@@ -15,9 +15,11 @@ if errorlevel 1 (
 )
 
 echo.
-echo [START] Launching Trey's Agent...
-cd /d "%CD%\agent"
-"%PY%" treys_agent.py
+echo [START] Launching Unified Agent...
+
+rem Use the new unified entrypoint
+rem Add --legacy flag to use old treys_agent if needed
+"%PY%" -m agent --interactive
 
 echo.
 pause

@@ -24,6 +24,17 @@ from .errors import (
 from contextlib import nullcontext
 
 
+def _is_quiet() -> bool:
+    """Check if we should suppress debug output."""
+    return os.environ.get("AGENT_QUIET", "0") == "1"
+
+
+def _debug_print(*args, **kwargs) -> None:
+    """Print debug info only if not in quiet mode."""
+    if not _is_quiet():
+        print(*args, **kwargs)
+
+
 PROFILE_MAP = {
     "Fingerprint": "reason",
     "Static": "reason",
@@ -132,21 +143,27 @@ def build_codex_command(
     out_path: Optional[str] = None,
     enable_search: bool = False,
     model: str = "",
+    use_profile: bool = False,  # Default to False - profiles force slower models
 ) -> list[str]:
     """
-    Build optimized Codex CLI command with profile selection.
+    Build optimized Codex CLI command.
+
+    Note: By default, we don't use --profile because it forces slower models
+    (e.g., gpt-5 instead of gpt-5.2-codex). The default model with low reasoning
+    effort is much faster for most tasks.
     """
-    resolved_profile = _profile_for_agent(agent_name, profile)
     cmd = [
         codex_bin,
-        "--profile",
-        resolved_profile,
         "--dangerously-bypass-approvals-and-sandbox",
         "-c",
         "sandbox_mode=danger-full-access",
         "-c",
         "approval_policy=never",
     ]
+    # Only add profile if explicitly requested (profiles force slower models)
+    if use_profile:
+        resolved_profile = _profile_for_agent(agent_name, profile)
+        cmd += ["--profile", resolved_profile]
     if model:
         cmd += ["--model", model]
     cmd += [
@@ -198,10 +215,10 @@ def call_codex(
     )
     cwd = os.getcwd()
     timeout_seconds = timeout
-    print(f"[DEBUG] Codex command: {' '.join(cmd)}")
-    print(f"[DEBUG] Profile: {resolved_profile}")
-    print(f"[DEBUG] Working dir: {cwd}")
-    print(f"[DEBUG] Timeout: {timeout_seconds}s")
+    _debug__debug_print(f"[DEBUG] Codex command: {' '.join(cmd)}")
+    _debug__debug_print(f"[DEBUG] Profile: {resolved_profile}")
+    _debug__debug_print(f"[DEBUG] Working dir: {cwd}")
+    _debug__debug_print(f"[DEBUG] Timeout: {timeout_seconds}s")
     try:
         result = subprocess.run(
             cmd,
@@ -213,8 +230,8 @@ def call_codex(
             env=os.environ.copy(),
             encoding="utf-8",
         )
-        print(f"[DEBUG] Return code: {result.returncode}")
-        print(f"[DEBUG] Stderr: {(result.stderr or '')[:500]}")
+        _debug__debug_print(f"[DEBUG] Return code: {result.returncode}")
+        _debug__debug_print(f"[DEBUG] Stderr: {(result.stderr or '')[:500]}")
         if "429" in (result.stderr or "") or "rate limit" in (result.stderr or "").lower():
             logging.warning("[%s] Hit rate limit - quota exhausted", agent)
             return {
@@ -427,21 +444,22 @@ class CodexCliClient(LLMClient):
                 try:
                     from agent.ui.spinner import Spinner
 
-                    spinner_ctx = Spinner("CODEX") if sys.stdout.isatty() else nullcontext()
+                    # Only show spinner if not in quiet mode
+                    spinner_ctx = Spinner("CODEX") if sys.stdout.isatty() and not _is_quiet() else nullcontext()
                 except Exception:
                     spinner_ctx = nullcontext()
 
                 with spinner_ctx:
                     if os.environ.get("DEBUG"):
-                        print(f"[DEBUG] CODEX_HOME: {env.get('CODEX_HOME')}")
-                        print(f"[DEBUG] Command: {' '.join(cmd_args)}")
+                        _debug_print(f"[DEBUG] CODEX_HOME: {env.get('CODEX_HOME')}")
+                        _debug_print(f"[DEBUG] Command: {' '.join(cmd_args)}")
                         print(
                             "[DEBUG] Auth file exists: "
                             f"{os.path.exists(os.path.join(env['CODEX_HOME'], 'auth.json'))}"
                         )
-                    print(f"\n[DEBUG] Codex command: {' '.join(cmd_args)}", file=sys.stderr)
-                    print(f"[DEBUG] Working dir: {os.getcwd()}", file=sys.stderr)
-                    print(f"[DEBUG] Env CODEX_HOME: {env.get('CODEX_HOME', 'NOT SET')}", file=sys.stderr)
+                    _debug_print(f"\n[DEBUG] Codex command: {' '.join(cmd_args)}", file=sys.stderr)
+                    _debug_print(f"[DEBUG] Working dir: {os.getcwd()}", file=sys.stderr)
+                    _debug_print(f"[DEBUG] Env CODEX_HOME: {env.get('CODEX_HOME', 'NOT SET')}", file=sys.stderr)
                     sys.stderr.flush()
                     result = subprocess.run(
                         cmd_args,
@@ -457,13 +475,13 @@ class CodexCliClient(LLMClient):
                     if os.environ.get("DEBUG"):
                         stdout = result.stdout or ""
                         stderr = result.stderr or ""
-                        print(f"\n[DEBUG] Codex returncode: {result.returncode}")
-                        print(f"[DEBUG] Codex stdout length: {len(stdout)}")
-                        print(f"[DEBUG] Codex stderr length: {len(stderr)}")
+                        _debug_print(f"\n[DEBUG] Codex returncode: {result.returncode}")
+                        _debug_print(f"[DEBUG] Codex stdout length: {len(stdout)}")
+                        _debug_print(f"[DEBUG] Codex stderr length: {len(stderr)}")
                         if stdout:
-                            print(f"[DEBUG] Stdout preview: {stdout[:500]}")
+                            _debug_print(f"[DEBUG] Stdout preview: {stdout[:500]}")
                         if stderr:
-                            print(f"[DEBUG] Stderr preview: {stderr[:500]}")
+                            _debug_print(f"[DEBUG] Stderr preview: {stderr[:500]}")
                     return result
             except FileNotFoundError as exc:
                 raise CodexCliNotFoundError(
@@ -483,12 +501,12 @@ class CodexCliClient(LLMClient):
                     print(
                         f"\n[DEBUG] TIMEOUT after {timeout_seconds or self.timeout_seconds}s"
                     )
-                    print(f"[DEBUG] Partial stdout length: {len(stdout)}")
-                    print(f"[DEBUG] Partial stderr length: {len(stderr)}")
+                    _debug_print(f"[DEBUG] Partial stdout length: {len(stdout)}")
+                    _debug_print(f"[DEBUG] Partial stderr length: {len(stderr)}")
                     if stdout:
-                        print(f"[DEBUG] Partial stdout: {stdout[:2000]}")
+                        _debug_print(f"[DEBUG] Partial stdout: {stdout[:2000]}")
                     if stderr:
-                        print(f"[DEBUG] Partial stderr: {stderr[:2000]}")
+                        _debug_print(f"[DEBUG] Partial stderr: {stderr[:2000]}")
                 raise CodexCliExecutionError(
                     f"codex exec timed out after {timeout_seconds or self.timeout_seconds}s"
                 ) from exc
@@ -752,54 +770,67 @@ Now respond with ONLY the JSON object:"""
         )
 
     def chat(self, prompt: str, timeout_seconds: int = 30) -> Optional[str]:
-        """Simple chat call without exec mode."""
-        env_bin = (os.getenv("CODEX_BIN") or "").strip()
-        env_exe = (os.getenv("CODEX_EXE_PATH") or "").strip()
-        if env_exe and Path(env_exe).is_file():
-            codex_bin = env_exe
-        elif self.codex_bin and Path(self.codex_bin).is_file():
-            codex_bin = str(Path(self.codex_bin))
-        else:
-            preferred = next((str(p) for p in DEFAULT_CODEX_EXE_PATHS if p.is_file()), None)
-            if preferred:
-                codex_bin = preferred
-            elif env_bin:
-                codex_bin = shutil.which(env_bin) or env_bin
-            else:
-                codex_bin = shutil.which("codex") or "codex"
+        """
+        Fast chat call using exec mode without --profile flag.
+
+        This uses the default gpt-5.2-codex model which is much faster than
+        the models forced by --profile (e.g., gpt-5).
+        """
+        codex_bin = self._resolve_bin()
+        cwd = str(self.workdir) if self.workdir else os.getcwd()
+
+        # Build command WITHOUT --profile to use fast default model
         cmd = [
             codex_bin,
-            "--profile",
-            self.profile_reason or "chat",
             "--dangerously-bypass-approvals-and-sandbox",
             "-c",
             "sandbox_mode=danger-full-access",
             "-c",
             "approval_policy=never",
-            prompt,
+            "exec",
+            "--skip-git-repo-check",
+            "-",  # Read from stdin
         ]
-        cwd = str(self.workdir) if self.workdir else os.getcwd()
+
         env = os.environ.copy()
-        print(f"[DEBUG] Codex command: codex --profile {self.profile_reason} [prompt]")
-        print(f"[DEBUG] Timeout: {timeout_seconds}s")
+        if not env.get("USERPROFILE"):
+            env["USERPROFILE"] = os.path.expanduser("~")
+        env["PYTHONIOENCODING"] = "utf-8"
+
         try:
             result = subprocess.run(
                 cmd,
+                input=prompt,
                 capture_output=True,
                 text=True,
                 timeout=timeout_seconds,
                 cwd=cwd,
                 env=env,
                 encoding="utf-8",
+                errors="ignore",
             )
-            print(f"[DEBUG] Return code: {result.returncode}")
             if result.returncode != 0:
-                if result.stderr:
-                    print(f"[DEBUG] Stderr: {result.stderr[:500]}")
+                _debug_print(f"[DEBUG] Chat failed: {(result.stderr or '')[:200]}")
                 return None
-            return (result.stdout or "").strip()
+
+            # Extract the actual response from stdout (skip the header)
+            stdout = result.stdout or ""
+            # Look for the response after "codex\n" marker
+            if "\ncodex\n" in stdout:
+                response = stdout.split("\ncodex\n")[-1].strip()
+                # Remove token count line if present
+                lines = response.split("\n")
+                if lines and lines[-1].isdigit():
+                    lines = lines[:-1]
+                if lines and lines[-1].startswith("tokens used"):
+                    lines = lines[:-1]
+                return "\n".join(lines).strip()
+            return stdout.strip()
         except subprocess.TimeoutExpired:
-            print(f"[ERROR] Chat timeout after {timeout_seconds}s")
+            _debug_print(f"[DEBUG] Chat timeout after {timeout_seconds}s")
+            return None
+        except Exception as e:
+            _debug_print(f"[DEBUG] Chat error: {e}")
             return None
 
     def chat_simple(self, prompt: str, timeout_seconds: int = 30) -> Optional[Dict[str, Any]]:

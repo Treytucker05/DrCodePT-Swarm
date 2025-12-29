@@ -488,18 +488,15 @@ def main_menu():
 if __name__ == "__main__":
     args = sys.argv[1:]
     # Flags:
-    # --menu / -m : open the DrCodePT menu
-    # default    : launch Codex CLI (LAUNCH_CODEX.bat) if present; fallback to Agent_CLI.bat; otherwise menu
+    # --menu / -m : open the DrCodePT menu (legacy task/playbook system)
+    # --unified   : launch unified agent (new default)
+    # default     : launch unified agent interactive mode
     if any(a in {"--menu", "-m"} for a in args):
         main_menu()
+    elif any(a in {"--unified", "-u"} for a in args):
+        from agent.cli import main as unified_main
+        unified_main()
     else:
-        launch = ROOT.parent / "LAUNCH_CODEX.bat"
-        fallback = ROOT.parent / "Agent_CLI.bat"
-        target = launch if launch.is_file() else fallback if fallback.is_file() else None
-        if target:
-            rc = subprocess.call(str(target), shell=True)
-            if rc != 0:
-                print(f"{target.name} exited with code {rc}, falling back to menu.")
-                main_menu()
-        else:
-            main_menu()
+        # Default: launch unified agent in interactive mode
+        from agent.cli import interactive_loop
+        sys.exit(interactive_loop())

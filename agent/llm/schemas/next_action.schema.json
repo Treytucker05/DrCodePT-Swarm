@@ -1,0 +1,29 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "NextAction",
+  "description": "Agent's next action decision",
+  "type": "object",
+  "properties": {
+    "action": {
+      "type": "string",
+      "description": "The tool to call or 'finish' to complete"
+    },
+    "action_input": {
+      "type": "object",
+      "description": "Arguments for the action",
+      "additionalProperties": true
+    },
+    "reasoning": {
+      "type": "string",
+      "description": "Brief explanation of why this action was chosen"
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Confidence in this action (0-1)"
+    }
+  },
+  "required": ["action", "action_input", "reasoning"],
+  "additionalProperties": false
+}

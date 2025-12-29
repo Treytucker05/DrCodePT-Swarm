@@ -25,18 +25,16 @@ if not exist "%PY%" (
   )
 )
 
-echo [SETUP] Installing/updating Python deps (requirements.txt)...
+echo [SETUP] Installing/updating Python deps...
 "%PY%" -m pip install --upgrade pip >nul 2>nul
-"%PY%" -m pip install -r "%CD%\requirements.txt"
+"%PY%" -m pip install -q -r "%CD%\requirements.txt" >nul 2>nul
 if errorlevel 1 (
   echo [ERROR] pip install failed. Check your internet connection and try again.
   exit /b 1
 )
 
-rem Install Playwright browsers (Chromium) if not present
-echo [SETUP] Ensuring Playwright Chromium is installed...
-rem `playwright install` is idempotent; it will skip downloads if already installed.
-"%PY%" -m playwright install chromium
+rem Install Playwright browsers (Chromium) if not present - silent mode
+"%PY%" -m playwright install chromium >nul 2>nul
 if errorlevel 1 (
   echo [ERROR] Failed to install Playwright Chromium.
   exit /b 1
