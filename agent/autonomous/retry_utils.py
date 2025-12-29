@@ -11,12 +11,12 @@ T = TypeVar('T')
 
 def retry_with_backoff(
     func: Callable[..., T],
+    *args,
     max_attempts: int = 3,
     initial_delay: float = 1.0,
     max_delay: float = 10.0,
     backoff_factor: float = 2.0,
     transient_exceptions: Tuple[Type[Exception], ...] = (TimeoutError, ConnectionError, OSError),
-    *args,
     **kwargs
 ) -> T:
     """Retry a function with exponential backoff."""
@@ -50,15 +50,32 @@ def retry_with_backoff(
 class RetryConfig:
     """Configuration for retry behavior."""
     
-    def __init__(self, max_attempts: int = 3, initial_delay: float = 1.0, max_delay: float = 10.0, backoff_factor: float = 2.0):
+    def __init__(
+        self,
+        max_attempts: int = 3,
+        initial_delay: float = 1.0,
+        max_delay: float = 10.0,
+        backoff_factor: float = 2.0,
+        transient_exceptions: Tuple[Type[Exception], ...] = (TimeoutError, ConnectionError, OSError),
+    ):
         self.max_attempts = max_attempts
         self.initial_delay = initial_delay
         self.max_delay = max_delay
         self.backoff_factor = backoff_factor
+        self.transient_exceptions = transient_exceptions
     
     def retry(self, func: Callable[..., T], *args, **kwargs) -> T:
         """Execute function with retry logic."""
-        return retry_with_backoff(func, self.max_attempts, self.initial_delay, self.max_delay, self.backoff_factor, *args, **kwargs)
+        return retry_with_backoff(
+            func,
+            *args,
+            max_attempts=self.max_attempts,
+            initial_delay=self.initial_delay,
+            max_delay=self.max_delay,
+            backoff_factor=self.backoff_factor,
+            transient_exceptions=self.transient_exceptions,
+            **kwargs,
+        )
 
 
 LLM_RETRY_CONFIG = RetryConfig(max_attempts=3, initial_delay=2.0, max_delay=10.0, backoff_factor=2.0)
