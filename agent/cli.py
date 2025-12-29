@@ -255,7 +255,17 @@ def _run_learning_agent(llm, task: str, force_learn: bool = False) -> None:
         if result.skill_used:
             print(f"  Skill used: {result.skill_used}")
         if result.skill_learned:
-            print(f"  NEW SKILL LEARNED: {result.skill_learned}")
+            skill_label = result.skill_learned
+            try:
+                from agent.autonomous.skill_library import get_skill_library
+                library = get_skill_library()
+                library.initialize()
+                skill = library.get(result.skill_learned)
+                if skill:
+                    skill_label = f"{skill.name} ({skill.id})"
+            except Exception:
+                pass
+            print(f"  NEW SKILL LEARNED: {skill_label}")
         if result.research_performed:
             print("  (Research was performed)")
         print(f"  Steps: {result.steps_taken}")

@@ -362,7 +362,7 @@ class LearningAgent:
             best_skill, similarity = matching_skills[0]
             if similarity > 0.7:
                 self._status(f"  [OK] Found matching skill: {best_skill.name} (confidence: {similarity:.0%})")
-                if creds_exist:
+                if not best_skill.requires_auth or creds_exist:
                     return self._execute_skill(best_skill, user_request)
             else:
                 self._status(f"  ~ Partial match: {best_skill.name} ({similarity:.0%})")
@@ -372,7 +372,15 @@ class LearningAgent:
         # ============================================================
         # STEP 3: Research if we don't know how to do this
         # ============================================================
-        if not creds_exist or not matching_skills or matching_skills[0][1] < 0.5:
+        is_local_task = self._is_local_app_task(intent, user_request)
+        if is_local_task:
+            self._status("Step 3: Skipping research for local app automation...")
+            research = {
+                "success": True,
+                "summary": "Local app automation",
+                "execution_steps": [user_request],
+            }
+        elif not creds_exist or not matching_skills or matching_skills[0][1] < 0.5:
             self._status("Step 3: Researching how to do this...")
             research = self._do_research(user_request, intent)
 
@@ -431,7 +439,11 @@ class LearningAgent:
             self._status("Step 6: Saving successful procedure as skill...")
             skill_id = self._save_learned_skill(user_request, intent, plan, result)
             result.skill_learned = skill_id
-            self._status(f"  [OK] Saved skill: {skill_id}")
+            saved_skill = self.skill_library.get(skill_id) if self.skill_library else None
+            if saved_skill:
+                self._status(f"  [OK] Saved skill: {saved_skill.name} ({skill_id})")
+            else:
+                self._status(f"  [OK] Saved skill: {skill_id}")
         else:
             self._status("Step 6: Logging failure for learning...")
             self._log_failure(user_request, intent, plan, result)
@@ -733,6 +745,24 @@ Return a JSON object matching the schema."""
         if service and "calendar" in service and action_clean == "list_events":
             return "calendar.list_events"
         return action_clean or "unknown"
+
+    def _is_local_app_task(self, intent: ParsedIntent, request: str) -> bool:
+        """Check if the request targets a local desktop app."""
+        local_apps = {
+            "notepad",
+            "calculator",
+            "paint",
+            "wordpad",
+            "file explorer",
+            "explorer",
+            "cmd",
+            "powershell",
+        }
+        service = (intent.service or "").lower().strip()
+        if service in local_apps:
+            return True
+        request_lower = request.lower()
+        return any(app in request_lower for app in local_apps)
 
     def _parse_intent_fallback(self, request: str) -> ParsedIntent:
         """Fallback pattern-based intent parsing."""
@@ -1129,6 +1159,18 @@ Be specific and actionable.""",
 
         Falls back to hardcoded plan if LLM is unavailable.
         """
+        if self._is_local_app_task(intent, request):
+            return ExecutionPlan(
+                request=request,
+                intent=intent,
+                steps=[{
+                    "phase": "EXECUTE",
+                    "description": request,
+                    "action": "vision_guided",
+                }],
+                research_summary="Local app automation",
+                plan_type="EXECUTE",
+            )
         # Try LLM-based plan generation
         llm_plan = self._build_plan_with_llm(request, intent, research, creds_exist)
         if llm_plan:
@@ -1312,8 +1354,32 @@ Return a JSON object with the plan."""
                 message = "Waited"
 
             elif action == "manual":
-                steps_completed += 1
-                message = "Manual step acknowledged"
+                if self._is_local_app_task(plan.intent, plan.request):
+                    result = self.executor.run_task(
+                        objective=step["description"],
+                        context=f"Plan: {plan.research_summary}\nCurrent step: {step['description']}",
+                        on_step=lambda s: self._status(
+                            f"    [{s.get('method', 'Hybrid')}] {s.get('action', {}).get('reasoning', '')[:80]}"
+                        ),
+                        on_user_input=self._ask_user,
+                    )
+                    if not result["success"]:
+                        if result.get("summary", "").startswith("Need user input"):
+                            continue
+                        success = False
+                        message = result.get("summary") or "Execution failed"
+                    else:
+                        steps_completed += 1
+                else:
+                    user_confirm = self._ask_user(
+                        f"Please complete this step and confirm: {step['description']} (done/skip)"
+                    )
+                    if user_confirm.lower() in ("done", "d", "yes", "y"):
+                        steps_completed += 1
+                        message = "Manual step confirmed"
+                    else:
+                        success = False
+                        message = "Manual step not confirmed"
 
             else:
                 success = False
@@ -1557,6 +1623,45 @@ Return a JSON object with the plan."""
                     if not success and not step.optional:
                         raise Exception(msg)
                     self._status(f"    [OK] {msg}")
+                elif step.action == "open_browser":
+                    url = step.target or step.value or ""
+                    success, msg = self._open_browser(url)
+                    if not success and not step.optional:
+                        raise Exception(msg or "Failed to open browser")
+                    if msg:
+                        self._status(f"    [OK] {msg}")
+                elif step.action == "vision_guided":
+                    result = self.executor.run_task(
+                        objective=step.description,
+                        context=f"Skill: {skill.name}",
+                        on_step=lambda s: self._status(
+                            f"    [{s.get('method', 'Hybrid')}] {s.get('action', {}).get('reasoning', '')[:80]}"
+                        ),
+                        on_user_input=self._ask_user,
+                    )
+                    if not result["success"]:
+                        msg = result.get("summary") or "Execution failed"
+                        if not step.optional:
+                            raise Exception(msg)
+                        continue
+                    steps_completed += 1
+                    continue
+                elif step.action == "manual":
+                    user_confirm = self._ask_user(
+                        f"Please complete this step and confirm: {step.description} (done/skip)"
+                    )
+                    if user_confirm.lower() in ("done", "d", "yes", "y"):
+                        steps_completed += 1
+                        continue
+                    if step.optional:
+                        continue
+                    raise Exception("Manual step not confirmed")
+                elif step.action == "wait":
+                    time.sleep(2)
+                else:
+                    if step.optional:
+                        continue
+                    raise Exception(f"Unknown action type: {step.action}")
 
                 steps_completed += 1
 
