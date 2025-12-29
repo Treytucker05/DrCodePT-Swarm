@@ -70,7 +70,8 @@ def maintenance_run(days: int = 7, limit: int = 25) -> None:
         print("[MAINTENANCE] No recent traces found.")
         return
 
-    store = SqliteMemoryStore(repo / "agent" / "memory" / "autonomous_memory.sqlite3")
+    memory_path = os.getenv("AGENT_MEMORY_DB") or str(repo / "agent" / "memory" / "autonomous_memory.sqlite3")
+    store = SqliteMemoryStore(Path(memory_path))
     try:
         for path in traces:
             summary = _summarize_trace(path)

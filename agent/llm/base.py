@@ -84,10 +84,19 @@ def get_default_llm() -> LLMClient:
     Get the default LLM client based on environment.
 
     Priority:
-    1. OpenRouter (if OPENROUTER_API_KEY set)
-    2. Codex CLI (if available)
+    1. Codex CLI (if available)
+    2. OpenRouter (if OPENROUTER_API_KEY set)
     """
     import os
+
+    try:
+        from agent.llm.codex_cli_client import CodexCliClient
+
+        codex = CodexCliClient.from_env()
+        if hasattr(codex, "check_auth") and codex.check_auth():
+            return codex
+    except Exception:
+        pass
 
     if os.getenv("OPENROUTER_API_KEY"):
         from agent.llm.openrouter_client import OpenRouterClient

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -24,7 +25,8 @@ def _print_section(title: str) -> None:
 
 def _open_memory_store() -> SqliteMemoryStore:
     root = Path(__file__).resolve().parents[1]
-    return SqliteMemoryStore(root / "memory" / "autonomous_memory.sqlite3")
+    memory_path = os.getenv("AGENT_MEMORY_DB") or str(root / "memory" / "autonomous_memory.sqlite3")
+    return SqliteMemoryStore(Path(memory_path))
 
 
 def _render_list(label: str, items: List[str]) -> None:

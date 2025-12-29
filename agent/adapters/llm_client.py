@@ -426,8 +426,8 @@ def get_llm_client(
             return provider
 
     # Create multi-provider with default order
-    # Priority: OpenRouter (cheap) -> OpenAI (quality) -> Codex (code)
-    priority = ["openrouter", "openai", "codex"]
+    # Priority: Codex (primary) -> OpenRouter (fallback) -> OpenAI (optional)
+    priority = ["codex", "openrouter", "openai"]
     providers = []
 
     for name in priority:

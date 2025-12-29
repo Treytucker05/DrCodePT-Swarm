@@ -287,7 +287,13 @@ Dangerous tools (delete, move outside workspace) require human approval via `hum
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CODEX_BIN` | `codex` | Path to Codex CLI |
+| `CODEX_EXE_PATH` | (unset) | Full path to codex executable |
+| `CODEX_CLI_PATH` | (unset) | Alias for codex executable path |
 | `CODEX_MODEL` | (default) | Override LLM model |
+| `CODEX_MODEL_FAST` | (unset) | Fast/default Codex model |
+| `CODEX_MODEL_REASON` | (unset) | Higher-reasoning Codex model |
+| `CODEX_REASONING_EFFORT_FAST` | `low` | Reasoning effort for fast tasks |
+| `CODEX_REASONING_EFFORT_REASON` | `high` | Reasoning effort for hard tasks |
 | `CODEX_TIMEOUT_SECONDS` | `120` | LLM call timeout |
 | `AGENT_MEMORY_EMBED_MODEL` | `all-MiniLM-L6-v2` | Embedding model |
 | `AGENT_MEMORY_EMBED_BACKEND` | auto | `hash` for fallback |

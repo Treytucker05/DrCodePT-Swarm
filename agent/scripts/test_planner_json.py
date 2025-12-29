@@ -77,11 +77,11 @@ def test_routing_decisions():
         router = get_model_router()
 
         test_cases = [
-            ("plan next step", "openrouter"),
+            ("plan next step", "codex"),
             ("write code to fix bug", "codex"),
             ("audit repository security", "codex"),
-            ("summarize this text", "openrouter"),
-            ("chat about Python", "openrouter"),
+            ("summarize this text", "codex"),
+            ("chat about Python", "codex"),
         ]
 
         for task, expected in test_cases:

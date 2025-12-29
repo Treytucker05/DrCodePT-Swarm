@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections import Counter
 from datetime import datetime
@@ -138,7 +139,8 @@ def _sender_domain(sender: str) -> str:
 
 def _open_memory_store() -> SqliteMemoryStore:
     root = Path(__file__).resolve().parents[1]
-    return SqliteMemoryStore(root / "memory" / "autonomous_memory.sqlite3")
+    memory_path = os.getenv("AGENT_MEMORY_DB") or str(root / "memory" / "autonomous_memory.sqlite3")
+    return SqliteMemoryStore(Path(memory_path))
 
 
 def _print_header(title: str) -> None:

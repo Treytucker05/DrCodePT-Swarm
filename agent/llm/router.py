@@ -67,9 +67,9 @@ class ModelRouter:
     Routes LLM requests to the appropriate backend.
 
     Priority:
-    1. Codex for code tasks
-    2. Claude for long context (optional)
-    3. OpenRouter for everything else (cheap + fast)
+    1. Codex for all tasks (fast model for easy tasks, higher reasoning for hard)
+    2. OpenRouter fallback if Codex unavailable
+    3. Claude optional fallback for long context
     """
 
     # Backend availability
@@ -79,11 +79,40 @@ class ModelRouter:
 
     # Clients (lazy loaded)
     _openrouter_client: Any = field(default=None, repr=False)
-    _codex_client: Any = field(default=None, repr=False)
+    _codex_fast_client: Any = field(default=None, repr=False)
+    _codex_reason_client: Any = field(default=None, repr=False)
+    _codex_fast_model: str = ""
+    _codex_reason_model: str = ""
+    _codex_fast_effort: str = ""
+    _codex_reason_effort: str = ""
 
     def __post_init__(self):
         """Check which backends are available."""
+        self._load_codex_preferences()
         self._check_backends()
+
+    def _load_codex_preferences(self) -> None:
+        """Load Codex model/effort preferences from environment."""
+        self._codex_fast_model = (
+            os.getenv("CODEX_MODEL_FAST")
+            or os.getenv("CODEX_MODEL")
+            or ""
+        ).strip()
+        self._codex_reason_model = (
+            os.getenv("CODEX_MODEL_REASON")
+            or os.getenv("CODEX_MODEL")
+            or ""
+        ).strip()
+        self._codex_fast_effort = (
+            os.getenv("CODEX_REASONING_EFFORT_FAST")
+            or os.getenv("CODEX_REASONING_EFFORT")
+            or "low"
+        ).strip()
+        self._codex_reason_effort = (
+            os.getenv("CODEX_REASONING_EFFORT_REASON")
+            or os.getenv("CODEX_REASONING_EFFORT")
+            or "high"
+        ).strip()
 
     def _check_backends(self) -> None:
         """Check which backends are configured and available."""
@@ -126,34 +155,25 @@ class ModelRouter:
         """Internal routing logic."""
         task_lower = task_description.lower()
 
-        # Check for long context (needs Claude)
-        if any(kw in task_lower for kw in LONG_CONTEXT_KEYWORDS):
-            if self.claude_available:
-                return RoutingResult(
-                    backend=Backend.CLAUDE,
-                    reason="Long context review task",
-                )
-
-        # Check for code tasks (needs Codex)
-        if any(kw in task_lower for kw in CODEX_KEYWORDS):
-            if self.codex_available:
-                return RoutingResult(
-                    backend=Backend.CODEX,
-                    reason="Code execution/audit task",
-                )
-
-        # Default to OpenRouter for planning/chat
-        if self.openrouter_available:
-            return RoutingResult(
-                backend=Backend.OPENROUTER,
-                reason="Default planning/chat",
-            )
-
-        # Fallback to Codex if available
+        # Prefer Codex for all tasks if available
         if self.codex_available:
             return RoutingResult(
                 backend=Backend.CODEX,
-                reason="Fallback to Codex (no OpenRouter)",
+                reason="Codex available (primary)",
+            )
+
+        # Claude fallback for long-context if available
+        if any(kw in task_lower for kw in LONG_CONTEXT_KEYWORDS) and self.claude_available:
+            return RoutingResult(
+                backend=Backend.CLAUDE,
+                reason="Long context review task",
+            )
+
+        # OpenRouter fallback
+        if self.openrouter_available:
+            return RoutingResult(
+                backend=Backend.OPENROUTER,
+                reason="Fallback to OpenRouter (Codex unavailable)",
             )
 
         raise RuntimeError("No LLM backend available")
@@ -172,12 +192,11 @@ class ModelRouter:
             task_type = TaskType(task_type) if task_type in TaskType._value2member_map_ else TaskType.PLANNER
 
         if task_type == TaskType.CODEX:
-            return self._get_codex_client()
-        elif task_type == TaskType.LONG_CONTEXT:
-            return self._get_claude_client() or self._get_openrouter_client()
-        else:
-            # Planner, chat, summarize -> OpenRouter
-            return self._get_openrouter_client() or self._get_codex_client()
+            return self._get_codex_client(kind="reason") or self._get_openrouter_client()
+        if task_type == TaskType.LONG_CONTEXT:
+            return self._get_codex_client(kind="reason") or self._get_claude_client() or self._get_openrouter_client()
+        # Planner/chat/summarize -> Codex fast first
+        return self._get_codex_client(kind="fast") or self._get_openrouter_client()
 
     def _get_openrouter_client(self) -> Optional[Any]:
         """Get or create OpenRouter client."""
@@ -195,18 +214,35 @@ class ModelRouter:
             logger.error(f"Failed to create OpenRouter client: {e}")
             return None
 
-    def _get_codex_client(self) -> Optional[Any]:
-        """Get or create Codex CLI client."""
-        if self._codex_client:
-            return self._codex_client
+    def _get_codex_client(self, *, kind: str = "fast") -> Optional[Any]:
+        """Get or create Codex CLI client (fast or reasoning)."""
+        if kind == "reason":
+            if self._codex_reason_client:
+                return self._codex_reason_client
+        else:
+            if self._codex_fast_client:
+                return self._codex_fast_client
 
         if not self.codex_available:
             return None
 
         try:
             from agent.llm.codex_cli_client import CodexCliClient
-            self._codex_client = CodexCliClient.from_env()
-            return self._codex_client
+
+            if kind == "reason":
+                client = CodexCliClient.from_env(
+                    model_override=self._codex_reason_model,
+                    reasoning_effort=self._codex_reason_effort,
+                )
+                self._codex_reason_client = client
+                return client
+
+            client = CodexCliClient.from_env(
+                model_override=self._codex_fast_model,
+                reasoning_effort=self._codex_fast_effort,
+            )
+            self._codex_fast_client = client
+            return client
         except Exception as e:
             logger.error(f"Failed to create Codex client: {e}")
             return None

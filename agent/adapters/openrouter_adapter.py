@@ -36,14 +36,15 @@ logger = logging.getLogger(__name__)
 
 # Default models by use case
 DEFAULT_MODELS = {
-    "chat": "qwen/qwen3-coder:free",  # Free, good for general chat
-    "reasoning": "anthropic/claude-3.5-sonnet",  # Best reasoning
-    "code": "qwen/qwen3-coder:free",  # Free code model
-    "fast": "meta-llama/llama-3.1-8b-instruct:free",  # Fast and free
+    "chat": "x-ai/grok-4.1-fast",
+    "reasoning": "x-ai/grok-4.1-fast",
+    "code": "x-ai/grok-4.1-fast",
+    "fast": "x-ai/grok-4.1-fast",
 }
 
 # Models that support JSON mode
 JSON_CAPABLE_MODELS = [
+    "x-ai/grok-4.1-fast",
     "anthropic/claude-3.5-sonnet",
     "anthropic/claude-3-haiku",
     "openai/gpt-4o",

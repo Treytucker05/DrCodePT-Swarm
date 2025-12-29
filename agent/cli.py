@@ -77,16 +77,9 @@ def _setup_logging(verbose: bool = False) -> None:
 def _get_llm_client():
     """Get the LLM client based on environment configuration.
 
-    Prefers OpenRouter when configured.
-    Falls back to Codex CLI if OpenRouter is unavailable.
+    Prefers Codex CLI when available.
+    Falls back to OpenRouter if Codex is unavailable.
     """
-    if os.getenv("OPENROUTER_API_KEY"):
-        try:
-            from agent.llm.openrouter_client import OpenRouterClient
-            return OpenRouterClient.from_env()
-        except Exception as e:
-            logger.debug(f"OpenRouterClient not available: {e}")
-
     try:
         from agent.llm.codex_cli_client import CodexCliClient
         client = CodexCliClient.from_env()
@@ -95,6 +88,13 @@ def _get_llm_client():
         return client
     except Exception as e:
         logger.debug(f"CodexCliClient not available: {e}")
+
+    if os.getenv("OPENROUTER_API_KEY"):
+        try:
+            from agent.llm.openrouter_client import OpenRouterClient
+            return OpenRouterClient.from_env()
+        except Exception as e:
+            logger.debug(f"OpenRouterClient not available: {e}")
 
     raise RuntimeError(
         "No LLM client available. Set OPENROUTER_API_KEY or configure Codex CLI."
@@ -222,7 +222,82 @@ def _list_skills() -> None:
         print(f"[ERROR] Could not list skills: {e}")
 
 
-def _run_learning_agent(llm, task: str, force_learn: bool = False) -> None:
+def _is_local_task_hint(task: str, skill=None) -> bool:
+    """Heuristic to detect local desktop automation tasks."""
+    if skill is not None:
+        try:
+            tags = {t.lower() for t in (skill.tags or [])}
+            if tags & {"notepad", "open_app", "desktop", "calculator"}:
+                return True
+        except Exception:
+            pass
+    lower = task.lower()
+    local_keywords = [
+        "notepad",
+        "calculator",
+        "paint",
+        "wordpad",
+        "file explorer",
+        "start menu",
+        "desktop",
+        "window",
+    ]
+    return any(k in lower for k in local_keywords)
+
+
+def _try_run_learned_skill(llm, task: str) -> bool:
+    """Run a learned skill if a strong match exists."""
+    try:
+        from agent.autonomous.skill_library import get_skill_library
+        from agent.autonomous.learning_agent import get_learning_agent
+
+        library = get_skill_library()
+        library.initialize()
+        matches = library.search(task, k=3)
+        if not matches:
+            return False
+
+        best_skill, similarity = matches[0]
+        agent = get_learning_agent(llm)
+
+        def on_status(msg: str) -> None:
+            lowered = msg.lower()
+            if lowered.startswith("learning agent initialized"):
+                return
+            if lowered.startswith("using hybrid executor"):
+                return
+            print(f"  [SKILL] {msg}")
+
+        agent.on_status = on_status
+        agent.on_user_input = lambda question: input("  > ").strip()
+        agent.initialize()
+
+        is_local = _is_local_task_hint(task, best_skill)
+        threshold = agent._skill_match_threshold(is_local)
+        if similarity < threshold:
+            return False
+
+        print(f"\n{'=' * 50}")
+        print("  USING LEARNED SKILL")
+        print(f"{'=' * 50}")
+        print(f"  Skill: {best_skill.name} ({best_skill.id})")
+        print(f"  Match: {similarity:.0%} (threshold {threshold:.0%})\n")
+
+        result = agent._execute_skill(best_skill, task)
+
+        print(f"\n{'=' * 50}")
+        print(f"  Result: {'SUCCESS' if result.success else 'FAILED'}")
+        print(f"  Summary: {result.summary}")
+        print(f"  Steps: {result.steps_taken}")
+        print(f"{'=' * 50}\n")
+
+        return result.success
+    except Exception as e:
+        print(f"[WARN] Failed to run learned skill: {e}")
+        return False
+
+
+def _run_learning_agent(llm, task: str, force_learn: bool = False) -> None:     
     """Run the learning agent on a task."""
     try:
         from agent.autonomous.learning_agent import get_learning_agent
@@ -422,8 +497,10 @@ Examples:
                 continue
             # Fall through to full agent if fast path fails
 
-        # Learning agent for complex tasks (calendar, email, OAuth, etc.)
+        # Learning agent for complex tasks (calendar, email, OAuth, etc.)       
         if _needs_learning_agent(user_input):
+            if _try_run_learned_skill(llm, user_input):
+                continue
             _run_learning_agent(llm, user_input)
             continue
 

@@ -145,18 +145,7 @@ class HybridExecutor:
         if self.llm and not self._disable_codex:
             return self.llm
 
-        # Prefer OpenRouter if configured
-        if os.getenv("OPENROUTER_API_KEY"):
-            try:
-                from agent.llm.openrouter_client import OpenRouterClient
-
-                self.llm = OpenRouterClient.from_env()
-                self._log_llm_use(self.llm, "hybrid_executor")
-                return self.llm
-            except Exception as e:
-                logger.warning(f"OpenRouter not available: {e}")
-
-        # Fall back to Codex if allowed
+        # Prefer Codex if available
         if not self._disable_codex:
             try:
                 from agent.llm.codex_cli_client import CodexCliClient
@@ -171,6 +160,17 @@ class HybridExecutor:
                     return self.llm
             except Exception as e:
                 logger.debug(f"Codex not available: {e}")
+
+        # Fall back to OpenRouter if configured
+        if os.getenv("OPENROUTER_API_KEY"):
+            try:
+                from agent.llm.openrouter_client import OpenRouterClient        
+
+                self.llm = OpenRouterClient.from_env()
+                self._log_llm_use(self.llm, "hybrid_executor")
+                return self.llm
+            except Exception as e:
+                logger.warning(f"OpenRouter not available: {e}")
 
         return None
 
@@ -366,8 +366,12 @@ RULES:
                 if hasattr(UIActionModel, "model_json_schema")
                 else UIActionModel.schema()
             )
+            # Codex response_format requires a required list containing all properties.
+            props = schema.get("properties") or {}
+            if props:
+                schema["required"] = list(props.keys())
             schema_path = Path(tempfile.gettempdir()) / f"ui_action_schema_{uuid4().hex[:8]}.json"
-            schema_path.write_text(json.dumps(schema), encoding="utf-8")
+            schema_path.write_text(json.dumps(schema), encoding="utf-8")        
             try:
                 error = None
                 data: Dict[str, Any] = {}

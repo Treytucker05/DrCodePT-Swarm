@@ -1357,8 +1357,12 @@ class AgentRunner:
     def _open_default_memory_store(self) -> Optional[SqliteMemoryStore]:
         path = self.agent_cfg.memory_db_path
         if path is None:
-            agent_root = Path(__file__).resolve().parents[1]
-            path = agent_root / "memory" / "autonomous_memory.sqlite3"
+            env_path = os.getenv("AGENT_MEMORY_DB") or ""
+            if env_path:
+                path = Path(env_path)
+            else:
+                agent_root = Path(__file__).resolve().parents[1]
+                path = agent_root / "memory" / "autonomous_memory.sqlite3"
         try:
             return SqliteMemoryStore(path)
         except Exception:

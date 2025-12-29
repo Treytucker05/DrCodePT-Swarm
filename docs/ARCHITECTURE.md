@@ -255,7 +255,14 @@ OPENROUTER_API_KEY=sk-or-...
 
 # Optional
 OPENAI_API_KEY=sk-...
+CODEX_EXE_PATH=/path/to/codex
 CODEX_CLI_PATH=/path/to/codex
+CODEX_BIN=codex
+CODEX_MODEL=gpt-5.1-codex-mini
+CODEX_MODEL_FAST=gpt-5.1-codex-mini
+CODEX_MODEL_REASON=gpt-5.2-codex
+CODEX_REASONING_EFFORT_FAST=low
+CODEX_REASONING_EFFORT_REASON=high
 
 # Safety
 AGENT_APPROVAL_REQUIRED=true

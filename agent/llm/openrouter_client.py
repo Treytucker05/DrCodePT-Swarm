@@ -25,17 +25,16 @@ from .base import LLMClient
 
 logger = logging.getLogger(__name__)
 
-# FREE models from OpenRouter - no cost!
-# See: https://openrouter.ai/collections/free-models
-# Updated Dec 2025 - tested and working
+# Default OpenRouter models (fast + general purpose).
+# Updated Dec 2025.
 DEFAULT_MODELS = {
-    "planner": "qwen/qwen3-coder:free",  # Works great for planning
-    "chat": "qwen/qwen3-coder:free",      # Use same for chat
-    "summarize": "qwen/qwen3-coder:free", # Use same for summarization
-    "reason": "qwen/qwen3-coder:free",    # Use same for reasoning
+    "planner": "x-ai/grok-4.1-fast",
+    "chat": "x-ai/grok-4.1-fast",
+    "summarize": "x-ai/grok-4.1-fast",
+    "reason": "x-ai/grok-4.1-fast",
 }
 
-# Fallback models if primary ones are rate-limited
+# Fallback models if primary ones are rate-limited or unavailable
 FALLBACK_MODELS = {
     "planner": "nvidia/nemotron-nano-9b-v2:free",
     "chat": "nvidia/nemotron-nano-9b-v2:free",
@@ -54,7 +53,7 @@ class OpenRouterClient(LLMClient):
     Uses cheap models by default for planning/routing decisions.
     """
     api_key: str = ""
-    model: str = "anthropic/claude-3-haiku"
+    model: str = "x-ai/grok-4.1-fast"
     timeout_seconds: int = 60
     max_tokens: int = 4096
     temperature: float = 0.7

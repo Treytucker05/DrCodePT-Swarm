@@ -5,7 +5,9 @@ Codex CLI is an optional provider specialized for code-related tasks.
 It requires OAuth authentication and may not always be available.
 
 Environment Variables:
+    CODEX_EXE_PATH: Path to codex executable (optional, searches PATH)
     CODEX_CLI_PATH: Path to codex executable (optional, searches PATH)
+    CODEX_BIN: Codex command name if on PATH (optional)
 """
 from __future__ import annotations
 
@@ -40,7 +42,12 @@ class CodexCLIAdapter(LLMClient):
     """
 
     def __init__(self, codex_path: Optional[str] = None):
-        self._codex_path = codex_path or os.environ.get("CODEX_CLI_PATH")
+        self._codex_path = (
+            codex_path
+            or os.environ.get("CODEX_EXE_PATH")
+            or os.environ.get("CODEX_CLI_PATH")
+            or os.environ.get("CODEX_BIN")
+        )
         self._verified_path: Optional[str] = None
         self._auth_checked = False
         self._is_authenticated = False
@@ -54,10 +61,15 @@ class CodexCLIAdapter(LLMClient):
         if self._verified_path:
             return self._verified_path
 
-        # Check explicit path first
-        if self._codex_path and os.path.exists(self._codex_path):
-            self._verified_path = self._codex_path
-            return self._verified_path
+        # Check explicit path or command override
+        if self._codex_path:
+            if os.path.exists(self._codex_path):
+                self._verified_path = self._codex_path
+                return self._verified_path
+            resolved = shutil.which(self._codex_path)
+            if resolved:
+                self._verified_path = resolved
+                return self._verified_path
 
         # Check PATH
         codex_in_path = shutil.which("codex")

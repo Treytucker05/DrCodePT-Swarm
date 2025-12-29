@@ -192,7 +192,7 @@ def call_codex(
     Execute Codex CLI with optimized settings.
     """
     env_bin = (os.getenv("CODEX_BIN") or "").strip()
-    env_exe = (os.getenv("CODEX_EXE_PATH") or "").strip()
+    env_exe = (os.getenv("CODEX_EXE_PATH") or os.getenv("CODEX_CLI_PATH") or "").strip()
     if env_exe and Path(env_exe).is_file():
         codex_bin = env_exe
     else:
@@ -280,6 +280,7 @@ class CodexCliClient(LLMClient):
 
     codex_bin: str = "codex"
     model: str = ""
+    reasoning_effort: str = ""
     timeout_seconds: int = 120
     profile_reason: str = "reason"
     profile_exec: str = "playbook"
@@ -294,10 +295,30 @@ class CodexCliClient(LLMClient):
         *,
         workdir: Optional[Path] = None,
         log_dir: Optional[Path] = None,
+        model_override: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> "CodexCliClient":
         return CodexCliClient(
-            codex_bin=(os.getenv("CODEX_BIN") or "codex").strip(),
-            model=(os.getenv("CODEX_MODEL") or "").strip(),
+            codex_bin=(
+                os.getenv("CODEX_EXE_PATH")
+                or os.getenv("CODEX_CLI_PATH")
+                or os.getenv("CODEX_BIN")
+                or "codex"
+            ).strip(),
+            model=(
+                model_override
+                if model_override is not None
+                else (os.getenv("CODEX_MODEL") or os.getenv("CODEX_MODEL_FAST") or "")
+            ).strip(),
+            reasoning_effort=(
+                reasoning_effort
+                if reasoning_effort is not None
+                else (
+                    os.getenv("CODEX_REASONING_EFFORT")
+                    or os.getenv("CODEX_REASONING_EFFORT_FAST")
+                    or ""
+                )
+            ).strip(),
             timeout_seconds=int((os.getenv("CODEX_TIMEOUT_SECONDS") or "120").strip()),
             profile_reason=(os.getenv("CODEX_PROFILE_REASON") or "reason").strip(),
             profile_exec=(os.getenv("CODEX_PROFILE_EXEC") or "playbook").strip(),
@@ -307,7 +328,7 @@ class CodexCliClient(LLMClient):
 
     def _resolve_bin(self) -> str:
         env_bin = (os.getenv("CODEX_BIN") or "").strip()
-        env_exe = (os.getenv("CODEX_EXE_PATH") or "").strip()
+        env_exe = (os.getenv("CODEX_EXE_PATH") or os.getenv("CODEX_CLI_PATH") or "").strip()
         if env_exe and Path(env_exe).is_file():
             return env_exe
         for path in DEFAULT_CODEX_EXE_PATHS:
@@ -447,7 +468,10 @@ class CodexCliClient(LLMClient):
             exec_index = len(cmd)
         if "mcp.enabled=false" not in cmd:
             cmd[exec_index:exec_index] = ["-c", "mcp.enabled=false", "-c", "features.mcp=false"]
-        reasoning_effort = (os.getenv("CODEX_REASONING_EFFORT") or "").strip()
+        reasoning_effort = (
+            self.reasoning_effort
+            or (os.getenv("CODEX_REASONING_EFFORT") or "")
+        ).strip()
         if reasoning_effort:
             try:
                 exec_index = cmd.index("exec")
