@@ -38,9 +38,9 @@ class ResourceMonitor:
             import psutil
             self.psutil = psutil
             self.process = psutil.Process()
-            logger.info("✓ psutil available for resource monitoring")
+            logger.info("[OK] psutil available for resource monitoring")
         except ImportError:
-            logger.warning("✗ psutil not installed; resource monitoring disabled")
+            logger.warning("[X] psutil not installed; resource monitoring disabled")
     
     def get_metrics(self) -> ResourceMetrics:
         if not self.psutil or not self.process:

@@ -1,8 +1,31 @@
 # DrCodePT-Swarm
 
-Production-grade autonomous agent skeleton (Python) with a true closed-loop architecture:
+An autonomous, self-learning agent that figures out how to do things by watching and interacting.
 
-Perception -> Reasoning/Planning -> Action/Execution -> Feedback -> Reflection -> Memory updates -> Re-plan until stop.
+## Core Philosophy
+
+**READ [PRINCIPLES.md](PRINCIPLES.md) BEFORE MAKING CHANGES**
+
+This agent LEARNS from experience - it doesn't follow hardcoded scripts.
+
+```
+User: "Check my Google calendar"
+Agent: I don't know how to do this yet...
+       → Research how Google Calendar API works
+       → Open browser, set up OAuth by watching the screen
+       → Complete the task
+       → Remember what worked for next time
+```
+
+## Architecture
+
+```
+User Request → Parse Intent (LLM) → Check Memory → Research if Needed
+                                                          ↓
+                        Learn ← Store Observations ← Execute with Hybrid Executor
+                                                     ├── UI Automation (click by element name)
+                                                     └── Vision (screenshot fallback)
+```
 
 ## Quick start
 1) Install deps: `pip install -r requirements.txt` (Python 3.11+).  

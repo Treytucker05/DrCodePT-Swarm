@@ -73,22 +73,54 @@ class HybridExecutor:
         """Get or create LLM client."""
         if self.llm:
             return self.llm
+
+        # Try Codex first
         try:
             from agent.llm.codex_cli_client import CodexCliClient
             self.llm = CodexCliClient.from_env()
             return self.llm
-        except Exception:
-            return None
+        except Exception as e:
+            logger.debug(f"Codex not available: {e}")
+
+        # Fall back to OpenRouter
+        try:
+            from agent.llm.openrouter_client import OpenRouterClient
+            self.llm = OpenRouterClient.from_env()
+            logger.info("Using OpenRouter for hybrid executor")
+            return self.llm
+        except Exception as e:
+            logger.warning(f"OpenRouter not available: {e}")
+
+        return None
 
     def _call_llm(self, prompt: str, timeout: int = 30) -> Optional[str]:
         """Call LLM for text reasoning (NOT vision)."""
         llm = self._get_llm()
         if not llm:
             return None
+
         try:
-            return llm.chat(prompt, timeout_seconds=timeout)
+            # Try Codex-style call first
+            if hasattr(llm, 'chat'):
+                try:
+                    return llm.chat(prompt, timeout_seconds=timeout)
+                except TypeError:
+                    # OpenRouter doesn't take timeout_seconds
+                    return llm.chat(prompt)
+            return None
         except Exception as e:
-            logger.error(f"LLM call failed: {e}")
+            error_str = str(e).lower()
+            # If Codex failed, try OpenRouter as fallback
+            if "not authenticated" in error_str or "codex" in error_str:
+                logger.warning(f"Codex failed, trying OpenRouter: {e}")
+                try:
+                    from agent.llm.openrouter_client import OpenRouterClient
+                    fallback_llm = OpenRouterClient.from_env()
+                    return fallback_llm.chat(prompt)
+                except Exception as fallback_e:
+                    logger.error(f"OpenRouter fallback failed: {fallback_e}")
+            else:
+                logger.error(f"LLM call failed: {e}")
             return None
 
     def get_current_ui_state(self) -> Dict[str, Any]:
@@ -159,18 +191,19 @@ Based on the available elements, decide what to do next.
 Respond with JSON:
 {{
     "reasoning": "Why I'm taking this action",
-    "action": "click|type|scroll|press|wait|done|error",
+    "action": "launch|click|type|scroll|press|wait|done|error",
     "target_name": "Exact name of element to interact with (from the list above)",
     "target_type": "Button|Link|Edit|MenuItem|etc",
-    "value": "text to type or key to press (if applicable)",
+    "value": "text to type, key to press, or app name to launch",
     "confidence": 0.0-1.0
 }}
 
 RULES:
-1. Use EXACT element names from the list above
-2. If the element you need isn't in the list, use action="scroll" or action="error"
-3. If objective is complete, use action="done"
-4. For typing, first click the Edit field, then type
+1. If you need to open an application that's not visible, use action="launch" with value="app_name" (e.g., "notepad", "chrome")
+2. Use EXACT element names from the list above
+3. If the element you need isn't in the list, use action="scroll" or action="error"
+4. If objective is complete, use action="done"
+5. For typing, first click the Edit field, then type
 """
 
         response = self._call_llm(prompt, timeout=20)
@@ -223,7 +256,10 @@ RULES:
         value = action.get("value")
 
         try:
-            if action_type == "click":
+            if action_type == "launch":
+                return self._execute_launch(value or target_name)
+
+            elif action_type == "click":
                 return self._execute_click(target_name, target_type)
 
             elif action_type == "type":
@@ -253,6 +289,74 @@ RULES:
 
         except Exception as e:
             return False, f"Action failed: {e}"
+
+    def _execute_launch(self, app_name: str) -> Tuple[bool, str]:
+        """Launch an application by name."""
+        import subprocess
+        import shutil
+        import os
+        import tempfile
+
+        app_name_lower = app_name.lower().strip()
+
+        try:
+            # Special handling for Notepad - create a new file to avoid "file not found" dialogs
+            if "notepad" in app_name_lower:
+                # Create a temp file so Notepad opens cleanly
+                temp_file = os.path.join(tempfile.gettempdir(), "agent_notepad_temp.txt")
+                with open(temp_file, "w") as f:
+                    f.write("")  # Empty file
+                subprocess.Popen(["notepad.exe", temp_file])
+                time.sleep(1.5)
+                return True, f"Launched Notepad with new document"
+
+            # Common application mappings
+            app_paths = {
+                "calculator": "calc.exe",
+                "chrome": None,  # Will search for it
+                "firefox": None,
+                "edge": "msedge.exe",
+                "explorer": "explorer.exe",
+                "cmd": "cmd.exe",
+                "powershell": "powershell.exe",
+                "code": None,  # VS Code
+                "vscode": None,
+            }
+
+            # Check if it's a known app
+            if app_name_lower in app_paths:
+                exe = app_paths[app_name_lower]
+                if exe:
+                    subprocess.Popen([exe], shell=True)
+                    time.sleep(1)
+                    return True, f"Launched {app_name}"
+
+            # Try to find Chrome
+            if "chrome" in app_name_lower:
+                chrome_paths = [
+                    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                ]
+                for path in chrome_paths:
+                    if os.path.exists(path):
+                        subprocess.Popen([path])
+                        time.sleep(2)
+                        return True, "Launched Chrome"
+
+            # Try to find the app in PATH
+            exe_path = shutil.which(app_name_lower) or shutil.which(app_name_lower + ".exe")
+            if exe_path:
+                subprocess.Popen([exe_path])
+                time.sleep(1)
+                return True, f"Launched {app_name}"
+
+            # Last resort: try Start Menu search via shell
+            subprocess.Popen(f'start "" "{app_name}"', shell=True)
+            time.sleep(2)
+            return True, f"Attempted to launch {app_name}"
+
+        except Exception as e:
+            return False, f"Failed to launch {app_name}: {e}"
 
     def _execute_click(self, target_name: str, target_type: str = None) -> Tuple[bool, str]:
         """Execute click using UI automation, fall back to vision if needed."""

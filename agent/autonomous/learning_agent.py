@@ -265,9 +265,9 @@ class LearningAgent:
         self._status("Step 1: Parsing intent...")
         intent = self._parse_intent(user_request)
 
-        self._status(f"  → Action: {intent.action}")
-        self._status(f"  → Service: {intent.service or 'unknown'}")
-        self._status(f"  → Needs auth: {intent.needs_auth}")
+        self._status(f"  -> Action: {intent.action}")
+        self._status(f"  -> Service: {intent.service or 'unknown'}")
+        self._status(f"  -> Needs auth: {intent.needs_auth}")
 
         # Ask clarifying questions if needed
         if intent.clarifying_questions:
@@ -290,22 +290,22 @@ class LearningAgent:
         # Check credentials
         creds_exist = self._check_credentials(intent.auth_provider)
         if creds_exist:
-            self._status(f"  ✓ Found {intent.auth_provider} credentials")
+            self._status(f"  [OK] Found {intent.auth_provider} credentials")
         else:
-            self._status(f"  ✗ No {intent.auth_provider} credentials found")
+            self._status(f"  [X] No {intent.auth_provider} credentials found")
 
         # Check skill library
         matching_skills = self.skill_library.search(user_request, k=3)
         if matching_skills:
             best_skill, similarity = matching_skills[0]
             if similarity > 0.7:
-                self._status(f"  ✓ Found matching skill: {best_skill.name} (confidence: {similarity:.0%})")
+                self._status(f"  [OK] Found matching skill: {best_skill.name} (confidence: {similarity:.0%})")
                 if creds_exist:
                     return self._execute_skill(best_skill, user_request)
             else:
                 self._status(f"  ~ Partial match: {best_skill.name} ({similarity:.0%})")
         else:
-            self._status("  ✗ No matching skills found")
+            self._status("  [X] No matching skills found")
 
         # ============================================================
         # STEP 3: Research if we don't know how to do this
@@ -322,7 +322,7 @@ class LearningAgent:
                     research_performed=True,
                 )
 
-            self._status(f"  ✓ Found approach: {research.get('summary', 'Unknown')[:100]}")
+            self._status(f"  [OK] Found approach: {research.get('summary', 'Unknown')[:100]}")
         else:
             research = {"success": True, "summary": "Using existing knowledge"}
 
@@ -362,11 +362,11 @@ class LearningAgent:
             self._status("Step 6: Saving successful procedure as skill...")
             skill_id = self._save_learned_skill(user_request, intent, plan, result)
             result.skill_learned = skill_id
-            self._status(f"  ✓ Saved skill: {skill_id}")
+            self._status(f"  [OK] Saved skill: {skill_id}")
         else:
             self._status("Step 6: Logging failure for learning...")
             self._log_failure(user_request, intent, plan, result)
-            self._status("  ✓ Failure logged to reflexion")
+            self._status("  [OK] Failure logged to reflexion")
 
         return result
 
@@ -382,6 +382,17 @@ class LearningAgent:
             # Quick test to see if it's authenticated
             return self.llm
         except Exception as e:
+            error_str = str(e).lower()
+            if "not authenticated" in error_str:
+                # Try auto-login
+                if self._try_codex_auto_login():
+                    # Retry after login
+                    try:
+                        from agent.llm.codex_cli_client import CodexCliClient
+                        self.llm = CodexCliClient.from_env()
+                        return self.llm
+                    except Exception:
+                        pass
             logger.warning(f"Codex CLI not available: {e}")
 
         # Fall back to OpenRouter
@@ -394,6 +405,64 @@ class LearningAgent:
             logger.warning(f"OpenRouter not available: {e}")
 
         return None
+
+    def _try_codex_auto_login(self) -> bool:
+        """
+        Attempt automatic Codex login using the hybrid executor.
+
+        The agent figures out how to login by looking at the screen,
+        NOT by following a rigid script.
+        """
+        try:
+            from agent.tools.credential_store import get_credential_store
+
+            store = get_credential_store()
+            if not store.has_credentials("openai"):
+                self._status("No OpenAI credentials stored. Skipping auto-login.")
+                return False
+
+            creds = store.get("openai")
+            if not creds:
+                return False
+
+            self._status("Attempting Codex auto-login...")
+
+            # Start codex login (opens browser)
+            import subprocess
+            import shutil
+            codex_bin = shutil.which("codex") or r"C:\Users\treyt\AppData\Roaming\npm\node_modules\@openai\codex\vendor\x86_64-pc-windows-msvc\codex\codex.exe"
+
+            if not os.path.exists(codex_bin):
+                self._status("  Codex CLI not found")
+                return False
+
+            subprocess.Popen([codex_bin, "login"])
+            time.sleep(3)  # Wait for browser
+
+            # Let the hybrid executor handle the login
+            # It will look at the screen and figure out what to do
+            result = self.executor.run_task(
+                objective=f"Log into OpenAI with email '{creds.get('email')}' and password",
+                context=f"""You are on the OpenAI login page.
+                Email: {creds.get('email')}
+                Password: {creds.get('password')}
+
+                Look at the screen, find the input fields, and complete the login.
+                If there's a verification code needed, ask the user for it.""",
+                on_step=lambda s: self._status(f"    {s.get('action', {}).get('reasoning', '')[:60]}"),
+                on_user_input=self._ask_user,
+            )
+
+            if result.get("success"):
+                self._status("  [OK] Codex auto-login successful!")
+                return True
+            else:
+                self._status(f"  [X] Auto-login failed: {result.get('summary')}")
+                return False
+
+        except Exception as e:
+            logger.warning(f"Auto-login failed: {e}")
+            return False
 
     def _call_llm_json(self, prompt: str, schema: Dict[str, Any], timeout: int = 60) -> Optional[Dict[str, Any]]:
         """Call LLM and get structured JSON output."""
@@ -990,7 +1059,7 @@ Return a JSON object with the plan."""
                         steps_taken=steps_completed,
                         error=msg,
                     )
-                self._status(f"    ✓ Opened browser to {url}")
+                self._status(f"    [OK] Opened browser to {url}")
                 time.sleep(3)  # Wait for browser to load
                 steps_completed += 1
 
@@ -1026,7 +1095,7 @@ Return a JSON object with the plan."""
                         steps_taken=steps_completed,
                         error=msg,
                     )
-                self._status(f"    ✓ {msg}")
+                self._status(f"    [OK] {msg}")
                 steps_completed += 1
 
             time.sleep(0.5)
@@ -1124,7 +1193,7 @@ Return a JSON object with the plan."""
                     success, msg = self._execute_api_step(intent, {"description": step.description})
                     if not success and not step.optional:
                         raise Exception(msg)
-                    self._status(f"    ✓ {msg}")
+                    self._status(f"    [OK] {msg}")
 
                 steps_completed += 1
 

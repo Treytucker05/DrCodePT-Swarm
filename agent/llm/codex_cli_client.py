@@ -215,10 +215,10 @@ def call_codex(
     )
     cwd = os.getcwd()
     timeout_seconds = timeout
-    _debug__debug_print(f"[DEBUG] Codex command: {' '.join(cmd)}")
-    _debug__debug_print(f"[DEBUG] Profile: {resolved_profile}")
-    _debug__debug_print(f"[DEBUG] Working dir: {cwd}")
-    _debug__debug_print(f"[DEBUG] Timeout: {timeout_seconds}s")
+    _debug_print(f"[DEBUG] Codex command: {' '.join(cmd)}")
+    _debug_print(f"[DEBUG] Profile: {resolved_profile}")
+    _debug_print(f"[DEBUG] Working dir: {cwd}")
+    _debug_print(f"[DEBUG] Timeout: {timeout_seconds}s")
     try:
         result = subprocess.run(
             cmd,
@@ -230,8 +230,8 @@ def call_codex(
             env=os.environ.copy(),
             encoding="utf-8",
         )
-        _debug__debug_print(f"[DEBUG] Return code: {result.returncode}")
-        _debug__debug_print(f"[DEBUG] Stderr: {(result.stderr or '')[:500]}")
+        _debug_print(f"[DEBUG] Return code: {result.returncode}")
+        _debug_print(f"[DEBUG] Stderr: {(result.stderr or '')[:500]}")
         if "429" in (result.stderr or "") or "rate limit" in (result.stderr or "").lower():
             logging.warning("[%s] Hit rate limit - quota exhausted", agent)
             return {

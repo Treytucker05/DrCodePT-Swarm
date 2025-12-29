@@ -271,10 +271,17 @@ def _needs_learning_agent(text: str) -> bool:
 
     # Keywords that suggest complex tasks needing learning
     learning_keywords = [
+        # Calendar/Email
         "calendar", "outlook", "gmail", "email", "schedule",
+        # Auth
         "oauth", "authenticate", "login", "sign in",
+        # Integration
         "api", "integrate", "connect", "setup", "configure",
+        # Web
         "automate", "browser", "website", "web page",
+        # Desktop automation - USE LEARNING AGENT for these
+        "notepad", "calculator", "open", "launch", "type", "write", "click",
+        "window", "application", "app", "desktop",
     ]
 
     return any(kw in lower for kw in learning_keywords)
