@@ -1,0 +1,140 @@
+{
+  "timestamp": "2025-12-28T23:33:48.728332",
+  "total": 13,
+  "passed": 10,
+  "failed": 0,
+  "skipped": 3,
+  "errors": 0,
+  "results": [
+    {
+      "scenario_id": "orchestrator_calendar",
+      "status": "passed",
+      "duration_seconds": 0.10793375968933105,
+      "message": "Intent: list_calendar_events, Skill: calendar",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:33:39.563325"
+    },
+    {
+      "scenario_id": "orchestrator_file_list",
+      "status": "passed",
+      "duration_seconds": 2.1219253540039062e-05,
+      "message": "Intent: list_files, Skill: filesystem",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:33:39.563377"
+    },
+    {
+      "scenario_id": "orchestrator_help",
+      "status": "passed",
+      "duration_seconds": 1.4543533325195312e-05,
+      "message": "Intent: help_request, Skill: None",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:33:39.563395"
+    },
+    {
+      "scenario_id": "security_redactor",
+      "status": "passed",
+      "duration_seconds": 0.007309436798095703,
+      "message": "Secret correctly redacted",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:33:39.570702"
+    },
+    {
+      "scenario_id": "security_kill_switch",
+      "status": "skipped",
+      "duration_seconds": 0.0,
+      "message": "Missing requirements: kill_switch_active",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:33:39.570778"
+    },
+    {
+      "scenario_id": "llm_provider_available",
+      "status": "skipped",
+      "duration_seconds": 0.3190727233886719,
+      "message": "No API keys configured (set OPENROUTER_API_KEY or OPENAI_API_KEY)",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:33:39.889845"
+    },
+    {
+      "scenario_id": "llm_failover",
+      "status": "skipped",
+      "duration_seconds": 0.0,
+      "message": "Requires multiple providers configured",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:33:39.889868"
+    },
+    {
+      "scenario_id": "tools_registry",
+      "status": "passed",
+      "duration_seconds": 0.5785465240478516,
+      "message": "Registry loaded with 11 tools",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:33:40.468413"
+    },
+    {
+      "scenario_id": "memory_persistence",
+      "status": "passed",
+      "duration_seconds": 8.016771793365479,
+      "message": "Memory stored and retrieved successfully",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:33:48.485151"
+    },
+    {
+      "scenario_id": "memory_reflection",
+      "status": "passed",
+      "duration_seconds": 0.06724214553833008,
+      "message": "Reflection generated: success",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:33:48.552454"
+    },
+    {
+      "scenario_id": "ui_automation_health",
+      "status": "passed",
+      "duration_seconds": 2.5510787963867188e-05,
+      "message": "pyautogui: OK; uiautomation: OK",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:33:48.722907"
+    },
+    {
+      "scenario_id": "skills_registry",
+      "status": "passed",
+      "duration_seconds": 0.005364894866943359,
+      "message": "Registry loaded with 1 skills: calendar",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:33:48.728282"
+    },
+    {
+      "scenario_id": "skills_calendar_status",
+      "status": "passed",
+      "duration_seconds": 1.0967254638671875e-05,
+      "message": "Calendar skill status: not_configured, capabilities: 5",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:33:48.728309"
+    }
+  ]
+}

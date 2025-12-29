@@ -1,0 +1,110 @@
+{
+  "timestamp": "2025-12-28T23:27:16.725710",
+  "total": 10,
+  "passed": 6,
+  "failed": 0,
+  "skipped": 4,
+  "errors": 0,
+  "results": [
+    {
+      "scenario_id": "orchestrator_calendar",
+      "status": "passed",
+      "duration_seconds": 0.15272903442382812,
+      "message": "Intent: list_calendar_events, Skill: calendar",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:27:15.636958"
+    },
+    {
+      "scenario_id": "orchestrator_file_list",
+      "status": "passed",
+      "duration_seconds": 3.7670135498046875e-05,
+      "message": "Intent: list_files, Skill: filesystem",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:27:15.637040"
+    },
+    {
+      "scenario_id": "orchestrator_help",
+      "status": "passed",
+      "duration_seconds": 2.6226043701171875e-05,
+      "message": "Intent: help_request, Skill: None",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:27:15.637072"
+    },
+    {
+      "scenario_id": "security_redactor",
+      "status": "passed",
+      "duration_seconds": 0.00740361213684082,
+      "message": "Secret correctly redacted",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:27:15.644476"
+    },
+    {
+      "scenario_id": "security_kill_switch",
+      "status": "skipped",
+      "duration_seconds": 0.0,
+      "message": "Missing requirements: kill_switch_active",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:27:15.644558"
+    },
+    {
+      "scenario_id": "llm_provider_available",
+      "status": "skipped",
+      "duration_seconds": 0.31530117988586426,
+      "message": "No API keys configured (set OPENROUTER_API_KEY or OPENAI_API_KEY)",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:27:15.959853"
+    },
+    {
+      "scenario_id": "llm_failover",
+      "status": "skipped",
+      "duration_seconds": 0.0,
+      "message": "Requires multiple providers configured",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:27:15.959880"
+    },
+    {
+      "scenario_id": "tools_registry",
+      "status": "passed",
+      "duration_seconds": 0.4946424961090088,
+      "message": "Registry loaded with 11 tools",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:27:16.454519"
+    },
+    {
+      "scenario_id": "memory_persistence",
+      "status": "skipped",
+      "duration_seconds": 0.0,
+      "message": "Requires memory system running",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:27:16.454543"
+    },
+    {
+      "scenario_id": "ui_automation_health",
+      "status": "passed",
+      "duration_seconds": 1.8358230590820312e-05,
+      "message": "pyautogui: OK; uiautomation: OK",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:27:16.725678"
+    }
+  ]
+}

@@ -9,6 +9,12 @@ Flow:
 3. LLM decides WHAT to do, not WHERE to click
 
 Key insight: The LLM should reason about actions, not pixels.
+
+Enhanced with:
+- Stop-Think-Replan pattern on failures
+- ThrashGuard integration to detect stuck loops
+- Precondition/postcondition verification
+- Exploration policy (scroll/retry when element not found)
 """
 from __future__ import annotations
 
@@ -20,6 +26,15 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Import guard types for stuck loop detection
+try:
+    from .guards import ThrashGuard, ThrashDetection, EscalationAction, GuardConfig
+    from .state import UnifiedAgentState, StepRecord, Observation
+    GUARDS_AVAILABLE = True
+except ImportError:
+    GUARDS_AVAILABLE = False
+    logger.debug("Guards module not available - stuck loop detection disabled")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -40,6 +55,24 @@ class HybridExecutor:
         self.action_history: List[Dict[str, Any]] = []
         self.max_steps = 50
         self._initialized = False
+
+        # Stuck loop detection (Gap #9)
+        self._thrash_guard = None
+        self._agent_state = None
+        if GUARDS_AVAILABLE:
+            # Lower thresholds for faster detection during UI automation
+            config = GuardConfig(
+                max_repeated_actions=2,  # Detect after 2 same actions
+                max_file_reads=3,
+                max_steps_no_progress=4,  # Detect after 4 failed steps
+                max_same_errors=2,
+                auto_escalate=True,
+            )
+            self._thrash_guard = ThrashGuard(config)
+
+        # Exploration state (Gap #3 - exploration policy)
+        self._exploration_attempts = 0
+        self._max_exploration_attempts = 3  # Try scroll/wait before giving up
 
     def initialize(self) -> Tuple[bool, str]:
         """Initialize both UI automation and vision systems."""
@@ -358,6 +391,97 @@ RULES:
         except Exception as e:
             return False, f"Failed to launch {app_name}: {e}"
 
+    def _check_precondition(self, action: Dict[str, Any]) -> Tuple[bool, str]:
+        """
+        Check preconditions before executing an action (Gap #4).
+
+        This prevents actions that are doomed to fail.
+        """
+        action_type = action.get("action", "").lower()
+        target_name = action.get("target_name") or action.get("target", {}).get("text")
+
+        # For click/type actions, verify the window is active and element might exist
+        if action_type in ("click", "type"):
+            if not target_name:
+                return False, f"No target specified for {action_type}"
+
+            # Check if we have any active window
+            if self.ui_controller:
+                try:
+                    window = self.ui_controller.get_active_window()
+                    if not window:
+                        return False, "No active window found - cannot interact with UI"
+                except Exception as e:
+                    logger.debug(f"Window check failed: {e}")
+
+        # For type actions, verify we have text
+        if action_type == "type":
+            if not action.get("value"):
+                return False, "No text specified for type action"
+
+        return True, "Preconditions met"
+
+    def _verify_postcondition(self, action: Dict[str, Any], result: Tuple[bool, str]) -> Tuple[bool, str]:
+        """
+        Verify postconditions after executing an action (Gap #4).
+
+        This confirms the action had the intended effect.
+        """
+        success, message = result
+        if not success:
+            return result  # Already failed
+
+        action_type = action.get("action", "").lower()
+
+        # For type actions, we could verify text was entered (future enhancement)
+        # For click actions, we could verify UI state changed
+
+        # For now, trust the action result but log for future improvement
+        logger.debug(f"Postcondition check passed for {action_type}: {message}")
+        return result
+
+    def _try_exploration(self, target_name: str, action_type: str) -> Tuple[bool, str, bool]:
+        """
+        Try exploration tactics when element not found (Gap #3 - exploration policy).
+
+        Returns: (should_retry, message, element_found)
+        """
+        if self._exploration_attempts >= self._max_exploration_attempts:
+            self._exploration_attempts = 0  # Reset for next action
+            return False, "Max exploration attempts reached", False
+
+        self._exploration_attempts += 1
+        attempt = self._exploration_attempts
+
+        logger.info(f"Exploration attempt {attempt}/{self._max_exploration_attempts} for '{target_name}'")
+
+        if attempt == 1:
+            # First: Try scrolling down to find the element
+            try:
+                import pyautogui
+                pyautogui.scroll(-3)  # Scroll down
+                time.sleep(0.5)
+                return True, "Scrolled down to look for element", False
+            except Exception as e:
+                logger.debug(f"Scroll failed: {e}")
+
+        elif attempt == 2:
+            # Second: Try scrolling up
+            try:
+                import pyautogui
+                pyautogui.scroll(3)  # Scroll up
+                time.sleep(0.5)
+                return True, "Scrolled up to look for element", False
+            except Exception as e:
+                logger.debug(f"Scroll failed: {e}")
+
+        elif attempt == 3:
+            # Third: Wait longer for element to appear (dynamic UI)
+            time.sleep(1.5)
+            return True, "Waited for element to appear", False
+
+        return False, "Exploration exhausted", False
+
     def _execute_click(self, target_name: str, target_type: str = None) -> Tuple[bool, str]:
         """Execute click using UI automation, fall back to vision if needed."""
         if not target_name:
@@ -371,7 +495,21 @@ RULES:
                 timeout=3.0,
             )
             if success:
+                self._exploration_attempts = 0  # Reset on success
                 return True, msg
+
+            # Element not found - try exploration before giving up
+            should_retry, explore_msg, _ = self._try_exploration(target_name, "click")
+            if should_retry:
+                # Retry after exploration
+                success, msg = self.ui_controller.click_element(
+                    name=target_name,
+                    control_type=target_type,
+                    timeout=2.0,
+                )
+                if success:
+                    self._exploration_attempts = 0
+                    return True, f"{msg} (after {explore_msg})"
 
             logger.info(f"UI automation click failed: {msg}, trying vision fallback")
 
@@ -383,8 +521,12 @@ RULES:
                 f"Find and click the element named '{target_name}'"
             )
             if analysis.get("action") == "click" and analysis.get("target"):
-                return self.vision_executor.execute_action(analysis)
+                result = self.vision_executor.execute_action(analysis)
+                if result[0]:
+                    self._exploration_attempts = 0
+                return result
 
+        self._exploration_attempts = 0  # Reset for next action
         return False, f"Could not click '{target_name}' with UI automation or vision"
 
     def _execute_type(self, target_name: str, target_type: str, text: str) -> Tuple[bool, str]:
@@ -430,6 +572,59 @@ RULES:
         except Exception as e:
             return False, f"Key press failed: {e}"
 
+    def _update_agent_state(self, action: Dict[str, Any], success: bool, message: str) -> None:
+        """Update the unified agent state for ThrashGuard tracking."""
+        if not GUARDS_AVAILABLE or not self._agent_state:
+            return
+
+        try:
+            # Import Observation from models if we need to create one
+            from .models import Observation as ObsModel
+
+            # Create observation
+            observation = ObsModel(
+                raw=message,
+                source="hybrid_executor",
+                errors=[message] if not success else [],
+                success=success,
+            )
+
+            # Record step using the correct API
+            self._agent_state.record_step(
+                action=action.get("action", "unknown"),
+                action_input=action,
+                reasoning=action.get("reasoning", ""),
+                observation=observation,
+            )
+        except Exception as e:
+            logger.debug(f"Could not update agent state: {e}")
+
+    def _check_stuck_loop(self) -> Tuple[bool, str]:
+        """
+        Check if we're stuck in a loop using ThrashGuard (Gap #9).
+
+        Returns: (is_stuck, message)
+        """
+        if not self._thrash_guard or not self._agent_state:
+            return False, ""
+
+        try:
+            detection = self._thrash_guard.check(self._agent_state)
+            if detection.detected:
+                action, message = self._thrash_guard.get_escalation(detection)
+                suggestion = self._thrash_guard.get_recovery_suggestion(detection)
+
+                if action in (EscalationAction.STOP, EscalationAction.ASK_USER):
+                    return True, f"{detection.details}. {suggestion}"
+
+                # Log warning but continue for less severe cases
+                logger.warning(f"Thrash detected: {detection.details}")
+
+            return False, ""
+        except Exception as e:
+            logger.debug(f"Thrash check failed: {e}")
+            return False, ""
+
     def run_task(
         self,
         objective: str,
@@ -445,17 +640,64 @@ RULES:
         2. Uses LLM for REASONING (not pixel guessing)
         3. Executes with UI automation (deterministic)
         4. Falls back to vision only when needed
+        5. STOPS on failures and reflects before retrying
+        6. Queries past reflexions to avoid repeating mistakes
+        7. Detects stuck loops and escalates early (Gap #9)
+        8. Checks preconditions before actions (Gap #4)
         """
         if not self._initialized:
             ok, err = self.initialize()
             if not ok:
                 return {"success": False, "summary": err, "steps_taken": 0}
 
+        # Initialize agent state for ThrashGuard tracking
+        if GUARDS_AVAILABLE:
+            try:
+                self._agent_state = UnifiedAgentState(goal=objective)
+            except Exception as e:
+                logger.debug(f"Could not initialize agent state: {e}")
+                self._agent_state = None
+
+        # LEARN FROM THE PAST: Query reflexion memory for relevant lessons
+        past_lessons = self._get_relevant_reflexions(objective)
+        if past_lessons:
+            context = f"{context}\n\nLESSONS FROM PAST ATTEMPTS:\n{past_lessons}"
+            logger.info(f"Found relevant past lessons for: {objective[:50]}...")
+
         self.action_history = []
         steps_taken = 0
+        consecutive_failures = 0  # Track failures for early stopping
 
         while steps_taken < self.max_steps:
             steps_taken += 1
+
+            # ============================================================
+            # CHECK FOR STUCK LOOP (Gap #9)
+            # Early detection prevents wasted cycles
+            # ============================================================
+            is_stuck, stuck_msg = self._check_stuck_loop()
+            if is_stuck:
+                logger.warning(f"Stuck loop detected: {stuck_msg}")
+                # Ask user for help before giving up
+                if on_user_input:
+                    user_help = on_user_input(
+                        f"I'm stuck in a loop: {stuck_msg}\nWhat should I try instead?"
+                    )
+                    if user_help:
+                        context = f"{context}\n\nSTUCK LOOP RECOVERY - User guidance: {user_help}"
+                        # Reset state tracking
+                        if self._agent_state:
+                            self._agent_state = UnifiedAgentState(goal=objective)
+                        consecutive_failures = 0
+                        continue  # Try again with user guidance
+                # No user help - stop with failure
+                return {
+                    "success": False,
+                    "summary": f"Stuck in loop: {stuck_msg}",
+                    "steps_taken": steps_taken,
+                    "actions": self.action_history,
+                    "stuck_loop": True,
+                }
 
             # Decide next action (uses UI state text, not vision)
             action = self.decide_next_action(objective, context)
@@ -481,6 +723,7 @@ RULES:
 
             # Handle completion
             if action_type == "done":
+                self._update_agent_state(action, True, "Task completed")
                 return {
                     "success": True,
                     "summary": action.get("reasoning", "Task completed"),
@@ -490,6 +733,7 @@ RULES:
 
             # Handle error
             if action_type == "error":
+                self._update_agent_state(action, False, action.get("reasoning", "Error"))
                 return {
                     "success": False,
                     "summary": action.get("reasoning", "Error occurred"),
@@ -497,14 +741,110 @@ RULES:
                     "actions": self.action_history,
                 }
 
+            # ============================================================
+            # PRECONDITION CHECK (Gap #4)
+            # Verify action can succeed before attempting
+            # ============================================================
+            precond_ok, precond_msg = self._check_precondition(action)
+            if not precond_ok:
+                logger.warning(f"Precondition failed: {precond_msg}")
+                self.action_history[-1]["result"] = f"Precondition failed: {precond_msg}"
+                self.action_history[-1]["error"] = precond_msg
+                self._update_agent_state(action, False, precond_msg)
+                consecutive_failures += 1
+
+                # Quick stop if 3 consecutive precondition failures
+                if consecutive_failures >= 3:
+                    return {
+                        "success": False,
+                        "summary": f"Multiple precondition failures: {precond_msg}",
+                        "steps_taken": steps_taken,
+                        "actions": self.action_history,
+                    }
+                continue
+
             # Execute action
             success, message = self.execute_action(action)
             self.action_history[-1]["result"] = message
 
+            # ============================================================
+            # POSTCONDITION CHECK (Gap #4)
+            # Verify action had intended effect
+            # ============================================================
+            success, message = self._verify_postcondition(action, (success, message))
+
+            # Update agent state for ThrashGuard tracking
+            self._update_agent_state(action, success, message)
+
             if not success:
-                # Add error to context and retry
-                context = f"{context}\nPrevious action failed: {message}"
+                consecutive_failures += 1
+                # ============================================================
+                # STOP - THINK - REPLAN pattern
+                # Don't just continue blindly - reflect and learn!
+                # ============================================================
                 logger.warning(f"Step {steps_taken} failed: {message}")
+
+                # STOP: Log the failure
+                self.action_history[-1]["error"] = message
+
+                # Check if we should stop early (too many consecutive failures)
+                if consecutive_failures >= 4:
+                    logger.error(f"Too many consecutive failures ({consecutive_failures})")
+                    return {
+                        "success": False,
+                        "summary": f"Too many consecutive failures. Last error: {message}",
+                        "steps_taken": steps_taken,
+                        "actions": self.action_history,
+                        "consecutive_failures": consecutive_failures,
+                    }
+
+                # THINK: Reflect on why it failed
+                reflection = self._reflect_on_failure(
+                    objective=objective,
+                    action=action,
+                    error=message,
+                    context=context,
+                )
+
+                # LEARN: Save to reflexion memory
+                self._save_reflexion(objective, action, message, reflection)
+
+                # REPLAN: Get new approach from LLM
+                new_approach = self._replan_after_failure(
+                    objective=objective,
+                    failed_action=action,
+                    error=message,
+                    reflection=reflection,
+                    context=context,
+                )
+
+                if new_approach:
+                    # Update context with reflection and new plan
+                    context = f"{context}\n\nFAILURE ANALYSIS:\n{reflection}\n\nNEW APPROACH:\n{new_approach}"
+                    logger.info(f"Replanning after failure: {new_approach[:100]}...")
+                else:
+                    # If we can't replan, ask user for help (if callback available)
+                    if on_user_input:
+                        user_help = on_user_input(
+                            f"I tried to {action.get('reasoning', 'do something')} but it failed: {message}\n"
+                            f"What should I try instead?"
+                        )
+                        if user_help:
+                            context = f"{context}\nUser guidance: {user_help}"
+                            consecutive_failures = 0  # Reset on user help
+                    else:
+                        # No replan possible and no user help - stop with failure
+                        return {
+                            "success": False,
+                            "summary": f"Failed and could not recover: {message}",
+                            "steps_taken": steps_taken,
+                            "actions": self.action_history,
+                            "last_error": message,
+                            "reflection": reflection,
+                        }
+            else:
+                # Success - reset consecutive failure counter
+                consecutive_failures = 0
 
             # Small delay between actions
             time.sleep(0.3)
@@ -515,6 +855,152 @@ RULES:
             "steps_taken": steps_taken,
             "actions": self.action_history,
         }
+
+    def _reflect_on_failure(
+        self,
+        objective: str,
+        action: Dict[str, Any],
+        error: str,
+        context: str,
+    ) -> str:
+        """
+        THINK step: Analyze why an action failed.
+
+        This is crucial for learning - we need to understand the failure
+        to avoid repeating it and to inform the replan.
+        """
+        prompt = f"""An action failed during task execution. Analyze WHY it failed.
+
+OBJECTIVE: {objective}
+
+ATTEMPTED ACTION:
+- Type: {action.get('action')}
+- Target: {action.get('target_name', 'N/A')}
+- Value: {action.get('value', 'N/A')}
+- Reasoning: {action.get('reasoning', 'N/A')}
+
+ERROR: {error}
+
+CONTEXT: {context[:500]}
+
+Analyze the failure and respond with:
+1. ROOT CAUSE: Why did this specific action fail?
+2. LESSON: What should be remembered to avoid this in the future?
+3. SUGGESTION: What alternative approach might work?
+
+Be specific and actionable. Keep response under 200 words."""
+
+        response = self._call_llm(prompt, timeout=15)
+        if response:
+            return response
+        return f"Action '{action.get('action')}' failed with error: {error}"
+
+    def _replan_after_failure(
+        self,
+        objective: str,
+        failed_action: Dict[str, Any],
+        error: str,
+        reflection: str,
+        context: str,
+    ) -> Optional[str]:
+        """
+        REPLAN step: Generate a new approach after failure.
+
+        Uses the reflection to inform a better strategy.
+        """
+        prompt = f"""A task action failed. Create a NEW approach to achieve the objective.
+
+OBJECTIVE: {objective}
+
+WHAT FAILED:
+- Action: {failed_action.get('action')} on '{failed_action.get('target_name', 'unknown')}'
+- Error: {error}
+
+ANALYSIS OF FAILURE:
+{reflection}
+
+CONTEXT: {context[:300]}
+
+Based on this failure, suggest a DIFFERENT approach. Consider:
+1. Is there another way to achieve the same goal?
+2. Is there a prerequisite step we missed?
+3. Should we try a different element or method?
+
+Respond with a brief (1-2 sentence) new approach to try, or "CANNOT_REPLAN" if stuck."""
+
+        response = self._call_llm(prompt, timeout=15)
+        if response and "CANNOT_REPLAN" not in response.upper():
+            return response.strip()
+        return None
+
+    def _save_reflexion(
+        self,
+        objective: str,
+        action: Dict[str, Any],
+        error: str,
+        reflection: str,
+    ) -> None:
+        """
+        LEARN step: Save the failure to reflexion memory.
+
+        This allows the agent to learn from past mistakes and
+        retrieve relevant lessons for future similar tasks.
+        """
+        try:
+            from agent.autonomous.memory.reflexion import ReflexionEntry, write_reflexion
+            from uuid import uuid4
+            from datetime import datetime, timezone
+
+            entry = ReflexionEntry(
+                id=f"hybrid_{uuid4().hex[:8]}",
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                objective=objective,
+                context_fingerprint=f"ui_action_{action.get('action', 'unknown')}",
+                phase="execution",
+                tool_calls=[{
+                    "action": action.get("action"),
+                    "target": action.get("target_name"),
+                    "value": action.get("value"),
+                }],
+                errors=[error],
+                reflection=reflection,
+                fix=f"Try alternative approach for: {action.get('reasoning', objective)[:100]}",
+                outcome="failure",
+                tags=["hybrid_executor", action.get("action", "unknown")],
+            )
+            write_reflexion(entry)
+            logger.info(f"Saved reflexion entry: {entry.id}")
+        except Exception as e:
+            logger.warning(f"Could not save reflexion: {e}")
+
+    def _get_relevant_reflexions(self, objective: str) -> Optional[str]:
+        """
+        Query past reflexions for lessons relevant to the current objective.
+
+        This is the key to learning - we retrieve past failures and their
+        lessons so the agent doesn't repeat the same mistakes.
+        """
+        try:
+            from agent.autonomous.memory.reflexion import retrieve_reflexions
+
+            # Get up to 3 most relevant past lessons
+            entries = retrieve_reflexions(objective, error_signature=None, k=3)
+
+            if not entries:
+                return None
+
+            lessons = []
+            for entry in entries:
+                lesson = f"- When trying '{entry.objective[:50]}...': {entry.reflection[:150]}"
+                if entry.fix:
+                    lesson += f" FIX: {entry.fix[:100]}"
+                lessons.append(lesson)
+
+            return "\n".join(lessons)
+
+        except Exception as e:
+            logger.debug(f"Could not retrieve reflexions: {e}")
+            return None
 
 
 # Singleton

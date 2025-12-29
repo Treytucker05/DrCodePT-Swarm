@@ -1,0 +1,170 @@
+{
+  "timestamp": "2025-12-28T23:36:27.744229",
+  "total": 16,
+  "passed": 13,
+  "failed": 0,
+  "skipped": 3,
+  "errors": 0,
+  "results": [
+    {
+      "scenario_id": "orchestrator_calendar",
+      "status": "passed",
+      "duration_seconds": 0.18924617767333984,
+      "message": "Intent: list_calendar_events, Skill: calendar",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:36:17.262990"
+    },
+    {
+      "scenario_id": "orchestrator_file_list",
+      "status": "passed",
+      "duration_seconds": 2.4318695068359375e-05,
+      "message": "Intent: list_files, Skill: filesystem",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:36:17.263048"
+    },
+    {
+      "scenario_id": "orchestrator_help",
+      "status": "passed",
+      "duration_seconds": 1.5497207641601562e-05,
+      "message": "Intent: help_request, Skill: None",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:36:17.263068"
+    },
+    {
+      "scenario_id": "security_redactor",
+      "status": "passed",
+      "duration_seconds": 0.00784921646118164,
+      "message": "Secret correctly redacted",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:36:17.270914"
+    },
+    {
+      "scenario_id": "security_kill_switch",
+      "status": "skipped",
+      "duration_seconds": 0.0,
+      "message": "Missing requirements: kill_switch_active",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:36:17.270996"
+    },
+    {
+      "scenario_id": "llm_provider_available",
+      "status": "skipped",
+      "duration_seconds": 0.32094812393188477,
+      "message": "No API keys configured (set OPENROUTER_API_KEY or OPENAI_API_KEY)",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:36:17.591937"
+    },
+    {
+      "scenario_id": "llm_failover",
+      "status": "skipped",
+      "duration_seconds": 0.0,
+      "message": "Requires multiple providers configured",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:36:17.591963"
+    },
+    {
+      "scenario_id": "tools_registry",
+      "status": "passed",
+      "duration_seconds": 0.6012427806854248,
+      "message": "Registry loaded with 11 tools",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:36:18.193202"
+    },
+    {
+      "scenario_id": "memory_persistence",
+      "status": "passed",
+      "duration_seconds": 6.121544122695923,
+      "message": "Memory stored and retrieved successfully",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:36:24.314724"
+    },
+    {
+      "scenario_id": "memory_reflection",
+      "status": "passed",
+      "duration_seconds": 0.05170035362243652,
+      "message": "Reflection generated: success",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:36:24.366481"
+    },
+    {
+      "scenario_id": "ui_automation_health",
+      "status": "passed",
+      "duration_seconds": 2.3603439331054688e-05,
+      "message": "pyautogui: OK; uiautomation: OK",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:36:24.531919"
+    },
+    {
+      "scenario_id": "skills_registry",
+      "status": "passed",
+      "duration_seconds": 0.005667924880981445,
+      "message": "Registry loaded with 1 skills: calendar",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:36:24.537595"
+    },
+    {
+      "scenario_id": "skills_calendar_status",
+      "status": "passed",
+      "duration_seconds": 1.5020370483398438e-05,
+      "message": "Calendar skill status: not_configured, capabilities: 5",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:36:24.537625"
+    },
+    {
+      "scenario_id": "robustness_health_checks",
+      "status": "passed",
+      "duration_seconds": 0.1975383758544922,
+      "message": "Health checks: 3/4 passed",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:36:24.735162"
+    },
+    {
+      "scenario_id": "robustness_execution_monitor",
+      "status": "passed",
+      "duration_seconds": 3.0039658546447754,
+      "message": "Execution monitor works: retry succeeded after 3 attempts",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:36:27.739138"
+    },
+    {
+      "scenario_id": "robustness_thrash_guard",
+      "status": "passed",
+      "duration_seconds": 0.005048036575317383,
+      "message": "ThrashGuard initialized correctly",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:36:27.744195"
+    }
+  ]
+}

@@ -5,7 +5,8 @@
       "Bash(python:*)",
       "Bash(codex:*)",
       "Bash(pip show:*)",
-      "Bash(pip install:*)"
+      "Bash(pip install:*)",
+      "Bash(find:*)"
     ]
   }
 }

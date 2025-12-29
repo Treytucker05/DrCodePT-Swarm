@@ -1,0 +1,110 @@
+{
+  "timestamp": "2025-12-28T23:25:54.627189",
+  "total": 10,
+  "passed": 4,
+  "failed": 2,
+  "skipped": 3,
+  "errors": 1,
+  "results": [
+    {
+      "scenario_id": "orchestrator_calendar",
+      "status": "passed",
+      "duration_seconds": 0.16738057136535645,
+      "message": "Intent: list_calendar_events, Skill: calendar",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:25:53.648880"
+    },
+    {
+      "scenario_id": "orchestrator_file_list",
+      "status": "passed",
+      "duration_seconds": 2.0265579223632812e-05,
+      "message": "Intent: list_files, Skill: filesystem",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:25:53.648930"
+    },
+    {
+      "scenario_id": "orchestrator_help",
+      "status": "passed",
+      "duration_seconds": 1.33514404296875e-05,
+      "message": "Intent: help_request, Skill: None",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:25:53.648948"
+    },
+    {
+      "scenario_id": "security_redactor",
+      "status": "passed",
+      "duration_seconds": 0.01674509048461914,
+      "message": "Secret correctly redacted",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:25:53.665690"
+    },
+    {
+      "scenario_id": "security_kill_switch",
+      "status": "skipped",
+      "duration_seconds": 0.0,
+      "message": "Missing requirements: kill_switch_active",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:25:53.665765"
+    },
+    {
+      "scenario_id": "llm_provider_available",
+      "status": "failed",
+      "duration_seconds": 0.33742737770080566,
+      "message": "No LLM providers available",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:25:54.003185"
+    },
+    {
+      "scenario_id": "llm_failover",
+      "status": "skipped",
+      "duration_seconds": 0.0,
+      "message": "Requires multiple providers configured",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:25:54.003211"
+    },
+    {
+      "scenario_id": "tools_registry",
+      "status": "failed",
+      "duration_seconds": 0.003918886184692383,
+      "message": "Registry failed: cannot import name 'get_tool_registry' from 'agent.tools.registry' (C:\\Users\\treyt\\OneDrive\\Desktop\\DrCodePT-Swarm\\agent\\tools\\registry.py)",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:25:54.007129"
+    },
+    {
+      "scenario_id": "memory_persistence",
+      "status": "skipped",
+      "duration_seconds": 0.0,
+      "message": "Requires memory system running",
+      "expected": null,
+      "actual": null,
+      "error": null,
+      "timestamp": "2025-12-28T23:25:54.007142"
+    },
+    {
+      "scenario_id": "ui_automation_health",
+      "status": "error",
+      "duration_seconds": 0.2805767059326172,
+      "message": "",
+      "expected": null,
+      "actual": null,
+      "error": "[unknown] auth: No LLM providers available. Please set at least one of:\n  - OPENROUTER_API_KEY (recommended)\n  - OPENAI_API_KEY\n  - Install and authenticate Codex CLI",
+      "timestamp": "2025-12-28T23:25:54.627131"
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+name: Evals
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  smoke-test:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run smoke evals
+      run: |
+        python -c "from evals import run_all_evals; results = run_all_evals(); exit(1 if any(r.status.value == 'failed' for r in results) else 0)"
+      env:
+        # Optional: Add API keys as secrets for full testing
+        OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+    - name: Upload eval results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: eval-results
+        path: evals/results/
+        retention-days: 30
+
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install ruff
+      run: pip install ruff
+
+    - name: Run ruff check
+      run: ruff check agent/ evals/ --ignore E501
+      continue-on-error: true
