@@ -409,6 +409,85 @@ EVAL_TASKS: List[EvalTask] = [
     ),
 
     # -------------------------------------------------------------------------
+    # Category: Acceptance (realistic end-to-end tasks)
+    # -------------------------------------------------------------------------
+    EvalTask(
+        name="acceptance_simple_file",
+        category="acceptance",
+        task="Create a file named 'acceptance_hello.txt' containing 'hello world'.",
+        checks=[
+            EvalCheck("file_created", file_exists("acceptance_hello.txt"), "File created"),
+            EvalCheck("content_correct", file_contains("acceptance_hello.txt", "hello world"), "Correct content"),
+            EvalCheck("efficient", steps_under(6), "Completed efficiently"),
+        ],
+        max_steps=8,
+    ),
+
+    EvalTask(
+        name="acceptance_read_or_create",
+        category="acceptance",
+        task="Read 'missing_accept.txt'. If it does not exist, create it with the text 'alpha beta'. Then write its contents to 'retrieved_accept.txt'.",
+        checks=[
+            EvalCheck("missing_created", file_exists("missing_accept.txt"), "Missing file created"),
+            EvalCheck("missing_content", file_contains("missing_accept.txt", "alpha beta"), "Missing file has correct content"),
+            EvalCheck("retrieved_created", file_exists("retrieved_accept.txt"), "Retrieved output created"),
+            EvalCheck("retrieved_content", file_contains("retrieved_accept.txt", "alpha beta"), "Retrieved content correct"),
+        ],
+        max_steps=12,
+    ),
+
+    EvalTask(
+        name="acceptance_project_bootstrap",
+        category="acceptance",
+        task="Create a folder 'acme_project' with subfolders 'src' and 'tests', and create 'README.md' containing the line 'Acme Project'.",
+        checks=[
+            EvalCheck("root_dir", dir_exists("acme_project"), "Project root exists"),
+            EvalCheck("src_dir", dir_exists("acme_project/src"), "src/ exists"),
+            EvalCheck("tests_dir", dir_exists("acme_project/tests"), "tests/ exists"),
+            EvalCheck("readme", file_contains("acme_project/README.md", "Acme Project"), "README content correct"),
+        ],
+        max_steps=12,
+    ),
+
+    EvalTask(
+        name="acceptance_memory_roundtrip",
+        category="acceptance",
+        task="Store the fact 'Pin is 2468' in memory with key 'pin'. Then search memory for 'pin' and write what you find to 'pin.txt'.",
+        checks=[
+            EvalCheck("used_memory_store", tool_was_called("memory_store"), "Used memory_store"),
+            EvalCheck("used_memory_search", tool_was_called("memory_search"), "Used memory_search"),
+            EvalCheck("pin_file", file_exists("pin.txt"), "Pin output created"),
+            EvalCheck("pin_content", file_contains("pin.txt", "2468"), "Pin content correct"),
+        ],
+        max_steps=12,
+    ),
+
+    EvalTask(
+        name="acceptance_json_update",
+        category="acceptance",
+        task="Create 'todos.json' with an empty list, then add two todos: 'Study' and 'Email advisor'. Mark 'Email advisor' as complete and save to 'todos_final.json'.",
+        checks=[
+            EvalCheck("initial_json", file_exists("todos.json"), "Initial todos.json created"),
+            EvalCheck("final_json", file_exists("todos_final.json"), "Final todos created"),
+            EvalCheck("has_study", file_contains("todos_final.json", "Study"), "Contains Study todo"),
+            EvalCheck("has_complete", file_contains("todos_final.json", "complete"), "Has completion field"),
+        ],
+        max_steps=12,
+    ),
+
+    EvalTask(
+        name="acceptance_python_math",
+        category="acceptance",
+        task="Use Python to compute 7 * 8 and write the result to 'answer.txt'.",
+        checks=[
+            EvalCheck("file_created", file_exists("answer.txt"), "Answer file created"),
+            EvalCheck("correct_answer", file_contains("answer.txt", "56"), "Answer correct"),
+            EvalCheck("used_python", tool_was_called("python_exec"), "Used python_exec"),
+        ],
+        max_steps=8,
+    ),
+
+    # -------------------------------------------------------------------------
     # Category: Complex / Integration
     # -------------------------------------------------------------------------
     EvalTask(
@@ -530,6 +609,9 @@ class EvalRunner:
             # Speed up eval memory searches by using lightweight hash embeddings
             if os.getenv("AGENT_MEMORY_EMBED_BACKEND") is None:
                 os.environ["AGENT_MEMORY_EMBED_BACKEND"] = "hash"
+            # Prefer low-effort reasoning for eval speed/stability
+            if os.getenv("CODEX_REASONING_EFFORT") is None:
+                os.environ["CODEX_REASONING_EFFORT"] = "low"
 
             # Configure agent
             runner_cfg = RunnerConfig(
@@ -746,7 +828,7 @@ def main():
         "--category", "-c",
         type=str,
         nargs="+",
-        choices=["basic", "planning", "recovery", "boundaries", "memory", "complex"],
+        choices=["basic", "planning", "recovery", "boundaries", "memory", "complex", "acceptance"],
         help="Run only specific categories",
     )
     parser.add_argument(

@@ -54,6 +54,16 @@ def _status_print(*args, **kwargs) -> None:
     if not _is_quiet():
         print(*args, **kwargs)
 
+def _normalize_effort(value: Optional[str]) -> str:
+    effort = (value or "").strip().lower()
+    if effort in {"low", "medium", "high"}:
+        return effort
+    if effort in {"xlow", "extra_low", "xl", "fast", "quick"}:
+        return "low"
+    if effort in {"xhigh", "extra_high", "xh", "deep", "slow"}:
+        return "high"
+    return "low"
+
 
 def _utc_ts_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -215,6 +225,8 @@ class AgentRunner:
         self.model_router = model_router
         self.resource_monitor = ResourceMonitor(memory_limit_mb=1024)
         self._step_count = 0
+        self._base_reasoning_effort = _normalize_effort(os.getenv("CODEX_REASONING_EFFORT"))
+        self._current_reasoning_effort = self._base_reasoning_effort
 
         # Initialize thrash guard if enabled
         if use_thrash_guard:
@@ -658,10 +670,11 @@ class AgentRunner:
                             lambda: planner.plan(task=nudge_task, observations=obs, memories=mem),
                         )
 
+                    plan_effort = self._current_reasoning_effort
                     plan = self._call_llm_with_retry(
                         tracer=tracer,
                         where="plan",
-                        fn=lambda: _plan_call(False),
+                        fn=lambda: self._with_reasoning_effort(plan_effort, lambda: _plan_call(False)),
                         label=plan_label,
                         max_retries=0,
                         timeout_seconds=self.cfg.llm_plan_timeout_seconds,
@@ -671,7 +684,7 @@ class AgentRunner:
                         plan = self._call_llm_with_retry(
                             tracer=tracer,
                             where="plan_fast",
-                            fn=lambda: _plan_call(True),
+                            fn=lambda: self._with_reasoning_effort(plan_effort, lambda: _plan_call(True)),
                             label=f"{plan_label} (fast retry)",
                             max_retries=0,
                             timeout_seconds=self.cfg.llm_plan_retry_timeout_seconds,
@@ -721,10 +734,11 @@ class AgentRunner:
                                 lambda: planner.plan(task=task, observations=obs, memories=mem),
                             )
 
+                        plan_effort = self._current_reasoning_effort
                         current_plan = self._call_llm_with_retry(
                             tracer=tracer,
                             where="plan",
-                            fn=lambda: _plan_call(False),
+                            fn=lambda: self._with_reasoning_effort(plan_effort, lambda: _plan_call(False)),
                             label=plan_label,
                             max_retries=0,
                             timeout_seconds=self.cfg.llm_plan_timeout_seconds,
@@ -734,7 +748,7 @@ class AgentRunner:
                             current_plan = self._call_llm_with_retry(
                                 tracer=tracer,
                                 where="plan_fast",
-                                fn=lambda: _plan_call(True),
+                                fn=lambda: self._with_reasoning_effort(plan_effort, lambda: _plan_call(True)),
                                 label=f"{plan_label} (fast retry)",
                                 max_retries=0,
                                 timeout_seconds=self.cfg.llm_plan_retry_timeout_seconds,
@@ -1054,7 +1068,10 @@ class AgentRunner:
                 reflection = self._call_llm_with_retry(
                     tracer=tracer,
                     where="reflection",
-                    fn=lambda: reflector.reflect(task=task, step=step, tool_result=tool_result, observation=obs),
+                    fn=lambda: self._with_reasoning_effort(
+                        self._current_reasoning_effort,
+                        lambda: reflector.reflect(task=task, step=step, tool_result=tool_result, observation=obs),
+                    ),
                 )
                 if reflection is None:
                     return self._stop(
@@ -1106,6 +1123,36 @@ class AgentRunner:
                     exploration_nudge_next=exploration_nudge_next,
                     exploration_reason=exploration_reason,
                 )
+
+                # If we appear to be done, verify goal and finish early.
+                elapsed = time.monotonic() - start
+                if reflection.status == "success" and step.tool_name != "finish":
+                    if self._should_attempt_finish(reflection, elapsed):
+                        try:
+                            if self._goal_check(
+                                llm=tracked_llm,
+                                task=task,
+                                observation=obs,
+                                reflection=reflection,
+                                step=step,
+                            ):
+                                return self._stop(
+                                    tracer=tracer,
+                                    memory_store=memory_store,
+                                    success=True,
+                                    reason="goal_achieved",
+                                    steps=steps_executed,
+                                    run_id=run_id,
+                                    llm_stats=tracked_llm,
+                                    task=task,
+                                    state=state,
+                                    plan=plan,
+                                    run_dir=run_dir,
+                                    started_at=started_at,
+                                    started_monotonic=start,
+                                )
+                        except Exception:
+                            pass
 
                 # Stuck detection: no state change across steps
                 current_fp = state.state_fingerprint()
@@ -1229,6 +1276,8 @@ class AgentRunner:
 
                 if reflection.status == "success":
                     consecutive_no_progress = 0
+                    if self._current_reasoning_effort != self._base_reasoning_effort:
+                        self._current_reasoning_effort = self._base_reasoning_effort
                     if self.planner_cfg.mode == "plan_first":
                         state.current_step_idx += 1
                     continue
@@ -1246,6 +1295,8 @@ class AgentRunner:
                         continue
 
                 consecutive_no_progress += 1
+                if reflection.status in {"minor_repair", "replan"} or consecutive_no_progress >= 2:
+                    self._current_reasoning_effort = "high"
                 if consecutive_no_progress >= 6:
                     return self._stop(
                         tracer=tracer,
@@ -1266,13 +1317,16 @@ class AgentRunner:
                     repaired = self._call_llm_with_retry(
                         tracer=tracer,
                         where="repair",
-                        fn=lambda: planner.repair(
-                            task=task,
-                            observations=state.observations,
-                            memories=memories,
-                            failed_step=step,
-                            tool_result=tool_result,
-                            reflection=reflection,
+                        fn=lambda: self._with_reasoning_effort(
+                            self._current_reasoning_effort,
+                            lambda: planner.repair(
+                                task=task,
+                                observations=state.observations,
+                                memories=memories,
+                                failed_step=step,
+                                tool_result=tool_result,
+                                reflection=reflection,
+                            ),
                         ),
                         allow_none=True,
                     )
@@ -1735,6 +1789,54 @@ class AgentRunner:
         event = {"step_id": step.id, "tool_category": category, "ui_snapshot": snapshot}
         tracer.log({"type": "ui_snapshot", **event})
         return event
+
+    def _with_reasoning_effort(self, effort: str, fn):
+        if not effort:
+            return fn()
+        prev = os.environ.get("CODEX_REASONING_EFFORT")
+        os.environ["CODEX_REASONING_EFFORT"] = effort
+        try:
+            return fn()
+        finally:
+            if prev is None:
+                os.environ.pop("CODEX_REASONING_EFFORT", None)
+            else:
+                os.environ["CODEX_REASONING_EFFORT"] = prev
+
+    def _should_attempt_finish(self, reflection: Reflection, elapsed: float) -> bool:
+        if reflection.status != "success":
+            return False
+        hint = (reflection.next_hint or "").strip().lower()
+        if not hint:
+            return True
+        if any(token in hint for token in ("no further action", "done", "complete")):
+            return True
+        return elapsed >= (self.cfg.timeout_seconds * 0.6)
+
+    def _goal_check(
+        self,
+        *,
+        llm: TrackedLLM,
+        task: str,
+        observation: Observation,
+        reflection: Reflection,
+        step: Step,
+    ) -> bool:
+        prompt = (
+            "Determine if the goal is fully satisfied based ONLY on the evidence below.\n"
+            "If you are unsure or evidence is missing, return ok=false.\n\n"
+            f"Goal:\n{task}\n\n"
+            f"Last step:\n{self._dump(step)}\n\n"
+            f"Observation:\n{self._dump(observation)}\n\n"
+            f"Reflection:\n{self._dump(reflection)}\n\n"
+            "Return JSON with fields: ok (true/false), failed (list of missing requirements).\n"
+        )
+        data = llm.reason_json(
+            prompt,
+            schema_path=llm_schemas.CONDITION_CHECK,
+            timeout_seconds=min(30, self.cfg.llm_plan_retry_timeout_seconds or 30),
+        )
+        return bool(data.get("ok"))
 
     def _call_llm_with_retry(
         self,
