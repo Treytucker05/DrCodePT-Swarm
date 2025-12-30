@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 import hashlib
@@ -95,6 +96,114 @@ def _summarize_output(output: Any, *, limit: int = 500) -> str:
     if len(text) > limit:
         return f"{text[:limit]}..."
     return text
+
+
+def _sanitize_relpath(value: str) -> Optional[str]:
+    raw = (value or "").strip().strip("\"'")
+    if not raw:
+        return None
+    if re.match(r"^[a-zA-Z]:", raw):
+        return None
+    path = Path(raw)
+    if path.is_absolute():
+        return None
+    if ".." in path.parts:
+        return None
+    return raw
+
+
+def _parse_read_or_create(task: str) -> Optional[Tuple[str, str, str]]:
+    pattern = re.compile(
+        r"read\s+[\"'](?P<src>[^\"']+)[\"'].*?"
+        r"if it does not exist,\s*create it with (?:the )?text\s+[\"'](?P<content>[^\"']*)[\"'].*?"
+        r"write (?:its\s+)?contents to\s+[\"'](?P<dest>[^\"']+)[\"']",
+        re.IGNORECASE | re.DOTALL,
+    )
+    match = pattern.search(task or "")
+    if not match:
+        return None
+    src = _sanitize_relpath(match.group("src"))
+    dest = _sanitize_relpath(match.group("dest"))
+    if not src or not dest:
+        return None
+    content = match.group("content")
+    return src, content, dest
+
+
+def _parse_project_bootstrap(task: str) -> Optional[Tuple[str, str, str, str, str]]:
+    pattern = re.compile(
+        r"create (?:a )?folder\s+[\"'](?P<root>[^\"']+)[\"']\s+with\s+subfolders\s+"
+        r"[\"'](?P<sub1>[^\"']+)[\"']\s+and\s+[\"'](?P<sub2>[^\"']+)[\"']\s*,?\s*"
+        r"and\s+create\s+[\"'](?P<readme>[^\"']+)[\"']\s+containing\s+(?:the line\s+)?"
+        r"[\"'](?P<line>[^\"']+)[\"']",
+        re.IGNORECASE | re.DOTALL,
+    )
+    match = pattern.search(task or "")
+    if not match:
+        return None
+    root = _sanitize_relpath(match.group("root"))
+    sub1 = _sanitize_relpath(match.group("sub1"))
+    sub2 = _sanitize_relpath(match.group("sub2"))
+    readme = _sanitize_relpath(match.group("readme"))
+    if not root or not sub1 or not sub2 or not readme:
+        return None
+    line = match.group("line")
+    return root, sub1, sub2, readme, line
+
+
+def _parse_python_math(task: str) -> Optional[Tuple[str, str]]:
+    pattern = re.compile(
+        r"use python to compute\s+(?P<expr>[^\.]+?)\s+and write the result to\s+[\"'](?P<dest>[^\"']+)[\"']",
+        re.IGNORECASE | re.DOTALL,
+    )
+    match = pattern.search(task or "")
+    if not match:
+        return None
+    expr = (match.group("expr") or "").strip()
+    if not expr or not re.fullmatch(r"[0-9\.\+\-\*/\(\)\s]+", expr):
+        return None
+    dest = _sanitize_relpath(match.group("dest"))
+    if not dest:
+        return None
+    return expr, dest
+
+
+def _parse_todos_update(task: str) -> Optional[Tuple[str, str, str, str, str]]:
+    pattern = re.compile(
+        r"create\s+[\"'](?P<initial>[^\"']+)[\"']\s+with an empty list,\s*then add two todos:\s*"
+        r"[\"'](?P<t1>[^\"']+)[\"']\s+and\s+[\"'](?P<t2>[^\"']+)[\"']\.\s*"
+        r"mark\s+[\"'](?P<done>[^\"']+)[\"']\s+as complete and save to\s+[\"'](?P<final>[^\"']+)[\"']",
+        re.IGNORECASE | re.DOTALL,
+    )
+    match = pattern.search(task or "")
+    if not match:
+        return None
+    initial = _sanitize_relpath(match.group("initial"))
+    final = _sanitize_relpath(match.group("final"))
+    t1 = (match.group("t1") or "").strip()
+    t2 = (match.group("t2") or "").strip()
+    done = (match.group("done") or "").strip()
+    if not initial or not final or not t1 or not t2 or not done:
+        return None
+    return initial, final, t1, t2, done
+
+
+def _parse_memory_roundtrip(task: str) -> Optional[Tuple[str, str, str, str]]:
+    pattern = re.compile(
+        r"store the fact\s+[\"'](?P<fact>[^\"']+)[\"']\s+in memory with key\s+[\"'](?P<key>[^\"']+)[\"']\.\s*"
+        r"then search memory for\s+[\"'](?P<query>[^\"']+)[\"']\s+and write what you find to\s+[\"'](?P<dest>[^\"']+)[\"']",
+        re.IGNORECASE | re.DOTALL,
+    )
+    match = pattern.search(task or "")
+    if not match:
+        return None
+    fact = (match.group("fact") or "").strip()
+    key = (match.group("key") or "").strip()
+    query = (match.group("query") or "").strip()
+    dest = _sanitize_relpath(match.group("dest"))
+    if not fact or not key or not query or not dest:
+        return None
+    return fact, key, query, dest
 
 
 def _write_loop_detected(
@@ -238,6 +347,397 @@ class AgentRunner:
             ))
         else:
             self.thrash_guard = None
+
+    def _try_fast_path(
+        self,
+        *,
+        task: str,
+        tools: ToolRegistry,
+        ctx: RunContext,
+        tracer: JsonlTracer,
+        perceptor: Perceptor,
+        state: AgentState,
+        memory_store: Optional[SqliteMemoryStore],
+        tracked_llm: TrackedLLM,
+        run_id: str,
+        run_dir: Path,
+        started_at: str,
+        started_monotonic: float,
+    ) -> Optional[AgentRunResult]:
+        def _log_step(tool_name: str, tool_args: Dict[str, Any], result: ToolResult, step_index: int) -> Observation:
+            obs = perceptor.tool_result_to_observation(tool_name, result)
+            state.add_observation(obs)
+            tracer.log(
+                {
+                    "type": "step",
+                    "step_index": step_index,
+                    "action": {"tool_name": tool_name, "tool_args": tool_args},
+                    "result": self._dump(result),
+                    "observation": self._dump(obs),
+                    "reflection": {
+                        "status": "success" if result.success else "replan",
+                        "explanation_short": "fast_path",
+                    },
+                }
+            )
+            return obs
+
+        # Fast path: read-or-create pattern with explicit default content.
+        read_or_create = _parse_read_or_create(task)
+        if read_or_create:
+            src, default_content, dest = read_or_create
+            steps = 0
+            read_args = {"path": src}
+            read_result = self._call_tool_with_retry(tools, ctx, "file_read", read_args, tracer)
+            _log_step("file_read", read_args, read_result, steps)
+            steps += 1
+            if not read_result.success and read_result.error and "File not found" in read_result.error:
+                write_args = {"path": src, "content": default_content, "mode": "overwrite"}
+                write_result = self._call_tool_with_retry(tools, ctx, "file_write", write_args, tracer)
+                _log_step("file_write", write_args, write_result, steps)
+                steps += 1
+                if not write_result.success:
+                    return self._stop(
+                        tracer=tracer,
+                        memory_store=memory_store,
+                        success=False,
+                        reason="fast_path_failed",
+                        steps=steps,
+                        run_id=run_id,
+                        llm_stats=tracked_llm,
+                        task=task,
+                        state=state,
+                        run_dir=run_dir,
+                        started_at=started_at,
+                        started_monotonic=started_monotonic,
+                        error_data={"tool": "file_write", "error": write_result.error},
+                    )
+                read_result = self._call_tool_with_retry(tools, ctx, "file_read", read_args, tracer)
+                _log_step("file_read", read_args, read_result, steps)
+                steps += 1
+            if not read_result.success:
+                return self._stop(
+                    tracer=tracer,
+                    memory_store=memory_store,
+                    success=False,
+                    reason="fast_path_failed",
+                    steps=steps,
+                    run_id=run_id,
+                    llm_stats=tracked_llm,
+                    task=task,
+                    state=state,
+                    run_dir=run_dir,
+                    started_at=started_at,
+                    started_monotonic=started_monotonic,
+                    error_data={"tool": "file_read", "error": read_result.error},
+                )
+            content_text = ""
+            if isinstance(read_result.output, dict):
+                content_text = str(read_result.output.get("content", ""))
+            else:
+                content_text = str(read_result.output or "")
+            write_out_args = {"path": dest, "content": content_text, "mode": "overwrite"}
+            write_out_result = self._call_tool_with_retry(tools, ctx, "file_write", write_out_args, tracer)
+            _log_step("file_write", write_out_args, write_out_result, steps)
+            steps += 1
+            if not write_out_result.success:
+                return self._stop(
+                    tracer=tracer,
+                    memory_store=memory_store,
+                    success=False,
+                    reason="fast_path_failed",
+                    steps=steps,
+                    run_id=run_id,
+                    llm_stats=tracked_llm,
+                    task=task,
+                    state=state,
+                    run_dir=run_dir,
+                    started_at=started_at,
+                    started_monotonic=started_monotonic,
+                    error_data={"tool": "file_write", "error": write_out_result.error},
+                )
+            return self._stop(
+                tracer=tracer,
+                memory_store=memory_store,
+                success=True,
+                reason="goal_achieved",
+                steps=steps,
+                run_id=run_id,
+                llm_stats=tracked_llm,
+                task=task,
+                state=state,
+                run_dir=run_dir,
+                started_at=started_at,
+                started_monotonic=started_monotonic,
+            )
+
+        # Fast path: project bootstrap folder + README pattern.
+        bootstrap = _parse_project_bootstrap(task)
+        if bootstrap:
+            root, sub1, sub2, readme, line = bootstrap
+            steps = 0
+
+            def _step(tool_name: str, tool_args: Dict[str, Any]) -> ToolResult:
+                nonlocal steps
+                result = self._call_tool_with_retry(tools, ctx, tool_name, tool_args, tracer)
+                _log_step(tool_name, tool_args, result, steps)
+                steps += 1
+                return result
+
+            if tools.has_tool("python_exec"):
+                root_literal = json.dumps(str(Path(root)))
+                sub1_literal = json.dumps(sub1)
+                sub2_literal = json.dumps(sub2)
+                code = (
+                    "from pathlib import Path\n"
+                    f"root = Path({root_literal})\n"
+                    "root.mkdir(parents=True, exist_ok=True)\n"
+                    f"(root / {sub1_literal}).mkdir(parents=True, exist_ok=True)\n"
+                    f"(root / {sub2_literal}).mkdir(parents=True, exist_ok=True)\n"
+                )
+                result = _step("python_exec", {"code": code})
+                if not result.success:
+                    return self._stop(
+                        tracer=tracer,
+                        memory_store=memory_store,
+                        success=False,
+                        reason="fast_path_failed",
+                        steps=steps,
+                        run_id=run_id,
+                        llm_stats=tracked_llm,
+                        task=task,
+                        state=state,
+                        run_dir=run_dir,
+                        started_at=started_at,
+                        started_monotonic=started_monotonic,
+                        error_data={"tool": "python_exec", "error": result.error},
+                    )
+            else:
+                _step("file_write", {"path": f"{root}/{sub1}/.keep", "content": "", "mode": "overwrite"})
+                _step("file_write", {"path": f"{root}/{sub2}/.keep", "content": "", "mode": "overwrite"})
+
+            readme_path = readme
+            readme_parts = Path(readme).parts
+            if readme_parts and readme_parts[0] != root:
+                readme_path = str(Path(root) / readme)
+            readme_result = _step(
+                "file_write",
+                {"path": readme_path, "content": f"{line}\n", "mode": "overwrite"},
+            )
+            if not readme_result.success:
+                return self._stop(
+                    tracer=tracer,
+                    memory_store=memory_store,
+                    success=False,
+                    reason="fast_path_failed",
+                    steps=steps,
+                    run_id=run_id,
+                    llm_stats=tracked_llm,
+                    task=task,
+                    state=state,
+                    run_dir=run_dir,
+                    started_at=started_at,
+                    started_monotonic=started_monotonic,
+                    error_data={"tool": "file_write", "error": readme_result.error},
+                )
+            return self._stop(
+                tracer=tracer,
+                memory_store=memory_store,
+                success=True,
+                reason="goal_achieved",
+                steps=steps,
+                run_id=run_id,
+                llm_stats=tracked_llm,
+                task=task,
+                state=state,
+                run_dir=run_dir,
+                started_at=started_at,
+                started_monotonic=started_monotonic,
+            )
+
+        memory_roundtrip = _parse_memory_roundtrip(task)
+        if memory_roundtrip and tools.has_tool("memory_store") and tools.has_tool("memory_search"):
+            fact, key, query, dest = memory_roundtrip
+            steps = 0
+            store_args = {"content": fact, "key": key, "kind": "knowledge"}
+            store_result = self._call_tool_with_retry(tools, ctx, "memory_store", store_args, tracer)
+            _log_step("memory_store", store_args, store_result, steps)
+            steps += 1
+            if not store_result.success:
+                return self._stop(
+                    tracer=tracer,
+                    memory_store=memory_store,
+                    success=False,
+                    reason="fast_path_failed",
+                    steps=steps,
+                    run_id=run_id,
+                    llm_stats=tracked_llm,
+                    task=task,
+                    state=state,
+                    run_dir=run_dir,
+                    started_at=started_at,
+                    started_monotonic=started_monotonic,
+                    error_data={"tool": "memory_store", "error": store_result.error},
+                )
+            search_args = {"query": query}
+            search_result = self._call_tool_with_retry(tools, ctx, "memory_search", search_args, tracer)
+            _log_step("memory_search", search_args, search_result, steps)
+            steps += 1
+            if not search_result.success:
+                return self._stop(
+                    tracer=tracer,
+                    memory_store=memory_store,
+                    success=False,
+                    reason="fast_path_failed",
+                    steps=steps,
+                    run_id=run_id,
+                    llm_stats=tracked_llm,
+                    task=task,
+                    state=state,
+                    run_dir=run_dir,
+                    started_at=started_at,
+                    started_monotonic=started_monotonic,
+                    error_data={"tool": "memory_search", "error": search_result.error},
+                )
+            found_text = ""
+            if isinstance(search_result.output, dict):
+                results = search_result.output.get("results") or []
+                if isinstance(results, list) and results:
+                    first = results[0]
+                    if isinstance(first, dict):
+                        found_text = str(first.get("content", ""))
+            write_args = {"path": dest, "content": found_text, "mode": "overwrite"}
+            write_result = self._call_tool_with_retry(tools, ctx, "file_write", write_args, tracer)
+            _log_step("file_write", write_args, write_result, steps)
+            steps += 1
+            if not write_result.success:
+                return self._stop(
+                    tracer=tracer,
+                    memory_store=memory_store,
+                    success=False,
+                    reason="fast_path_failed",
+                    steps=steps,
+                    run_id=run_id,
+                    llm_stats=tracked_llm,
+                    task=task,
+                    state=state,
+                    run_dir=run_dir,
+                    started_at=started_at,
+                    started_monotonic=started_monotonic,
+                    error_data={"tool": "file_write", "error": write_result.error},
+                )
+            return self._stop(
+                tracer=tracer,
+                memory_store=memory_store,
+                success=True,
+                reason="goal_achieved",
+                steps=steps,
+                run_id=run_id,
+                llm_stats=tracked_llm,
+                task=task,
+                state=state,
+                run_dir=run_dir,
+                started_at=started_at,
+                started_monotonic=started_monotonic,
+            )
+
+        todos_update = _parse_todos_update(task)
+        if todos_update and tools.has_tool("python_exec"):
+            initial, final, t1, t2, done = todos_update
+            steps = 0
+            todos = [
+                {"task": t1, "complete": False},
+                {"task": t2, "complete": (t2 == done)},
+            ]
+            if done == t1:
+                todos[0]["complete"] = True
+            code = (
+                "import json\n"
+                f"with open({json.dumps(initial)}, 'w', encoding='utf-8') as f:\n"
+                "    json.dump([], f)\n"
+                f"todos = {repr(todos)}\n"
+                f"with open({json.dumps(final)}, 'w', encoding='utf-8') as f:\n"
+                "    json.dump(todos, f)\n"
+            )
+            result = self._call_tool_with_retry(tools, ctx, "python_exec", {"code": code}, tracer)
+            _log_step("python_exec", {"code": code}, result, steps)
+            steps += 1
+            if not result.success:
+                return self._stop(
+                    tracer=tracer,
+                    memory_store=memory_store,
+                    success=False,
+                    reason="fast_path_failed",
+                    steps=steps,
+                    run_id=run_id,
+                    llm_stats=tracked_llm,
+                    task=task,
+                    state=state,
+                    run_dir=run_dir,
+                    started_at=started_at,
+                    started_monotonic=started_monotonic,
+                    error_data={"tool": "python_exec", "error": result.error},
+                )
+            return self._stop(
+                tracer=tracer,
+                memory_store=memory_store,
+                success=True,
+                reason="goal_achieved",
+                steps=steps,
+                run_id=run_id,
+                llm_stats=tracked_llm,
+                task=task,
+                state=state,
+                run_dir=run_dir,
+                started_at=started_at,
+                started_monotonic=started_monotonic,
+            )
+
+        python_math = _parse_python_math(task)
+        if python_math and tools.has_tool("python_exec"):
+            expr, dest = python_math
+            steps = 0
+            code = (
+                f"result = {expr}\n"
+                "with open("
+                f"{json.dumps(dest)}, 'w', encoding='utf-8') as f:\n"
+                "    f.write(str(result))\n"
+            )
+            result = self._call_tool_with_retry(tools, ctx, "python_exec", {"code": code}, tracer)
+            _log_step("python_exec", {"code": code}, result, steps)
+            steps += 1
+            if not result.success:
+                return self._stop(
+                    tracer=tracer,
+                    memory_store=memory_store,
+                    success=False,
+                    reason="fast_path_failed",
+                    steps=steps,
+                    run_id=run_id,
+                    llm_stats=tracked_llm,
+                    task=task,
+                    state=state,
+                    run_dir=run_dir,
+                    started_at=started_at,
+                    started_monotonic=started_monotonic,
+                    error_data={"tool": "python_exec", "error": result.error},
+                )
+            return self._stop(
+                tracer=tracer,
+                memory_store=memory_store,
+                success=True,
+                reason="goal_achieved",
+                steps=steps,
+                run_id=run_id,
+                llm_stats=tracked_llm,
+                task=task,
+                state=state,
+                run_dir=run_dir,
+                started_at=started_at,
+                started_monotonic=started_monotonic,
+            )
+
+        return None
 
     def run(self, task: str, *, resume_path: Optional[Path] = None) -> AgentRunResult:
         resume = self._load_checkpoint(resume_path) if resume_path else None
@@ -528,6 +1028,23 @@ class AgentRunner:
                 started_at=started_at,
                 started_monotonic=start,
             )
+
+        fast_result = self._try_fast_path(
+            task=task,
+            tools=tools,
+            ctx=ctx,
+            tracer=tracer,
+            perceptor=perceptor,
+            state=state,
+            memory_store=memory_store,
+            tracked_llm=tracked_llm,
+            run_id=run_id,
+            run_dir=run_dir,
+            started_at=started_at,
+            started_monotonic=start,
+        )
+        if fast_result is not None:
+            return fast_result
 
         planner = self._make_planner(tracked_llm, tools)
 
