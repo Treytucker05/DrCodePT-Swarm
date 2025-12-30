@@ -118,7 +118,7 @@ def mode_autonomous(task: str, *, unsafe_mode: bool = False) -> None:
     # Default allowed roots: repo root only (run_dir/workspace are always allowed).
     desktop_default = [REPO_ROOT]
 
-    fs_anywhere = _bool_env("AUTO_FS_ANYWHERE", False)
+    fs_anywhere = _bool_env("AUTO_FS_ANYWHERE", bool(unsafe_mode))
     raw_roots = os.getenv("AUTO_FS_ALLOWED_ROOTS", "").strip()
     allowed_roots = _split_paths(raw_roots) if raw_roots else desktop_default
 

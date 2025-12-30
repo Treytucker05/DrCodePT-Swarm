@@ -522,7 +522,7 @@ def file_read_factory(agent_cfg: AgentConfig):
         usage = _get_usage(ctx)
         path = Path(args.path)
         if not path.is_absolute():
-            path = (Path.cwd() / path).resolve()
+            path = (ctx.workspace_dir / path).resolve()
         if not _fs_allowed(path, agent_cfg, ctx):
             return ToolResult(
                 success=False,

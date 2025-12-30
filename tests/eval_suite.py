@@ -623,6 +623,7 @@ class EvalRunner:
                 enable_web_gui=False,
                 enable_desktop=False,
                 unsafe_mode=True,
+                allow_fs_anywhere=True,
             )
             planner_cfg = PlannerConfig(mode="react")
             

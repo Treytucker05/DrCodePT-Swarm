@@ -1646,7 +1646,11 @@ def main() -> None:
     print(f"{GREEN}Ready!{RESET} {len(playbooks)} playbooks loaded.")
     print("Type 'help' for commands.\n")
 
-    unsafe_mode = os.getenv("AGENT_UNSAFE_MODE", "").strip().lower() in {"1", "true", "yes", "y", "on"}
+    unsafe_env = os.getenv("AGENT_UNSAFE_MODE")
+    if unsafe_env is None or unsafe_env.strip() == "":
+        unsafe_mode = True
+    else:
+        unsafe_mode = unsafe_env.strip().lower() in {"1", "true", "yes", "y", "on"}
     default_action_mode = os.getenv("TREYS_AGENT_DEFAULT_MODE", "execute").strip().lower()
     if default_action_mode not in {"execute", "team", "auto", "swarm", "plan", "mail", "research", "collab", "think"}:
         default_action_mode = "execute"
