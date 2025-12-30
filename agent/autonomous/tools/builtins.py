@@ -605,7 +605,7 @@ def list_dir_factory(agent_cfg: AgentConfig):
         profile = _get_profile(ctx)
         path = Path(args.path)
         if not path.is_absolute():
-            path = (Path.cwd() / path).resolve()
+            path = (ctx.workspace_dir / path).resolve()
         if not _fs_allowed(path, agent_cfg, ctx):
             return ToolResult(
                 success=False,
@@ -661,7 +661,7 @@ def glob_paths_factory(agent_cfg: AgentConfig):
         usage = _get_usage(ctx)
         root = Path(args.root)
         if not root.is_absolute():
-            root = (Path.cwd() / root).resolve()
+            root = (ctx.workspace_dir / root).resolve()
         if not _fs_allowed(root, agent_cfg, ctx):
             return ToolResult(
                 success=False,
@@ -703,7 +703,7 @@ def file_search_factory(agent_cfg: AgentConfig):
         usage = _get_usage(ctx)
         root = Path(args.root)
         if not root.is_absolute():
-            root = (Path.cwd() / root).resolve()
+            root = (ctx.workspace_dir / root).resolve()
         if not _fs_allowed(root, agent_cfg, ctx):
             return ToolResult(
                 success=False,
@@ -1309,16 +1309,27 @@ def shell_exec_factory(agent_cfg: AgentConfig):
                     error=f"shell_exec blocked: {reason}",
                     metadata={"unsafe_blocked": True, "command": args.command},
                 )
-            cwd = args.cwd or str(ctx.workspace_dir)
-            if not _fs_allowed(Path(cwd), agent_cfg, ctx):
-                return ToolResult(
-                    success=False,
-                    error=f"shell_exec blocked outside allowed roots: {cwd}",
-                    metadata={"unsafe_blocked": True, "cwd": cwd},
-                )
+            cwd_input = args.cwd or str(ctx.workspace_dir)
+            cwd_path = Path(cwd_input)
+            if not cwd_path.is_absolute():
+                cwd_path = (ctx.workspace_dir / cwd_path).resolve()
+            else:
+                cwd_path = cwd_path.resolve()
+            coerced = False
+            if not _fs_allowed(cwd_path, agent_cfg, ctx):
+                # Fall back to workspace if the requested cwd is outside allowed roots.
+                if _fs_allowed(ctx.workspace_dir, agent_cfg, ctx):
+                    cwd_path = ctx.workspace_dir
+                    coerced = True
+                else:
+                    return ToolResult(
+                        success=False,
+                        error=f"shell_exec blocked outside allowed roots: {cwd_input}",
+                        metadata={"unsafe_blocked": True, "cwd": cwd_input},
+                    )
             proc = subprocess.run(
                 args.command,
-                cwd=cwd,
+                cwd=str(cwd_path),
                 capture_output=True,
                 text=True,
                 timeout=args.timeout_seconds,
@@ -1328,6 +1339,7 @@ def shell_exec_factory(agent_cfg: AgentConfig):
                 success=proc.returncode == 0,
                 output={"exit_code": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr},
                 error=None if proc.returncode == 0 else (proc.stderr.strip() or f"exit_code={proc.returncode}"),
+                metadata={"cwd": str(cwd_path), "cwd_coerced": coerced} if coerced else {"cwd": str(cwd_path)},
             )
         except subprocess.TimeoutExpired:
             return ToolResult(success=False, error="shell_exec timeout", retryable=True)

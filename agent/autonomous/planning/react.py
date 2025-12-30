@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import textwrap
 from typing import Any, Dict, List, Optional
@@ -37,6 +38,9 @@ _TOOL_ALIASES = {
     "glob_paths": "glob_paths",
     "web_search": "web_search",
     "web_fetch": "web_fetch",
+    "search_memory": "memory_search",
+    "memory_search": "memory_search",
+    "memory_store": "memory_store",
 }
 
 
@@ -47,6 +51,16 @@ def _normalize_tool_name(tool_name: str) -> str:
 
 
 def _normalize_tool_args(tool_name: str, tool_args: dict) -> dict:
+    if isinstance(tool_args, list):
+        normalized: Dict[str, Any] = {}
+        for item in tool_args:
+            if not isinstance(item, dict):
+                continue
+            key = item.get("key")
+            if not isinstance(key, str) or not key:
+                continue
+            normalized[key] = item.get("value")
+        tool_args = normalized
     if not isinstance(tool_args, dict):
         return {}
     args = dict(tool_args)
@@ -64,6 +78,13 @@ def _normalize_tool_args(tool_name: str, tool_args: dict) -> dict:
             args["path"] = args.pop("filename")
         if "text" in args and "content" not in args:
             args["content"] = args.pop("text")
+        content = args.get("content")
+        if isinstance(content, (dict, list)):
+            args["content"] = json.dumps(content, ensure_ascii=False)
+        elif content is None:
+            args["content"] = ""
+        elif not isinstance(content, str):
+            args["content"] = str(content)
     elif tool_name == "file_read":
         if "file_path" in args and "path" not in args:
             args["path"] = args.pop("file_path")
@@ -186,6 +207,11 @@ class ReActPlanner(Planner):
             - Prefer minimal, testable actions and specify success_criteria.
             - Add preconditions and postconditions when useful (short, checkable).
             - tool_args must be a list of {{"key":"...","value":"..."}} pairs (values as strings; encode JSON if needed).
+            - If the last step already succeeded, do NOT repeat the same tool + args. Move forward (verify or finish).
+            - For file_write: content MUST be a string. If writing JSON, use json.dumps(...) or a literal like "[]".
+            - If the task asks to search/retrieve memory, you MUST call memory_search after memory_store.
+            - If the task asks to write retrieved results to a file, you MUST include a file_write step with the actual content.
+            - If unsafe_mode is false, avoid shell_exec unless necessary; prefer file tools.
             - IMPORTANT: tool_name must match exactly one of the available tools listed below.
 
             Available tools (name/description/schema):

@@ -39,6 +39,21 @@ class ToolArgs(BaseModel):
 ToolFn = Callable[[RunContext, Any], ToolResult]
 
 
+def _coerce_tool_args(args: Any) -> Dict[str, Any]:
+    if isinstance(args, dict):
+        return args
+    if isinstance(args, list):
+        normalized: Dict[str, Any] = {}
+        for item in args:
+            if not isinstance(item, dict):
+                continue
+            key = item.get("key")
+            if isinstance(key, str) and key:
+                normalized[key] = item.get("value")
+        return normalized
+    return {}
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     name: str
@@ -149,6 +164,7 @@ class ToolRegistry:
                     "message": "This tool requires human interaction, which is not allowed in this mode",
                 },
             )
+        args = _coerce_tool_args(args)
         try:
             parsed = spec.args_model(**(args or {}))
         except ValidationError as exc:
