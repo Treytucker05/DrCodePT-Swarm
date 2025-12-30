@@ -2,6 +2,8 @@
 
 An autonomous, self-learning agent that figures out how to do things by watching and interacting.
 
+Source of truth for agent behavior: `AGENT_BEHAVIOR.md`
+
 ## Core Philosophy
 
 **READ [PRINCIPLES.md](PRINCIPLES.md) BEFORE MAKING CHANGES**
@@ -41,13 +43,22 @@ Codex access is provided through ChatGPT Pro, so `codex login` will prompt for y
 
 ## Documentation map (source of truth)
 This README is a high-level entrypoint. The authoritative docs live in:
+- `AGENT_BEHAVIOR.md` - single source of truth (always update this first).
 - `START_HERE.md` - onboarding and first-run flow.
 - `ARCHITECTURE.md` - how the system works end-to-end.
-- `ENHANCEMENT_SUMMARY.md` - full feature inventory.
 - `USAGE_EXAMPLES.md` - real workflows and patterns.
 - `QUICK_REFERENCE.md` - command cheat sheet.
 - `TROUBLESHOOTING.md` - common issues + fixes.
 - `AGENT_SETUP_GUIDE.md` - environment setup and prerequisites.
+
+Historical / archive (context only; do not update as source of truth):
+- `ENHANCEMENT_SUMMARY.md`
+- `UNIFIED_AGENT_PLAN.md`
+- `IMPLEMENTATION_STEPS.md`
+- `REBUILD_PLAN.md`
+- `REVIEW_AND_ACTION_PLAN.md`
+- `AGENT_IMPROVEMENTS.md`
+- `STATUS.md` / `CURRENT_STATE.md` / `TODO.md`
 
 ## Codex operating rules (must read)
 When Codex is working in this repo, these files are the required rules:
@@ -61,7 +72,7 @@ When Codex is working in this repo, these files are the required rules:
 - Built-in tools include `web_search`, `web_fetch` with HTML stripping, and `delegate_task` for sub-agent handoffs.
 
 ## Current status (Dec 2025)
-- Chat mode: ✅ stable
+- Chat capability: ✅ stable
 - Playbooks: ⚠️ partially working (some flows still require manual steps)
 - Swarm: ❌ broken (repo audits currently fail)
 - Google OAuth setup: ⚠️ requires manual browser steps for login/2FA and download

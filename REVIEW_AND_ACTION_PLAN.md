@@ -1,5 +1,10 @@
 # 🎯 TREY'S AGENT - Complete Review & Action Plan
 
+**Status:** Historical/Archive. Do not update as a source of truth. See `AGENT_BEHAVIOR.md` and `conductor/tracks.md`.
+
+
+
+Source of truth for agent behavior: `AGENT_BEHAVIOR.md`
 ## ✅ What I Found
 
 ### Architecture Overview

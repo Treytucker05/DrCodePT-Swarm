@@ -1,5 +1,8 @@
 # START HERE
 
+
+Source of truth for agent behavior: `AGENT_BEHAVIOR.md`
+Docs index: `DOCS_INDEX.md`
 ## Quick Start (5 minutes)
 ### 1) Install dependencies
 ```powershell
@@ -24,10 +27,10 @@ Tip: Default is chat-only. Use Execute/Auto/Team/Plan when you want action.
 ---
 
 ## What works today (honest status)
-- Chat mode: stable
+- Chat capability: stable
 - Execute/playbooks: partially working (some flows still need manual steps)
-- Research mode: works for web summaries
-- Swarm mode: currently broken for repo audits
+- Research capability: works for web summaries
+- Swarm capability: currently broken for repo audits
 - Google OAuth setup: requires manual browser login/2FA and manual download placement
 
 ---

@@ -13,6 +13,8 @@ It replaces the fragmented multi-mode system with a unified approach.
 from __future__ import annotations
 
 import logging
+import os
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -122,7 +124,8 @@ class UnifiedAgent:
         if self._executor is None:
             try:
                 from agent.autonomous.hybrid_executor import get_hybrid_executor
-                self._executor = get_hybrid_executor(self._get_llm())
+                # Let the hybrid executor manage its own LLM selection
+                self._executor = get_hybrid_executor()
                 self._executor.initialize()
             except Exception as e:
                 logger.warning(f"Could not initialize hybrid executor: {e}")
@@ -226,7 +229,8 @@ class UnifiedAgent:
             # =================================================================
             # Step 4: Execute Based on Strategy
             # =================================================================
-            result = self._execute_strategy(request, strategy, context)
+            result = self._execute_strategy(request, strategy, context, run_id=run_id)
+            result.run_id = run_id
 
             # =================================================================
             # Step 5: Store Results and Lessons
@@ -260,6 +264,8 @@ class UnifiedAgent:
         request: str,
         strategy: Strategy,
         context: Optional[str],
+        *,
+        run_id: str,
     ) -> AgentResult:
         """
         Execute based on the selected strategy.
@@ -272,6 +278,10 @@ class UnifiedAgent:
         if not strategy.needs_tools:
             return self._handle_simple_request(request, strategy)
 
+        fast_result = self._try_fast_file_task(request)
+        if fast_result is not None:
+            return fast_result
+
         # Calendar skill
         if strategy.preferred_skill == "calendar":
             return self._execute_calendar(request, strategy)
@@ -280,12 +290,167 @@ class UnifiedAgent:
         if strategy.needs_ui_automation or strategy.preferred_skill == "desktop":
             return self._execute_ui_automation(request, strategy, context)
 
-        # Web browsing
-        if strategy.needs_web or strategy.preferred_skill == "browser":
-            return self._execute_web(request, strategy, context)
+        # Tool-driven tasks (planning, research, filesystem, API, etc.)
+        return self._execute_runner(request, strategy, context, run_id=run_id)
 
-        # Default: Use hybrid executor for general tasks
-        return self._execute_hybrid(request, strategy, context)
+    def _try_fast_file_task(self, request: str) -> AgentResult | None:
+        """Fast path for trivial file-write/read tasks to avoid long planning."""
+        req = request or ""
+
+        # Fast read path
+        read_pattern = re.compile(
+            r"\b(?:read|open|show)\b\s+(?:the\s+file\s+)?(?P<name>[^\s]+)(?:\s+(?:and|then)\s+(?:tell\s+me\s+)?(?:its\s+)?contents?)?",
+            re.IGNORECASE,
+        )
+        read_match = read_pattern.search(req)
+        if read_match:
+            filename = read_match.group("name").strip().strip("\"'")
+            if not filename or any(sep in filename for sep in ("/", "\\")) or ".." in filename:
+                return None
+            target = (Path.cwd() / filename).resolve()
+            if target.exists():
+                try:
+                    content = target.read_text(encoding="utf-8")
+                    return AgentResult(
+                        success=True,
+                        summary=f"Contents of {target}: {content!r}",
+                        strategy=None,
+                        steps_taken=1,
+                    )
+                except Exception as exc:
+                    return AgentResult(
+                        success=False,
+                        summary=f"Read failed for {target}: {exc}",
+                        error=str(exc),
+                        steps_taken=1,
+                    )
+            content_hint = None
+            hint_match = re.search(r"create it with (?:the )?text [\'\"](?P<content>.*?)[\'\"]", req, re.IGNORECASE)
+            if hint_match:
+                content_hint = hint_match.group("content")
+            if content_hint:
+                try:
+                    target.write_text(content_hint, encoding="utf-8")
+                    confirmed = target.read_text(encoding="utf-8")
+                    return AgentResult(
+                        success=True,
+                        summary=f"Created {target} with content: {confirmed!r}",
+                        strategy=None,
+                        steps_taken=1,
+                    )
+                except Exception as exc:
+                    return AgentResult(
+                        success=False,
+                        summary=f"Create/read failed for {target}: {exc}",
+                        error=str(exc),
+                        steps_taken=1,
+                    )
+            answer = self._ask_user(
+                f"{filename} not found in {Path.cwd()}. Provide full path, or type 'create' to create it."
+            )
+            if not answer:
+                return AgentResult(
+                    success=False,
+                    summary=f"File not found: {target}",
+                    error="file_not_found",
+                    steps_taken=1,
+                )
+            ans = answer.strip().strip("\"'")
+            if ans.lower() in {"create", "yes", "y"}:
+                content = self._ask_user("What content should I write into it? (leave blank for empty)") or ""
+                try:
+                    target.write_text(content, encoding="utf-8")
+                    confirmed = target.read_text(encoding="utf-8")
+                    return AgentResult(
+                        success=True,
+                        summary=f"Created {target} with content: {confirmed!r}",
+                        strategy=None,
+                        steps_taken=1,
+                    )
+                except Exception as exc:
+                    return AgentResult(
+                        success=False,
+                        summary=f"Create/read failed for {target}: {exc}",
+                        error=str(exc),
+                        steps_taken=1,
+                    )
+            else:
+                alt = Path(ans).expanduser()
+                if not alt.is_absolute():
+                    alt = (Path.cwd() / alt).resolve()
+                if not alt.exists():
+                    return AgentResult(
+                        success=False,
+                        summary=f"File not found: {alt}",
+                        error="file_not_found",
+                        steps_taken=1,
+                    )
+                try:
+                    content = alt.read_text(encoding="utf-8")
+                    return AgentResult(
+                        success=True,
+                        summary=f"Contents of {alt}: {content!r}",
+                        strategy=None,
+                        steps_taken=1,
+                    )
+                except Exception as exc:
+                    return AgentResult(
+                        success=False,
+                        summary=f"Read failed for {alt}: {exc}",
+                        error=str(exc),
+                        steps_taken=1,
+                    )
+
+        # Fast write path
+        pattern = re.compile(
+            r"create (?:a )?file (?:named|called) (?P<name>[^\s]+) and put (?P<quote>['\"])(?P<content>.*?)(?P=quote) inside it",
+            re.IGNORECASE,
+        )
+        match = pattern.search(req)
+        if not match:
+            return None
+        filename = match.group("name").strip()
+        if not filename or any(sep in filename for sep in ("/", "\\")) or ".." in filename:
+            return None
+        content = match.group("content")
+        try:
+            self._status(f"Fast path: writing {filename}...")
+            target = (Path.cwd() / filename).resolve()
+            target.write_text(content, encoding="utf-8")
+            try:
+                confirmed = target.read_text(encoding="utf-8")
+            except Exception:
+                confirmed = None
+            open_after = os.getenv("TREYS_AGENT_OPEN_CREATED_FILE", "1").strip().lower() not in {"0", "false", "no", "off"}
+            if re.search(r"\b(open|show)\b", req, re.IGNORECASE):
+                open_after = True
+            open_note = ""
+            if open_after:
+                try:
+                    os.startfile(str(target))
+                    open_note = " Opened the file."
+                except Exception as exc:
+                    open_note = f" Tried to open but failed: {exc}"
+            if confirmed is not None and confirmed != content:
+                summary = f"Created {target}. Verification failed: content mismatch.{open_note}"
+            elif confirmed is None:
+                summary = f"Created {target}. Verification unavailable.{open_note}"
+            else:
+                summary = f"Created {target} with content: {content!r}.{open_note}"
+            return AgentResult(
+                success=True,
+                summary=summary,
+                strategy=None,
+                steps_taken=1,
+            )
+        except Exception as exc:
+            return AgentResult(
+                success=False,
+                summary=f"Fast path write failed: {exc}",
+                error=str(exc),
+                steps_taken=1,
+            )
+
 
     def _handle_simple_request(
         self,
@@ -301,10 +466,11 @@ class UnifiedAgent:
                 system_prompt="You are a helpful assistant. Answer the user's question directly.",
                 timeout=30,
             )
+            content = getattr(response, "content", response)
 
             return AgentResult(
                 success=True,
-                summary=response.content,
+                summary=str(content),
                 strategy=strategy,
                 steps_taken=1,
             )
@@ -456,88 +622,116 @@ class UnifiedAgent:
                 strategy=strategy,
             )
 
-    def _execute_web(
+    def _execute_runner(
         self,
         request: str,
         strategy: Strategy,
         context: Optional[str],
+        *,
+        run_id: str,
     ) -> AgentResult:
-        """Execute web browsing tasks."""
-        self._status("Browsing web...")
-
-        # For now, delegate to hybrid executor with web context
-        executor = self._get_executor()
-        if not executor:
-            return AgentResult(
-                success=False,
-                summary="Web automation not available",
-                error="Could not initialize executor",
-                strategy=strategy,
-            )
+        """Execute tool-driven tasks using the autonomous runner."""
+        self._status("Planning and executing task...")
 
         try:
-            result = executor.run_task(
-                objective=f"Web task: {request}",
-                context=f"{context or ''}\nThis is a web browsing task.",
-                on_step=lambda s: self._status(f"  Step: {s.get('action', {}).get('reasoning', '')[:60]}"),
-                on_user_input=self._ask_user,
-            )
-
-            return AgentResult(
-                success=result.get("success", False),
-                summary=result.get("summary", ""),
-                steps_taken=result.get("steps_taken", 0),
-                actions=result.get("actions", []),
-                error=result.get("last_error"),
-                strategy=strategy,
-            )
-
-        except Exception as e:
+            from agent.autonomous.config import AgentConfig, PlannerConfig, RunnerConfig
+            from agent.autonomous.runner import AgentRunner
+            from agent.config.profile import resolve_profile
+            from agent.llm.base import get_default_llm
+        except Exception as exc:
             return AgentResult(
                 success=False,
-                summary=f"Web task failed: {e}",
-                error=str(e),
+                summary=f"Runner unavailable: {exc}",
+                error=str(exc),
                 strategy=strategy,
             )
 
-    def _execute_hybrid(
+        repo_root = Path(__file__).resolve().parents[2]
+        run_dir = repo_root / "runs" / "unified" / run_id
+
+        # Allow configurable safety controls
+        unsafe_mode = os.getenv("AGENT_UNSAFE_MODE", "").strip().lower() in {"1", "true", "yes", "y", "on"}
+        allow_fs_anywhere = os.getenv("AGENT_ALLOW_FS_ANYWHERE", "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+        profile = resolve_profile(None, env_keys=("AGENT_PROFILE", "AUTO_PROFILE"))
+        agent_cfg = AgentConfig(
+            unsafe_mode=unsafe_mode,
+            enable_web_gui=True,
+            enable_desktop=True,
+            allow_human_ask=True,
+            allow_fs_anywhere=allow_fs_anywhere or unsafe_mode,
+            profile=profile,
+        )
+        planner_mode = "plan_first" if strategy.complexity.value == "complex" else "react"
+        planner_cfg = PlannerConfig(mode=planner_mode, num_candidates=1, max_plan_steps=6)
+        runner_cfg = RunnerConfig(
+            max_steps=int(os.getenv("AGENT_MAX_STEPS", "30")),
+            timeout_seconds=int(os.getenv("AGENT_TIMEOUT_SECONDS", "600")),
+        )
+
+        llm = get_default_llm()
+        task_text = request
+        if context:
+            task_text = f"{request}\n\nContext:\n{context}"
+
+        runner = AgentRunner(
+            cfg=runner_cfg,
+            agent_cfg=agent_cfg,
+            planner_cfg=planner_cfg,
+            llm=llm,
+            run_dir=run_dir,
+            mode_name="unified",
+            agent_id=run_id,
+        )
+        result = runner.run(task_text)
+        summary = self._summarize_trace(result.trace_path, request, llm)
+        if not summary:
+            summary = f"Run completed with stop_reason={result.stop_reason}"
+
+        return AgentResult(
+            success=bool(result.success),
+            summary=summary,
+            steps_taken=int(result.steps_executed),
+            error=None if result.success else result.stop_reason,
+            strategy=strategy,
+            run_id=run_id,
+        )
+
+    def _summarize_trace(
         self,
+        trace_path: Optional[str],
         request: str,
-        strategy: Strategy,
-        context: Optional[str],
-    ) -> AgentResult:
-        """Execute using the hybrid executor (general tasks)."""
-        self._status("Executing task...")
-
-        executor = self._get_executor()
-        if not executor:
-            # Fallback to simple LLM response
-            return self._handle_simple_request(request, strategy)
-
+        llm,
+    ) -> str:
+        """Summarize a runner trace into a user-facing response."""
+        if not trace_path:
+            return ""
+        path = Path(trace_path)
+        if not path.exists():
+            return ""
         try:
-            result = executor.run_task(
-                objective=request,
-                context=context or "",
-                on_step=lambda s: self._status(f"  Step: {s.get('action', {}).get('reasoning', '')[:60]}"),
-                on_user_input=self._ask_user,
-            )
-
-            return AgentResult(
-                success=result.get("success", False),
-                summary=result.get("summary", ""),
-                steps_taken=result.get("steps_taken", 0),
-                actions=result.get("actions", []),
-                error=result.get("last_error"),
-                strategy=strategy,
-            )
-
-        except Exception as e:
-            return AgentResult(
-                success=False,
-                summary=f"Task failed: {e}",
-                error=str(e),
-                strategy=strategy,
-            )
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except Exception:
+            return ""
+        if not lines:
+            return ""
+        tail = "\n".join(lines[-200:])[:12000]
+        prompt = (
+            "Summarize the outcome of this autonomous task for the user. "
+            "Be concise, concrete, and include any errors and next steps.\n\n"
+            f"TASK:\n{request}\n\nTRACE_TAIL:\n{tail}\n"
+        )
+        try:
+            if hasattr(llm, "generate_text"):
+                return llm.generate_text(prompt, system="You are a concise summarizer.")
+            if hasattr(llm, "chat"):
+                try:
+                    return llm.chat(prompt, timeout_seconds=60) or ""
+                except TypeError:
+                    return llm.chat(prompt) or ""
+        except Exception:
+            return ""
+        return ""
 
     def _store_results(
         self,

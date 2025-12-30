@@ -1,5 +1,10 @@
 # DrCodePT-Swarm TODO List
 
+**Status:** Historical/Archive. Do not update as a source of truth. See `AGENT_BEHAVIOR.md` and `conductor/tracks.md`.
+
+
+
+Source of truth for agent behavior: `AGENT_BEHAVIOR.md`
 ## High Priority - STRATEGIC THINKING PARTNER FOCUS 🎯
 
 ### 1. Fix Collaborative Over-Questioning **⚡ DO THIS NOW**

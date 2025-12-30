@@ -1,5 +1,10 @@
 # CURRENT_STATE.md (Snapshot)
 
+**Status:** Historical/Archive. Do not update as a source of truth. See `AGENT_BEHAVIOR.md` and `conductor/tracks.md`.
+
+
+
+Source of truth for agent behavior: `AGENT_BEHAVIOR.md`
 ## Summary (Dec 28, 2025)
 - Chat mode works for simple queries.
 - Execute/playbooks are partially working; some flows still require manual steps.

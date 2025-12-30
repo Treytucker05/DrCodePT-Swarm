@@ -25,6 +25,10 @@ KEY_ENV_VAR = "AGENT_CREDENTIAL_KEY"
 KEY_FILE = Path(os.path.expanduser("~")) / ".drcodept" / "credential_key.key"
 
 
+def _secret_key(credential_id: str) -> str:
+    return f"credential:{credential_id}"
+
+
 class CredentialError(RuntimeError):
     """Raised when credential operations fail."""
 
@@ -85,25 +89,34 @@ def save_credential(site: str, username: str, password: str) -> str:
     if not site:
         raise CredentialError("Site name is required to save credentials.")
 
-    cipher = _fernet()
-    payload = json.dumps({"username": username, "password": password}, ensure_ascii=False).encode(
-        "utf-8"
-    )
-    token = cipher.encrypt(payload).decode("utf-8")
-
-    store = _load_store()
-    entries = store.setdefault("entries", {})
-
     memory = load_memory()
     credential_id = memory.get("credentials", {}).get(site) or f"{site}-{uuid4().hex[:8]}"
+    payload = {"username": username, "password": password}
 
-    entries[credential_id] = {
-        "site": site,
-        "token": token,
-        "updated_at": datetime.utcnow().isoformat(),
-    }
-    store["version"] = 1
-    _save_store(store)
+    # Primary: SecretStore (DPAPI on Windows)
+    try:
+        from agent.security.secret_store import get_secret_store
+
+        secret_store = get_secret_store()
+        secret_store.set(
+            _secret_key(credential_id),
+            json.dumps(payload, ensure_ascii=False),
+            site=site,
+            kind="login",
+        )
+    except Exception:
+        # Fallback: legacy Fernet store (keep compatibility)
+        cipher = _fernet()
+        token = cipher.encrypt(json.dumps(payload, ensure_ascii=False).encode("utf-8")).decode("utf-8")
+        store = _load_store()
+        entries = store.setdefault("entries", {})
+        entries[credential_id] = {
+            "site": site,
+            "token": token,
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        store["version"] = 1
+        _save_store(store)
 
     memory.setdefault("credentials", {})[site] = credential_id
     save_memory(memory)
@@ -120,10 +133,29 @@ def get_credential(site: str) -> Optional[Dict[str, str]]:
     if not site:
         raise CredentialError("Site name is required to load credentials.")
 
-    credential_id = (load_memory().get("credentials") or {}).get(site)
+    memory = load_memory()
+    credential_id = (memory.get("credentials") or {}).get(site)
+
+    # Preferred: SecretStore
+    try:
+        from agent.security.secret_store import get_secret_store
+
+        secret_store = get_secret_store()
+        key = _secret_key(credential_id or site)
+        raw = secret_store.get(key)
+        if raw:
+            data = json.loads(raw)
+            if credential_id is None:
+                memory.setdefault("credentials", {})[site] = site
+                save_memory(memory)
+            return {"username": data.get("username", ""), "password": data.get("password", "")}
+    except Exception:
+        pass
+
     if not credential_id:
         return None
 
+    # Legacy fallback
     store = _load_store()
     entry = (store.get("entries") or {}).get(credential_id)
     if not entry:
@@ -140,7 +172,24 @@ def get_credential(site: str) -> Optional[Dict[str, str]]:
         raise CredentialError("Failed to decrypt credentials: invalid key or corrupted data.")
 
     data = json.loads(decrypted)
-    return {"username": data.get("username", ""), "password": data.get("password", "")}
+    creds = {"username": data.get("username", ""), "password": data.get("password", "")}
+
+    # Migrate legacy credential into SecretStore
+    try:
+        from agent.security.secret_store import get_secret_store
+
+        secret_store = get_secret_store()
+        secret_store.set(
+            _secret_key(credential_id),
+            json.dumps(creds, ensure_ascii=False),
+            site=site,
+            kind="login",
+            migrated="true",
+        )
+    except Exception:
+        pass
+
+    return creds
 
 
 def build_login_steps(site: str, start_url: Optional[str] = None) -> list[Dict[str, Any]]:

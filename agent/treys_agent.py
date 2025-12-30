@@ -12,6 +12,8 @@ import logging
 import os
 import re
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -48,10 +50,15 @@ _tasks_helper: TasksHelper | None = None
 
 
 def banner() -> None:
-    print(f"\n{CYAN}{'=' * 44}")
-    print("                 TREY'S AGENT")
-    print("            Fast | Learning | Research")
-    print(f"{'=' * 44}{RESET}\n")
+    print(f"\n{CYAN}" + "=" * 72)
+    print(r"  _____ ____  _______   ______       _    ____ _____ _   _ _____")
+    print(r" |_   _|  _ \| ____\ \ / / ___|     / \  / ___| ____| \ | |_   _|")
+    print(r"   | | | |_) |  _|  \ V /\___ \    / _ \| |  _|  _| |  \| | | |  ")
+    print(r"   | | |  _ <| |___  | |  ___) |  / ___ \ |_| | |___| |\  | | |  ")
+    print(r"   |_| |_| \_\_____| |_| |____/  /_/   \_\____|_____|_| \_| |_|  ")
+    print(f"{RESET}{CYAN}                        TREY'S AGENT{RESET}")
+    print(f"{RESET}{CYAN}                     Fast | Learning | Research{RESET}")
+    print(f"{CYAN}" + "=" * 72 + f"{RESET}\n")
 
 
 def show_help() -> None:
@@ -2111,6 +2118,230 @@ def main() -> None:
             print("Routing to: generate")
         mode_execute(user_input)
         continue
+
+
+# --- Unified entrypoint (default) ---
+_legacy_main = main
+
+
+def _load_dotenv_unified() -> None:
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except Exception:
+        return
+
+
+def _unified_help() -> None:
+    print(
+        f"""
+{CYAN}TREY'S AGENT - Unified Mode{RESET}
+  - Type a task in plain language.
+  - The agent will ask questions only when required.
+  - It will research when needed, then execute and verify.
+
+{GREEN}Commands:{RESET}
+  help      - Show this help
+  exit      - Quit
+  creds     - List stored credential sites
+  Cred: <site>  - Save/update credentials for a site
+""".rstrip()
+    )
+
+
+def _list_secret_credentials() -> list[str]:
+    sites: list[str] = []
+    try:
+        from agent.security.secret_store import get_secret_store
+
+        store = get_secret_store()
+        for name in store.list_names():
+            if name.startswith("credential:"):
+                sites.append(name.split("credential:", 1)[1])
+            if name.startswith("credstore:"):
+                sites.append(name.split("credstore:", 1)[1])
+    except Exception:
+        pass
+    return sorted({s for s in sites if s})
+
+
+def _score_and_refine_response(request: str, response: str, *, threshold: int) -> tuple[str, int, list[str]]:
+    if not response.strip():
+        return response, 0, []
+    try:
+        from agent.llm.base import get_default_llm
+        from agent.llm import schemas as llm_schemas
+    except Exception:
+        return response, 0, []
+
+    llm = get_default_llm()
+    prompt = (
+        "Evaluate the assistant response for accuracy, completeness, and alignment with the user request.\n"
+        "Return JSON with score (0-100), issues (list), and improved_response.\n"
+        "If the response is good enough, set improved_response to the original or an empty string.\n\n"
+        f"USER REQUEST:\n{request}\n\nASSISTANT RESPONSE:\n{response}\n"
+    )
+    try:
+        data = llm.reason_json(prompt, schema_path=llm_schemas.ANSWER_SCORE)
+    except Exception:
+        return response, 0, []
+
+    score = int(data.get("score") or 0)
+    issues = data.get("issues") or []
+    improved = (data.get("improved_response") or "").strip()
+    if score >= threshold or not improved:
+        return response, score, issues
+    return improved, score, issues
+
+
+def main() -> None:
+    if os.getenv("TREYS_AGENT_LEGACY", "").strip().lower() in {"1", "true", "yes", "y", "on"}:
+        _legacy_main()
+        return
+
+    if os.getenv("TREYS_AGENT_DEBUG", "").strip().lower() not in {"1", "true", "yes", "y", "on"}:
+        os.environ.setdefault("AGENT_QUIET", "1")
+        os.environ.setdefault("AGENT_VERBOSE", "0")
+        os.environ.setdefault("TQDM_DISABLE", "1")
+        logging.basicConfig(level=logging.WARNING, format="[%(levelname)s] %(message)s")
+
+    _load_dotenv_unified()
+    banner()
+    print(f"{GREEN}Unified assistant ready.{RESET} Type 'help' for commands.\n")
+
+    from agent.core.unified_agent import UnifiedAgent
+    from agent.context_loader import format_context_for_llm
+    from agent.memory.credentials import save_credential
+
+    def _status(msg: str) -> None:
+        print(f"{YELLOW}[STATUS]{RESET} {msg}")
+
+    def _ask(question: str) -> str:
+        # Pause the progress line so user input isn't overwritten.
+        pause_event.set()
+        if progress_state["last_len"]:
+            sys.stdout.write("\r" + (" " * progress_state["last_len"]) + "\r")
+            sys.stdout.flush()
+        return input(f"{CYAN}[ASK]{RESET} {question}\n> ").strip()
+
+    approval_required = os.getenv("TREYS_AGENT_APPROVAL_REQUIRED", "1").strip().lower() not in {"0", "false", "no", "off"}
+    score_threshold = int(os.getenv("AGENT_SCORE_THRESHOLD", "80"))
+
+    agent = UnifiedAgent(
+        on_status=_status,
+        on_user_input=_ask,
+        approval_required=approval_required,
+    )
+
+    while True:
+        try:
+            user_input = input(f"{CYAN}>{RESET} ").strip()
+        except KeyboardInterrupt:
+            print("\nGoodbye!")
+            return
+
+        if not user_input:
+            continue
+        lower = user_input.lower().strip()
+
+        if lower in {"exit", "quit"}:
+            print("Goodbye!")
+            return
+        if lower in {"help", "?"}:
+            _unified_help()
+            continue
+        if lower in {"creds", "credentials"}:
+            sites = _list_secret_credentials()
+            if not sites:
+                print(f"{YELLOW}[INFO]{RESET} No credentials saved yet.")
+            else:
+                print(f"{CYAN}Saved credential sites:{RESET} " + ", ".join(sites))
+            continue
+        if lower.startswith("cred:") or lower.startswith("credentials:"):
+            site = user_input.split(":", 1)[1].strip().lower()
+            if not site:
+                print(f"{YELLOW}[INFO]{RESET} Usage: Cred: <site>  (example: Cred: yahoo)")
+                continue
+            try:
+                import getpass
+
+                print(f"{CYAN}[CREDENTIALS]{RESET} Saving encrypted credentials for: {site}")
+                username = input(f"{CYAN}Username/email:{RESET} ").strip()
+                password = getpass.getpass("Password (input hidden): ").strip()
+                if not username or not password:
+                    print(f"{YELLOW}[INFO]{RESET} Username/password cannot be blank.")
+                    continue
+                save_credential(site, username, password)
+                print(f"{GREEN}[SAVED]{RESET} Stored encrypted credentials for '{site}'.")
+            except Exception as exc:
+                print(f"{RED}[ERROR]{RESET} Failed to save credentials: {exc}")
+            continue
+
+        context = format_context_for_llm()
+
+        # Live progress/heartbeat display while the agent works.
+        last_status = {"msg": "Starting...", "ts": time.time()}
+        progress_state = {"last_len": 0}
+        stop_event = threading.Event()
+        pause_event = threading.Event()
+
+        def _status_with_tracking(msg: str) -> None:
+            last_status["msg"] = msg
+            last_status["ts"] = time.time()
+            # Clear the progress line before printing a status line.
+            if progress_state["last_len"]:
+                sys.stdout.write("\r" + (" " * progress_state["last_len"]) + "\r")
+                sys.stdout.flush()
+            _status(msg)
+
+        def _progress_loop() -> None:
+            spinner = ["|", "/", "-", "\\"]
+            bar_len = 18
+            i = 0
+            start = time.time()
+            while not stop_event.wait(2.0):
+                if pause_event.is_set():
+                    continue
+                elapsed = int(time.time() - start)
+                pulse = i % (bar_len * 2)
+                fill = pulse if pulse <= bar_len else (bar_len * 2 - pulse)
+                bar = "#" * fill + "-" * (bar_len - fill)
+                msg = last_status["msg"]
+                line = f"{CYAN}[WORKING]{RESET} {spinner[i % len(spinner)]} [{bar}] {elapsed}s | last: {msg}"
+                pad = max(0, progress_state["last_len"] - len(line))
+                sys.stdout.write("\r" + line + (" " * pad))
+                sys.stdout.flush()
+                progress_state["last_len"] = len(line)
+                i += 1
+
+        t = threading.Thread(target=_progress_loop, daemon=True)
+        t.start()
+        try:
+            agent.on_status = _status_with_tracking
+            result = agent.run(user_input, context=context)
+        finally:
+            pause_event.clear()
+            stop_event.set()
+            t.join(timeout=1.0)
+            if progress_state["last_len"]:
+                sys.stdout.write("\r" + (" " * progress_state["last_len"]) + "\r")
+                sys.stdout.flush()
+                print()
+        output = result.summary or ""
+
+        # Skip verification for fast-path or tool-confirmed actions
+        if result.success and result.strategy is None and output:
+            print(output)
+            continue
+
+        # Verification + scoring (single improvement pass)
+        output, score, issues = _score_and_refine_response(user_input, output, threshold=score_threshold)
+        if score and score < score_threshold and issues:
+            print(f"{YELLOW}[VERIFY]{RESET} Score {score}/100; remaining issues: {', '.join(issues[:3])}")
+
+        print(output)
+
 
 if __name__ == "__main__":
     main()

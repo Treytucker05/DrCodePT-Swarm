@@ -1,5 +1,7 @@
 # TREY'S AGENT - Quick Reference
 
+
+Source of truth for agent behavior: `AGENT_BEHAVIOR.md`
 ## Launch
 ```powershell
 launchers\TREYS_AGENT.bat
@@ -9,7 +11,7 @@ launchers\TREYS_AGENT.bat
 | Command | Description | Example |
 |---|---|---|
 | `help` | Show command help | `> help` |
-| `menu` | Show mode menu | `> menu` |
+| `menu` | Show legacy menu (if enabled) | `> menu` |
 | `playbooks` | List saved playbooks | `> playbooks` |
 | `creds` | List saved credentials | `> creds` |
 | `cred: <site>` | Save credentials | `> Cred: yahoo` |

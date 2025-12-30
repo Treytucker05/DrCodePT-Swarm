@@ -2,6 +2,9 @@
 
 **Start here when you come back to this project.**
 
+Source of truth for agent behavior: `AGENT_BEHAVIOR.md`
+Docs index: `DOCS_INDEX.md`
+
 ---
 
 ## What Happened Tonight (Dec 28, 2024)

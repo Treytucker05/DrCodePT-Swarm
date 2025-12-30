@@ -12,8 +12,13 @@ cd /d "%ROOT%"
 set "VENV=%CD%\.venv"
 set "PY=%VENV%\Scripts\python.exe"
 
-echo.
-echo [SETUP] Checking Python environment...
+set "SETUP_VERBOSE=%TREYS_AGENT_SETUP_VERBOSE%"
+if not defined SETUP_VERBOSE set "SETUP_VERBOSE=0"
+
+if /I "%SETUP_VERBOSE%"=="1" (
+  echo.
+  echo [SETUP] Checking Python environment...
+)
 
 rem Create venv if missing
 if not exist "%PY%" (
@@ -25,7 +30,7 @@ if not exist "%PY%" (
   )
 )
 
-echo [SETUP] Installing/updating Python deps...
+if /I "%SETUP_VERBOSE%"=="1" echo [SETUP] Installing/updating Python deps...
 "%PY%" -m pip install --upgrade pip >nul 2>nul
 "%PY%" -m pip install -q -r "%CD%\requirements.txt" >nul 2>nul
 if errorlevel 1 (
@@ -33,7 +38,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo [SETUP] Ensuring UI automation deps (pywinauto, uiautomation)...
+if /I "%SETUP_VERBOSE%"=="1" echo [SETUP] Ensuring UI automation deps (pywinauto, uiautomation)...
 "%PY%" -m pip install -q pywinauto uiautomation >nul 2>nul
 if errorlevel 1 (
   echo [ERROR] Failed to install UI automation dependencies.

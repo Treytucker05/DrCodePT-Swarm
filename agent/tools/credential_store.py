@@ -35,6 +35,11 @@ except ImportError:
 
 CREDENTIALS_DIR = Path.home() / ".drcodept" / "credentials"
 CREDENTIALS_FILE = CREDENTIALS_DIR / "logins.enc"
+SECRET_PREFIX = "credstore:"
+
+
+def _secret_key(service: str) -> str:
+    return f"{SECRET_PREFIX}{service}"
 
 
 def _get_machine_id() -> str:
@@ -149,14 +154,30 @@ class CredentialStore:
         Returns:
             True if saved successfully
         """
+        # Preferred: SecretStore (DPAPI on Windows)
+        try:
+            from agent.security.secret_store import get_secret_store
+
+            secret_store = get_secret_store()
+            secret_store.set(
+                _secret_key(service),
+                json.dumps(credentials, ensure_ascii=False),
+                service=service,
+                kind="credentials",
+            )
+            self._cache[service] = credentials
+            logger.info(f"Saved credentials for: {service}")
+            return True
+        except Exception:
+            pass
+
+        # Legacy fallback (Fernet file)
         all_creds = self._load_all()
         all_creds[service] = credentials
-
         success = self._save_all(all_creds)
         if success:
             self._cache[service] = credentials
             logger.info(f"Saved credentials for: {service}")
-
         return success
 
     def get(self, service: str) -> Optional[Dict[str, Any]]:
@@ -172,34 +193,87 @@ class CredentialStore:
         if service in self._cache:
             return self._cache[service]
 
+        # Preferred: SecretStore
+        try:
+            from agent.security.secret_store import get_secret_store
+
+            secret_store = get_secret_store()
+            raw = secret_store.get(_secret_key(service))
+            if raw:
+                creds = json.loads(raw)
+                self._cache[service] = creds
+                return creds
+        except Exception:
+            pass
+
+        # Legacy fallback
         all_creds = self._load_all()
         creds = all_creds.get(service)
-
         if creds:
             self._cache[service] = creds
+            # Migrate to SecretStore
+            try:
+                from agent.security.secret_store import get_secret_store
 
+                secret_store = get_secret_store()
+                secret_store.set(
+                    _secret_key(service),
+                    json.dumps(creds, ensure_ascii=False),
+                    service=service,
+                    kind="credentials",
+                    migrated="true",
+                )
+            except Exception:
+                pass
         return creds
 
     def delete(self, service: str) -> bool:
         """Delete credentials for a service."""
-        all_creds = self._load_all()
+        deleted = False
+        try:
+            from agent.security.secret_store import get_secret_store
 
+            secret_store = get_secret_store()
+            deleted = secret_store.delete(_secret_key(service)) or deleted
+        except Exception:
+            pass
+
+        all_creds = self._load_all()
         if service in all_creds:
             del all_creds[service]
             self._save_all(all_creds)
+            deleted = True
+
+        if deleted:
             self._cache.pop(service, None)
             logger.info(f"Deleted credentials for: {service}")
-            return True
-
-        return False
+        return deleted
 
     def list_services(self) -> list:
         """List all services with stored credentials."""
-        return list(self._load_all().keys())
+        services = set(self._load_all().keys())
+        try:
+            from agent.security.secret_store import get_secret_store
+
+            secret_store = get_secret_store()
+            for name in secret_store.list_names():
+                if name.startswith(SECRET_PREFIX):
+                    services.add(name[len(SECRET_PREFIX):])
+        except Exception:
+            pass
+        return sorted(services)
 
     def has_credentials(self, service: str) -> bool:
         """Check if credentials exist for a service."""
-        return service in self._load_all()
+        if service in self._load_all():
+            return True
+        try:
+            from agent.security.secret_store import get_secret_store
+
+            secret_store = get_secret_store()
+            return secret_store.has(_secret_key(service))
+        except Exception:
+            return False
 
 
 # Singleton instance

@@ -1,5 +1,7 @@
 # Agent Principles
 
+
+Source of truth for agent behavior: `AGENT_BEHAVIOR.md`
 **READ THIS BEFORE MAKING CHANGES**
 
 This document defines what the agent IS and what it IS NOT.

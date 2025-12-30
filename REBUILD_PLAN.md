@@ -1,5 +1,10 @@
 # Agent Rebuild Plan - ReAct + Reflexion + Memory Architecture
 
+**Status:** Historical/Archive. Do not update as a source of truth. See `AGENT_BEHAVIOR.md` and `conductor/tracks.md`.
+
+
+
+Source of truth for agent behavior: `AGENT_BEHAVIOR.md`
 ## Why Rebuild?
 - Current playbook system is too rigid (can't adapt to new situations)
 - Chat mode gets stuck in planning without executing

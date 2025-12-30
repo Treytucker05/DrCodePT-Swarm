@@ -16,6 +16,80 @@ from .utils import coerce_plan_dict
 
 logger = logging.getLogger(__name__)
 
+_TOOL_ALIASES = {
+    "functions.exec_command": "shell_exec",
+    "exec_command": "shell_exec",
+    "shell": "shell_exec",
+    "shell_exec": "shell_exec",
+    "write_file": "file_write",
+    "file_write": "file_write",
+    "read_file": "file_read",
+    "file_read": "file_read",
+    "list_directory": "list_dir",
+    "list_dir": "list_dir",
+    "list_files": "list_dir",
+    "dir_list": "list_dir",
+    "python": "python_exec",
+    "python_exec": "python_exec",
+    "search_files": "file_search",
+    "file_search": "file_search",
+    "glob": "glob_paths",
+    "glob_paths": "glob_paths",
+    "web_search": "web_search",
+    "web_fetch": "web_fetch",
+}
+
+
+def _normalize_tool_name(tool_name: str) -> str:
+    if not tool_name:
+        return tool_name
+    return _TOOL_ALIASES.get(tool_name, tool_name)
+
+
+def _normalize_tool_args(tool_name: str, tool_args: dict) -> dict:
+    if not isinstance(tool_args, dict):
+        return {}
+    args = dict(tool_args)
+    if tool_name == "shell_exec":
+        if "cmd" in args and "command" not in args:
+            args["command"] = args.pop("cmd")
+        if "workdir" in args and "cwd" not in args:
+            args["cwd"] = args.pop("workdir")
+        if "timeout" in args and "timeout_seconds" not in args:
+            args["timeout_seconds"] = args.pop("timeout")
+    elif tool_name == "file_write":
+        if "file_path" in args and "path" not in args:
+            args["path"] = args.pop("file_path")
+        if "filename" in args and "path" not in args:
+            args["path"] = args.pop("filename")
+        if "text" in args and "content" not in args:
+            args["content"] = args.pop("text")
+    elif tool_name == "file_read":
+        if "file_path" in args and "path" not in args:
+            args["path"] = args.pop("file_path")
+        if "filename" in args and "path" not in args:
+            args["path"] = args.pop("filename")
+    elif tool_name == "list_dir":
+        if "dir" in args and "path" not in args:
+            args["path"] = args.pop("dir")
+        if "directory" in args and "path" not in args:
+            args["path"] = args.pop("directory")
+    elif tool_name == "python_exec":
+        if "script" in args and "code" not in args:
+            args["code"] = args.pop("script")
+    elif tool_name == "file_search":
+        if "path" in args and "root" not in args:
+            args["root"] = args.pop("path")
+        if "text" in args and "query" not in args:
+            args["query"] = args.pop("text")
+    elif tool_name == "glob_paths":
+        if "path" in args and "root" not in args:
+            args["root"] = args.pop("path")
+        if "glob" in args and "pattern" not in args:
+            args["pattern"] = args.pop("glob")
+    return args
+
+
 
 class ReActPlanner(Planner):
     """
@@ -112,6 +186,7 @@ class ReActPlanner(Planner):
             - Prefer minimal, testable actions and specify success_criteria.
             - Add preconditions and postconditions when useful (short, checkable).
             - tool_args must be a list of {{"key":"...","value":"..."}} pairs (values as strings; encode JSON if needed).
+            - IMPORTANT: tool_name must match exactly one of the available tools listed below.
 
             Available tools (name/description/schema):
             {dumps_compact(tool_catalog)}
@@ -156,6 +231,8 @@ class ReActPlanner(Planner):
             )
 
         step = plan.steps[0]
+        step.tool_name = _normalize_tool_name(step.tool_name)
+        step.tool_args = _normalize_tool_args(step.tool_name, step.tool_args)
         if not self._tools.has_tool(step.tool_name):
             return Plan(
                 goal=task,

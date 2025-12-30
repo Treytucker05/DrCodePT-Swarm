@@ -1,5 +1,10 @@
 # DrCodePT-Swarm: Unified Agent Architecture Plan
 
+**Status:** Historical/Archive. Do not update as a source of truth. See `AGENT_BEHAVIOR.md` and `conductor/tracks.md`.
+
+
+
+Source of truth for agent behavior: `AGENT_BEHAVIOR.md`
 ## Vision: One Agent for Everything
 
 **Goal:** A single intelligent agent that handles ANY request by deciding what capabilities it needs and executing accordingly.

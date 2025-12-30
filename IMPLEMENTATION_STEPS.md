@@ -1,5 +1,10 @@
 # Implementation Steps: Unified Agent
 
+**Status:** Historical/Archive. Do not update as a source of truth. See `AGENT_BEHAVIOR.md` and `conductor/tracks.md`.
+
+
+
+Source of truth for agent behavior: `AGENT_BEHAVIOR.md`
 **This is your step-by-step guide. Follow these in order.**
 
 Read UNIFIED_AGENT_PLAN.md first for context.

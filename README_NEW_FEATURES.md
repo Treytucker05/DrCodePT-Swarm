@@ -1,5 +1,8 @@
 # 🎉 YOUR AGENT IS NOW FULLY AUTONOMOUS!
 
+**Status:** Historical/Archive. Do not update as a source of truth. See `AGENT_BEHAVIOR.md` and `conductor/tracks.md`.
+
+
 ## What Just Happened?
 
 I've transformed your agent into a **self-healing, planning, learning system** that can:

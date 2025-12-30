@@ -1,5 +1,10 @@
 # DrCodePT-Swarm Architecture
 
+Terminology note: The agent has no visible modes; it uses a single unified loop with internal planner types (react/plan_first).
+
+
+
+Source of truth for agent behavior: `AGENT_BEHAVIOR.md`
 ## Overview
 
 DrCodePT-Swarm is a production-grade autonomous agent with a closed-loop architecture designed for complex, multi-step task execution. The system combines LLM-powered planning with structured tool execution, memory persistence, and self-healing capabilities.

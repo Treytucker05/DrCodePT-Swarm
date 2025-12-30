@@ -1,5 +1,8 @@
 # 🎉 AGENT ENHANCEMENT COMPLETE!
 
+**Status:** Historical/Archive. Do not update as a source of truth. See `AGENT_BEHAVIOR.md` and `conductor/tracks.md`.
+
+
 ## What I Built For You
 
 I've enhanced your agent with **self-healing autonomous capabilities** and **Google API integration**. Here's everything that's new:

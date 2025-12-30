@@ -1,5 +1,10 @@
 # Status: Unified Agent Implementation
 
+**Status:** Historical/Archive. Do not update as a source of truth. See `AGENT_BEHAVIOR.md` and `conductor/tracks.md`.
+
+
+
+Source of truth for agent behavior: `AGENT_BEHAVIOR.md`
 **Last Updated:** December 28, 2024, 11:15 PM
 
 ---

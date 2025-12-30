@@ -27,3 +27,8 @@ def get_profile(name: ProfileType) -> Profile:
     if name not in PROFILES:
         raise ValueError(f"Unknown profile: {name}")
     return PROFILES[name]
+
+
+def list_profiles() -> list[str]:
+    """Return available profile names."""
+    return list(PROFILES.keys())

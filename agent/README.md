@@ -20,11 +20,20 @@ LLM inference uses `codex exec` under the hood (with `--dangerously-bypass-appro
 
 ## Documentation map (source of truth)
 This package README is a summary. For full documentation:
+- `AGENT_BEHAVIOR.md` (repo root) - single source of truth.
 - `README.md` (repo root) - overview + entrypoint.
 - `ARCHITECTURE.md` - how the system works.
-- `ENHANCEMENT_SUMMARY.md` - feature inventory.
 - `USAGE_EXAMPLES.md` - workflow examples.
 - `TROUBLESHOOTING.md` - common issues.
+
+Historical / archive (context only; do not update as source of truth):
+- `ENHANCEMENT_SUMMARY.md`
+- `UNIFIED_AGENT_PLAN.md`
+- `IMPLEMENTATION_STEPS.md`
+- `REBUILD_PLAN.md`
+- `REVIEW_AND_ACTION_PLAN.md`
+- `AGENT_IMPROVEMENTS.md`
+- `STATUS.md` / `CURRENT_STATE.md` / `TODO.md`
 
 ## Codex operating rules (must read)
 - `AGENTS.md` - operating constraints and workflow rules.

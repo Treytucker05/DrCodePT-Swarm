@@ -1301,11 +1301,12 @@ Instructions:
 
         print(f"{YELLOW}[SYNTHESIS]{RESET} Revising report (pass {pass_no})...")
         _log_event(log, "SYNTH", f"Revision pass {pass_no}")
+        notes_text = ("\n\n".join(parts))[:12000]
         synth_prompt = f"""Revise the report using the additional notes.
 Keep it concise, structured, and include citations as raw URLs.
 
 NOTES:
-{("\n\n".join(parts))[:12000]}
+{notes_text}
 """
         revised = _call_codex(
             synth_prompt,

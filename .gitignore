@@ -32,6 +32,12 @@ google_calendar_token.json
 screenshots/*
 !screenshots/.gitkeep
 
+# Local test artifacts
+test.txt
+missing.txt
+missing2.txt
+tmp_ascii.txt
+
 # Python
 __pycache__/
 *.py[cod]

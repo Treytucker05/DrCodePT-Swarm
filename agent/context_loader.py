@@ -13,6 +13,20 @@ from typing import Dict, List, Any
 BASE_DIR = Path(__file__).resolve().parent
 
 
+def _load_behavior_spec(max_chars: int = 2000) -> str:
+    """Load the unified behavior spec for LLM context."""
+    spec_path = BASE_DIR.parent / "AGENT_BEHAVIOR.md"
+    if not spec_path.exists():
+        return ""
+    try:
+        text = spec_path.read_text(encoding="utf-8", errors="ignore").strip()
+    except Exception:
+        return ""
+    if len(text) > max_chars:
+        return text[:max_chars].rstrip() + "\n...[truncated]"
+    return text
+
+
 def get_saved_credentials() -> List[str]:
     """Return list of sites with saved credentials."""
     sites: List[str] = []
@@ -34,6 +48,23 @@ def get_saved_credentials() -> List[str]:
                                 sites.append(k)
             except Exception:
                 pass
+
+    # SecretStore (DPAPI on Windows)
+    try:
+        from agent.security.secret_store import get_secret_store
+
+        secret_store = get_secret_store()
+        for name in secret_store.list_names():
+            if name.startswith("credential:"):
+                site = name.split("credential:", 1)[1]
+                if site and site not in sites:
+                    sites.append(site)
+            if name.startswith("credstore:"):
+                service = name.split("credstore:", 1)[1]
+                if service and service not in sites:
+                    sites.append(service)
+    except Exception:
+        pass
 
     playbooks_dir = BASE_DIR / "memory" / "site_playbooks"
     if playbooks_dir.exists():
@@ -189,6 +220,10 @@ def format_context_for_llm() -> str:
     ctx = build_context_summary()
 
     parts = ["AGENT CONTEXT (automatically loaded):"]
+    behavior = _load_behavior_spec()
+    if behavior:
+        parts.append("\nAGENT BEHAVIOR (source of truth):")
+        parts.append(behavior)
 
     creds = ctx["credentials"]
     if creds:
