@@ -85,6 +85,7 @@ class ModelRouter:
     _codex_reason_model: str = ""
     _codex_fast_effort: str = ""
     _codex_reason_effort: str = ""
+    _primary_backend: str = ""
 
     def __post_init__(self):
         """Check which backends are available."""
@@ -93,6 +94,11 @@ class ModelRouter:
 
     def _load_codex_preferences(self) -> None:
         """Load Codex model/effort preferences from environment."""
+        self._primary_backend = (
+            os.getenv("TREYS_AGENT_LLM_PRIMARY")
+            or os.getenv("AGENT_LLM_PRIMARY")
+            or ""
+        ).strip().lower()
         self._codex_fast_model = (
             os.getenv("CODEX_MODEL_FAST")
             or os.getenv("CODEX_MODEL")
@@ -155,11 +161,21 @@ class ModelRouter:
         """Internal routing logic."""
         task_lower = task_description.lower()
 
-        # Prefer Codex for all tasks if available
-        if self.codex_available:
+        # Honor primary backend preference if configured
+        if self._primary_backend == Backend.OPENROUTER.value and self.openrouter_available:
+            return RoutingResult(
+                backend=Backend.OPENROUTER,
+                reason="Preferred backend: openrouter",
+            )
+        if self._primary_backend == Backend.CODEX.value and self.codex_available:
             return RoutingResult(
                 backend=Backend.CODEX,
-                reason="Codex available (primary)",
+                reason="Preferred backend: codex",
+            )
+        if self._primary_backend == Backend.CLAUDE.value and self.claude_available:
+            return RoutingResult(
+                backend=Backend.CLAUDE,
+                reason="Preferred backend: claude",
             )
 
         # Claude fallback for long-context if available
@@ -195,7 +211,11 @@ class ModelRouter:
             return self._get_codex_client(kind="reason") or self._get_openrouter_client()
         if task_type == TaskType.LONG_CONTEXT:
             return self._get_codex_client(kind="reason") or self._get_claude_client() or self._get_openrouter_client()
-        # Planner/chat/summarize -> Codex fast first
+        # Planner/chat/summarize -> honor primary backend if configured
+        if self._primary_backend == Backend.OPENROUTER.value:
+            return self._get_openrouter_client() or self._get_codex_client(kind="fast")
+        if self._primary_backend == Backend.CODEX.value:
+            return self._get_codex_client(kind="fast") or self._get_openrouter_client()
         return self._get_codex_client(kind="fast") or self._get_openrouter_client()
 
     def _get_openrouter_client(self) -> Optional[Any]:

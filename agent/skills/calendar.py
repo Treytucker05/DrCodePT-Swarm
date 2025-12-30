@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -211,6 +213,69 @@ class CalendarSkill(Skill):
             logger.error(f"Failed to build calendar service: {e}")
             return None
 
+    def _refresh_credentials(self) -> bool:
+        creds = self._creds or self._get_credentials()
+        if not creds:
+            return False
+        if not getattr(creds, "refresh_token", None):
+            return False
+        try:
+            from google.auth.transport.requests import Request
+
+            creds.refresh(Request())
+            self._creds = creds
+            # Save refreshed credentials
+            from agent.memory.credentials import save_credential
+
+            save_credential(
+                "google_apis",
+                "token",
+                json.dumps(
+                    {
+                        "token": creds.token,
+                        "refresh_token": creds.refresh_token,
+                        "token_uri": creds.token_uri,
+                        "client_id": creds.client_id,
+                        "client_secret": creds.client_secret,
+                        "scopes": list(creds.scopes) if creds.scopes else [],
+                    }
+                ),
+            )
+            self._service = None
+            return True
+        except Exception as e:
+            logger.error(f"Failed to refresh credentials: {e}")
+            return False
+
+    def _execute_with_retry(self, action: str, fn):
+        max_retries = int(os.getenv("GOOGLE_API_MAX_RETRIES", "3").strip() or "3")
+        rate_limit_wait = int(os.getenv("GOOGLE_API_RATE_LIMIT_WAIT_SECONDS", "60").strip() or "60")
+        last_error = None
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                return fn(), None
+            except Exception as exc:
+                last_error = exc
+                status_code = getattr(exc, "status_code", None)
+                resp = getattr(exc, "resp", None)
+                if status_code is None and resp is not None:
+                    status_code = getattr(resp, "status", None)
+                err_text = str(exc).lower()
+
+                if status_code in (401, 403) and any(k in err_text for k in ("auth", "credential", "unauthorized", "invalid")):
+                    if self._refresh_credentials():
+                        continue
+                    return None, "auth"
+
+                if status_code in (429, 503) or any(k in err_text for k in ("rate limit", "quota", "too many requests")):
+                    time.sleep(rate_limit_wait * attempt)
+                    continue
+
+                break
+
+        return None, last_error
+
     def begin_oauth(self) -> Optional[str]:
         """Start OAuth flow for Google Calendar."""
         try:
@@ -284,16 +349,27 @@ class CalendarSkill(Skill):
             if time_max is None:
                 time_max = time_min + timedelta(days=7)
 
-            events_result = service.events().list(
-                calendarId=calendar_id,
-                timeMin=time_min.isoformat() + "Z",
-                timeMax=time_max.isoformat() + "Z",
-                maxResults=max_results,
-                singleEvents=True,
-                orderBy="startTime",
-            ).execute()
+            def _call():
+                return service.events().list(
+                    calendarId=calendar_id,
+                    timeMin=time_min.isoformat() + "Z",
+                    timeMax=time_max.isoformat() + "Z",
+                    maxResults=max_results,
+                    singleEvents=True,
+                    orderBy="startTime",
+                ).execute()
 
-            events = events_result.get("items", [])
+            events_result, err = self._execute_with_retry("list_events", _call)
+            if err == "auth":
+                return SkillResult(
+                    ok=False,
+                    error="Calendar authentication required",
+                    needs_auth=True,
+                )
+            if err:
+                return SkillResult(ok=False, error=str(err))
+
+            events = (events_result or {}).get("items", [])
             calendar_events = [CalendarEvent.from_google_event(e) for e in events]
 
             return SkillResult(
@@ -394,9 +470,36 @@ class CalendarSkill(Skill):
             if location:
                 event_body["location"] = location
 
-            event = service.events().insert(
-                calendarId=calendar_id, body=event_body
-            ).execute()
+            def _create():
+                return service.events().insert(
+                    calendarId=calendar_id, body=event_body
+                ).execute()
+
+            event, err = self._execute_with_retry("create_event", _create)
+            if err == "auth":
+                return SkillResult(
+                    ok=False,
+                    error="Calendar authentication required",
+                    needs_auth=True,
+                )
+            if err:
+                return SkillResult(ok=False, error=str(err))
+
+            event_id = (event or {}).get("id")
+            if event_id:
+                def _verify():
+                    return service.events().get(calendarId=calendar_id, eventId=event_id).execute()
+
+                verified, verify_err = self._execute_with_retry("verify_event", _verify)
+                if verify_err == "auth":
+                    return SkillResult(
+                        ok=False,
+                        error="Calendar authentication required",
+                        needs_auth=True,
+                    )
+                if verify_err:
+                    return SkillResult(ok=False, error=f"Verification failed: {verify_err}")
+                event = verified
 
             return SkillResult(
                 ok=True,
@@ -443,7 +546,18 @@ class CalendarSkill(Skill):
                 "items": [{"id": calendar_id}],
             }
 
-            result = service.freebusy().query(body=body).execute()
+            def _call():
+                return service.freebusy().query(body=body).execute()
+
+            result, err = self._execute_with_retry("free_busy", _call)
+            if err == "auth":
+                return SkillResult(
+                    ok=False,
+                    error="Calendar authentication required",
+                    needs_auth=True,
+                )
+            if err:
+                return SkillResult(ok=False, error=str(err))
             calendars = result.get("calendars", {})
             calendar_data = calendars.get(calendar_id, {})
             busy_periods = calendar_data.get("busy", [])

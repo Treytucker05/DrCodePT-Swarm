@@ -541,17 +541,69 @@ class UnifiedAgent:
             else:
                 error = result.get("error", "Unknown error")
                 setup_guide = result.get("setup_guide")
-                if setup_guide:
-                    return AgentResult(
-                        success=False,
-                        summary=setup_guide,
-                        error=error,
-                        strategy=strategy,
+                if result.get("needs_auth") or "credentials" in error.lower() or "auth" in error.lower():
+                    consent = self._ask_user(
+                        "Google Calendar isn't configured. I can run OAuth setup now (opens a browser). Proceed? (yes/no)"
                     )
-                if "credentials" in error.lower() or "auth" in error.lower():
+                    if consent and consent.strip().lower() in {"yes", "y"}:
+                        try:
+                            from agent.tools.google_setup import setup_google_apis, SetupGoogleArgs
+                            calendar_scopes = [
+                                "https://www.googleapis.com/auth/calendar",
+                                "https://www.googleapis.com/auth/calendar.events",
+                            ]
+                            setup_result = setup_google_apis(None, SetupGoogleArgs(scopes=calendar_scopes))
+                        except Exception as exc:
+                            return AgentResult(
+                                success=False,
+                                summary=f"Calendar setup failed: {exc}",
+                                error=str(exc),
+                                strategy=strategy,
+                            )
+                        if getattr(setup_result, "success", False):
+                            retry = get_calendar_events(None, args)
+                            if retry.get("success"):
+                                events = retry.get("events", [])
+                                if events:
+                                    def _format_event(evt):
+                                        start = evt.get("start", {})
+                                        when = start.get("dateTime") or start.get("date") or "unknown time"
+                                        return f"- {evt.get('summary', 'Untitled')} at {when}"
+
+                                    event_list = "\n".join(_format_event(e) for e in events[:10])
+                                    summary = f"Found {len(events)} events:\n{event_list}"
+                                else:
+                                    summary = f"No events found for {time_range}"
+                                return AgentResult(
+                                    success=True,
+                                    summary=summary,
+                                    strategy=strategy,
+                                    steps_taken=1,
+                                )
+                            retry_error = retry.get("error", "Calendar setup completed, but fetching events failed")
+                            return AgentResult(
+                                success=False,
+                                summary=retry_error,
+                                error=retry_error,
+                                strategy=strategy,
+                            )
+                        setup_error = getattr(setup_result, "error", None) or "OAuth setup failed"
+                        return AgentResult(
+                            success=False,
+                            summary=setup_error,
+                            error=setup_error,
+                            strategy=strategy,
+                        )
+                    if setup_guide:
+                        return AgentResult(
+                            success=False,
+                            summary=setup_guide,
+                            error=error,
+                            strategy=strategy,
+                        )
                     return AgentResult(
                         success=False,
-                        summary="Calendar not authenticated. Please set up Google Calendar credentials.",
+                        summary="Calendar requires OAuth setup before it can be used.",
                         error=error,
                         strategy=strategy,
                     )

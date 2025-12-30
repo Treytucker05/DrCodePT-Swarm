@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -46,21 +48,17 @@ class GoogleCalendarSkill(Skill):
         return ["list_events", "list_tomorrow_events"]
 
     def auth_status(self) -> AuthStatus:
+        creds = self._load_credentials()
+        if creds:
+            if getattr(creds, "expired", False) and getattr(creds, "refresh_token", None):
+                return AuthStatus.AUTH_EXPIRED
+            if getattr(creds, "valid", False):
+                return AuthStatus.AUTHENTICATED
+            return AuthStatus.NEEDS_AUTH
+
         credentials_file = self._find_credentials_file()
         if not credentials_file:
             return AuthStatus.NOT_CONFIGURED
-
-        token_file = self._resolve_token_path()
-        if not token_file.exists():
-            return AuthStatus.NEEDS_AUTH
-
-        creds = self._load_credentials()
-        if not creds:
-            return AuthStatus.NEEDS_AUTH
-        if getattr(creds, "expired", False) and getattr(creds, "refresh_token", None):
-            return AuthStatus.AUTH_EXPIRED
-        if getattr(creds, "valid", False):
-            return AuthStatus.AUTHENTICATED
         return AuthStatus.NEEDS_AUTH
 
     def begin_oauth(self) -> Optional[str]:
@@ -68,6 +66,57 @@ class GoogleCalendarSkill(Skill):
         if not credentials_file:
             logger.error("Google Calendar credentials.json not found")
             return None
+
+    def _refresh_credentials(self) -> bool:
+        """Attempt to refresh credentials in-place."""
+        creds = self._creds or self._load_credentials()
+        if not creds:
+            return False
+        if not getattr(creds, "refresh_token", None):
+            return False
+        try:
+            from google.auth.transport.requests import Request
+
+            creds.refresh(Request())
+            self._save_credentials(creds)
+            self._creds = creds
+            self._service = None
+            return True
+        except Exception as exc:
+            logger.error(f"Failed to refresh Google credentials: {exc}")
+            return False
+
+    def _execute_with_retry(self, action: str, fn):
+        max_retries = int(os.getenv("GOOGLE_API_MAX_RETRIES", "3").strip() or "3")
+        rate_limit_wait = int(os.getenv("GOOGLE_API_RATE_LIMIT_WAIT_SECONDS", "60").strip() or "60")
+        last_error = None
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                return fn(), None
+            except Exception as exc:
+                last_error = exc
+                status_code = getattr(exc, "status_code", None)
+                resp = getattr(exc, "resp", None)
+                if status_code is None and resp is not None:
+                    status_code = getattr(resp, "status", None)
+                err_text = str(exc).lower()
+
+                # Auth errors
+                if status_code in (401, 403) and any(k in err_text for k in ("auth", "credential", "unauthorized", "invalid")):
+                    if self._refresh_credentials():
+                        continue
+                    return None, "auth"
+
+                # Rate limit or quota
+                if status_code in (429, 503) or any(k in err_text for k in ("rate limit", "quota", "too many requests")):
+                    time.sleep(rate_limit_wait * attempt)
+                    continue
+
+                # Non-retryable
+                break
+
+        return None, last_error
         try:
             from google_auth_oauthlib.flow import InstalledAppFlow
 
@@ -121,15 +170,27 @@ class GoogleCalendarSkill(Skill):
             time_max = time_min + timedelta(days=7)
 
         try:
-            events_result = service.events().list(
-                calendarId=calendar_id,
-                timeMin=time_min.isoformat(),
-                timeMax=time_max.isoformat(),
-                maxResults=max_results,
-                singleEvents=True,
-                orderBy="startTime",
-            ).execute()
-            items = events_result.get("items", [])
+            def _call():
+                return service.events().list(
+                    calendarId=calendar_id,
+                    timeMin=time_min.isoformat(),
+                    timeMax=time_max.isoformat(),
+                    maxResults=max_results,
+                    singleEvents=True,
+                    orderBy="startTime",
+                ).execute()
+
+            events_result, err = self._execute_with_retry("list_events", _call)
+            if err == "auth":
+                return SkillResult(
+                    ok=False,
+                    error="Calendar authentication required",
+                    needs_auth=True,
+                )
+            if err:
+                logger.error(f"Failed to list calendar events: {err}")
+                return SkillResult(ok=False, error=str(err))
+            items = (events_result or {}).get("items", [])
             events = [self._normalize_event(e) for e in items]
             return SkillResult(ok=True, data=events)
         except Exception as exc:
@@ -185,6 +246,7 @@ class GoogleCalendarSkill(Skill):
         repo_candidates = [
             Path.cwd() / "credentials.json",
             Path.cwd() / "client_secrets.json",
+            REPO_ROOT / "agent" / "memory" / "google_credentials.json",
             REPO_ROOT / "agent" / "memory" / "google_client_secret.json",
         ]
         for path in repo_candidates:
@@ -194,12 +256,30 @@ class GoogleCalendarSkill(Skill):
 
     def _load_credentials(self):
         token_file = self._resolve_token_path()
-        if not token_file.exists():
-            return None
         try:
             from google.oauth2.credentials import Credentials
+            try:
+                from agent.memory.credentials import get_credential
+            except Exception:
+                get_credential = None
 
-            creds = Credentials.from_authorized_user_file(str(token_file), self.SCOPES)
+            token_payload = None
+            if get_credential is not None:
+                creds_data = get_credential("google_apis")
+                if creds_data:
+                    token_payload = creds_data.get("token") or creds_data.get("password")
+
+            if token_payload:
+                try:
+                    payload = json.loads(token_payload)
+                    creds = Credentials.from_authorized_user_info(payload, self.SCOPES)
+                except Exception as exc:
+                    logger.debug(f"Failed to load Google credentials from store: {exc}")
+                    creds = None
+            elif token_file.exists():
+                creds = Credentials.from_authorized_user_file(str(token_file), self.SCOPES)
+            else:
+                return None
         except Exception as exc:
             logger.debug(f"Failed to load Google credentials: {exc}")
             return None
@@ -219,9 +299,24 @@ class GoogleCalendarSkill(Skill):
 
     def _save_credentials(self, creds) -> None:
         try:
-            self._ensure_base_dir()
-            token_file = self._resolve_token_path()
-            token_file.write_text(creds.to_json(), encoding="utf-8")
+            stored = False
+            try:
+                from agent.memory.credentials import save_credential
+                save_credential("google_apis", "token", creds.to_json())
+                stored = True
+            except Exception as exc:
+                logger.debug(f"Secret store save failed: {exc}")
+
+            write_token = os.getenv("TREYS_AGENT_WRITE_GOOGLE_TOKEN_FILE", "0").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            } or not stored
+            if write_token:
+                self._ensure_base_dir()
+                token_file = self._resolve_token_path()
+                token_file.write_text(creds.to_json(), encoding="utf-8")
         except Exception as exc:
             logger.error(f"Failed to save Google token: {exc}")
 

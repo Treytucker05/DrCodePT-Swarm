@@ -89,6 +89,21 @@ def get_default_llm() -> LLMClient:
     """
     import os
 
+    primary = (os.getenv("TREYS_AGENT_LLM_PRIMARY") or os.getenv("AGENT_LLM_PRIMARY") or "").strip().lower()
+
+    if primary == "openrouter":
+        if os.getenv("OPENROUTER_API_KEY"):
+            from agent.llm.openrouter_client import OpenRouterClient
+            return OpenRouterClient.from_env()
+    if primary == "codex":
+        try:
+            from agent.llm.codex_cli_client import CodexCliClient
+            codex = CodexCliClient.from_env()
+            if hasattr(codex, "check_auth") and codex.check_auth():
+                return codex
+        except Exception:
+            pass
+
     try:
         from agent.llm.codex_cli_client import CodexCliClient
 

@@ -26,8 +26,16 @@ logger = logging.getLogger(__name__)
 
 # Paths for OAuth credentials
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-CREDENTIALS_PATH = REPO_ROOT / "agent" / "integrations" / "google_credentials.json"
-TOKEN_PATH = REPO_ROOT / "agent" / "memory" / "google_token.json"
+DEFAULT_CREDENTIALS_PATH = REPO_ROOT / "agent" / "memory" / "google_credentials.json"
+LEGACY_CREDENTIALS_PATHS = [
+    REPO_ROOT / "agent" / "memory" / "google_client_secret.json",
+    REPO_ROOT / "agent" / "integrations" / "google_credentials.json",
+    Path.cwd() / "credentials.json",
+    Path.cwd() / "client_secrets.json",
+]
+DEFAULT_TOKEN_PATH = (
+    Path.home() / ".drcodept_swarm" / "google_calendar" / "token.json"
+)
 
 # Google OAuth scopes we need
 GOOGLE_SCOPES = [
@@ -67,23 +75,78 @@ def _check_google_libs() -> tuple[bool, str]:
         return False, str(e)
 
 
-def _get_existing_credentials():
+def _resolve_credentials_path() -> Optional[Path]:
+    env_candidates = [
+        os.getenv("GOOGLE_CALENDAR_CREDENTIALS"),
+        os.getenv("GOOGLE_OAUTH_CREDENTIALS"),
+        os.getenv("GOOGLE_CLIENT_SECRET_JSON"),
+    ]
+    for raw in env_candidates:
+        if raw and raw.strip():
+            candidate = Path(os.path.expanduser(raw.strip()))
+            if candidate.exists():
+                return candidate
+    if DEFAULT_CREDENTIALS_PATH.exists():
+        return DEFAULT_CREDENTIALS_PATH
+    for path in LEGACY_CREDENTIALS_PATHS:
+        if path.exists():
+            return path
+    return None
+
+
+def _resolve_token_path() -> Path:
+    env_path = (os.getenv("GOOGLE_CALENDAR_TOKEN") or "").strip()
+    if env_path:
+        return Path(os.path.expanduser(env_path))
+    return DEFAULT_TOKEN_PATH
+
+
+def _load_token_from_store(scopes: List[str]):
+    try:
+        from agent.memory.credentials import get_credential
+    except Exception:
+        return None
+    creds_data = get_credential("google_apis")
+    if not creds_data:
+        return None
+    token_data = creds_data.get("token") or creds_data.get("password")
+    if not token_data:
+        return None
+    try:
+        token_payload = json.loads(token_data)
+    except Exception:
+        return None
+    try:
+        from google.oauth2.credentials import Credentials
+        return Credentials.from_authorized_user_info(token_payload, scopes)
+    except Exception:
+        return None
+
+
+def _get_existing_credentials(scopes: List[str]):
     """Get existing OAuth credentials if they exist and are valid."""
-    if not TOKEN_PATH.exists():
-        return None, "No token file found"
+    # Prefer secure credential store
+    creds = _load_token_from_store(scopes)
+    token_path = _resolve_token_path()
+    if not creds and token_path.exists():
+        try:
+            from google.oauth2.credentials import Credentials
+            creds = Credentials.from_authorized_user_file(str(token_path), scopes)
+        except Exception:
+            creds = None
+    if not creds:
+        return None, "No stored token found"
 
     try:
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
-
-        creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), GOOGLE_SCOPES)
 
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 try:
                     creds.refresh(Request())
                     # Save refreshed token
-                    TOKEN_PATH.write_text(creds.to_json())
+                    _save_credentials(creds)
                     return creds, "Credentials refreshed"
                 except Exception as e:
                     return None, f"Failed to refresh: {e}"
@@ -95,21 +158,38 @@ def _get_existing_credentials():
 
 
 def _save_credentials(creds) -> bool:
-    """Save OAuth credentials to token file."""
+    """Save OAuth credentials securely (SecretStore preferred)."""
+    stored = False
     try:
-        TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
-        TOKEN_PATH.write_text(creds.to_json())
-        return True
+        from agent.memory.credentials import save_credential
+        save_credential("google_apis", "token", creds.to_json())
+        stored = True
     except Exception as e:
-        logger.error(f"Failed to save credentials: {e}")
-        return False
+        logger.debug(f"Secret store save failed: {e}")
+
+    write_token = os.getenv("TREYS_AGENT_WRITE_GOOGLE_TOKEN_FILE", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    } or not stored
+    if write_token:
+        try:
+            token_path = _resolve_token_path()
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            token_path.write_text(creds.to_json())
+            stored = True
+        except Exception as e:
+            logger.error(f"Failed to save token file: {e}")
+    return stored
 
 
 def _run_oauth_flow(scopes: List[str]) -> tuple[Any, str]:
     """Run the OAuth flow to get new credentials."""
-    if not CREDENTIALS_PATH.exists():
+    credentials_path = _resolve_credentials_path()
+    if not credentials_path or not credentials_path.exists():
         return None, (
-            f"OAuth client credentials not found at {CREDENTIALS_PATH}. "
+            f"OAuth client credentials not found. Expected at {DEFAULT_CREDENTIALS_PATH}. "
             "You need to create a Google Cloud project and download OAuth client credentials. "
             "Would you like me to guide you through this process?"
         )
@@ -118,7 +198,7 @@ def _run_oauth_flow(scopes: List[str]) -> tuple[Any, str]:
         from google_auth_oauthlib.flow import InstalledAppFlow
 
         flow = InstalledAppFlow.from_client_secrets_file(
-            str(CREDENTIALS_PATH),
+            str(credentials_path),
             scopes
         )
 
@@ -188,22 +268,25 @@ def check_google_status(ctx, args: CheckGoogleStatusArgs):
         )
 
     # Check OAuth credentials file
-    status["oauth_credentials_file"] = CREDENTIALS_PATH.exists()
-    if not CREDENTIALS_PATH.exists():
+    credentials_path = _resolve_credentials_path()
+    status["oauth_credentials_file"] = bool(credentials_path)
+    if not credentials_path:
         status["setup_steps"].append(
-            f"Create Google Cloud OAuth credentials and save to {CREDENTIALS_PATH}"
+            f"Create Google Cloud OAuth credentials and save to {DEFAULT_CREDENTIALS_PATH}"
         )
 
-    # Check token file
-    status["token_file"] = TOKEN_PATH.exists()
+    # Check token storage
+    token_path = _resolve_token_path()
+    status["token_file"] = token_path.exists()
+    status["token_store"] = _load_token_from_store(GOOGLE_SCOPES) is not None
 
     # Check if token is valid
-    if libs_ok and TOKEN_PATH.exists():
-        creds, msg = _get_existing_credentials()
+    if libs_ok:
+        creds, msg = _get_existing_credentials(GOOGLE_SCOPES)
         status["token_valid"] = creds is not None
         status["token_status"] = msg
     else:
-        status["token_status"] = "No token file"
+        status["token_status"] = "Google API libraries missing"
 
     # Determine if setup is needed
     status["needs_setup"] = not (
@@ -253,7 +336,7 @@ def setup_google_apis(ctx, args: SetupGoogleArgs):
 
     # Step 2: Check existing credentials (unless force_reauth)
     if not args.force_reauth:
-        creds, msg = _get_existing_credentials()
+        creds, msg = _get_existing_credentials(scopes)
         if creds:
             _log_to_reflexion("use_existing", True, msg)
             return ToolResult(
@@ -266,7 +349,8 @@ def setup_google_apis(ctx, args: SetupGoogleArgs):
             )
 
     # Step 3: Check for OAuth credentials file
-    if not CREDENTIALS_PATH.exists():
+    credentials_path = _resolve_credentials_path()
+    if not credentials_path:
         _log_to_reflexion("check_oauth_file", False, "OAuth credentials file not found")
 
         guide = """
@@ -282,7 +366,7 @@ Google OAuth credentials file not found. To set up:
 8. Save it to: {path}
 
 Would you like me to open the Google Cloud Console in your browser?
-""".format(path=CREDENTIALS_PATH)
+""".format(path=DEFAULT_CREDENTIALS_PATH)
 
         return ToolResult(
             success=False,
@@ -290,7 +374,7 @@ Would you like me to open the Google Cloud Console in your browser?
             retryable=True,
             metadata={
                 "step": "need_oauth_file",
-                "credentials_path": str(CREDENTIALS_PATH),
+                "credentials_path": str(DEFAULT_CREDENTIALS_PATH),
                 "action_needed": "download_oauth_credentials",
             },
         )
@@ -307,7 +391,11 @@ Would you like me to open the Google Cloud Console in your browser?
                     "status": "setup_complete",
                     "message": "Google API access configured successfully!",
                     "scopes": scopes,
-                    "token_saved": str(TOKEN_PATH),
+                    "token_storage": (
+                        "secret_store"
+                        if _load_token_from_store(scopes)
+                        else ("token_file" if _resolve_token_path().exists() else "unknown")
+                    ),
                 },
             )
         else:
@@ -383,6 +471,6 @@ __all__ = [
     "setup_google_apis",
     "register_google_setup_tools",
     "GOOGLE_SETUP_TOOL_SPECS",
-    "CREDENTIALS_PATH",
-    "TOKEN_PATH",
+    "DEFAULT_CREDENTIALS_PATH",
+    "DEFAULT_TOKEN_PATH",
 ]

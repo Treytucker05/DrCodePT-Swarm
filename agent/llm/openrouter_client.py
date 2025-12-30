@@ -34,6 +34,13 @@ DEFAULT_MODELS = {
     "reason": "x-ai/grok-4.1-fast",
 }
 
+# Allow per-task model overrides via environment variables
+for key in list(DEFAULT_MODELS.keys()):
+    env_key = f"OPENROUTER_MODEL_{key.upper()}"
+    env_val = os.getenv(env_key, "").strip()
+    if env_val:
+        DEFAULT_MODELS[key] = env_val
+
 # Fallback models if primary ones are rate-limited or unavailable
 FALLBACK_MODELS = {
     "planner": "nvidia/nemotron-nano-9b-v2:free",
@@ -41,6 +48,12 @@ FALLBACK_MODELS = {
     "summarize": "nvidia/nemotron-nano-9b-v2:free",
     "reason": "allenai/olmo-3.1-32b-think:free",
 }
+
+for key in list(FALLBACK_MODELS.keys()):
+    env_key = f"OPENROUTER_FALLBACK_{key.upper()}"
+    env_val = os.getenv(env_key, "").strip()
+    if env_val:
+        FALLBACK_MODELS[key] = env_val
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 

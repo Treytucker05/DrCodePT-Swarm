@@ -153,6 +153,13 @@ def get_calendar_events(ctx, args: CalendarEventsArgs) -> Dict[str, Any]:
             "needs_auth": True,
             "setup_guide": skill.setup_guide(),
         }
+    if status in {AuthStatus.NEEDS_AUTH, AuthStatus.AUTH_EXPIRED}:
+        return {
+            "success": False,
+            "error": "Google Calendar authentication required",
+            "needs_auth": True,
+            "setup_guide": skill.setup_guide(),
+        }
 
     try:
         time_min = _parse_local_date(args.start_date)
@@ -258,11 +265,18 @@ def calendar_create_event(ctx, args: CreateEventArgs):
         result = proxy.execute("google-calendar.create_event", mcp_args)
 
         if result.ok:
+            event = result.data or {}
+            if not isinstance(event, dict) or not event.get("id"):
+                return ToolResult(
+                    success=False,
+                    error="Verification failed: calendar event id missing",
+                    retryable=True,
+                )
             return ToolResult(
                 success=True,
                 output={
                     "message": f"Created event: {args.summary}",
-                    "event": result.data,
+                    "event": event,
                 },
             )
         else:
