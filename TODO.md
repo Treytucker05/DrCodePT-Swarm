@@ -1,11 +1,27 @@
 # DrCodePT-Swarm TODO List
 
 **Status:** Historical/Archive. Do not update as a source of truth. See `AGENT_BEHAVIOR.md` and `conductor/tracks.md`.
+**Update Note (2025-12-31):** Updated per request to capture current blockers and fixes in progress.
 
 
 
 Source of truth for agent behavior: `AGENT_BEHAVIOR.md`
 ## High Priority - STRATEGIC THINKING PARTNER FOCUS 🎯
+
+### 0. Fix Google OAuth Desktop Setup Focus on Multi-Monitor
+**Status:** In progress  
+**Added:** 2025-12-31  
+**Time:** 30–60 minutes  
+**Description:** Desktop Commander OCR is clicking/typing in the wrong window on multi-monitor setups.
+
+**Plan:**
+- [x] Add Win32 focus helpers (SetForegroundWindow + SetWindowPos topmost toggle).
+- [x] Force Chrome window to primary monitor when setup starts.
+- [x] Track Chrome PID/handle from Popen and bring it to front before OCR.
+- [ ] Verify focus works on multi-monitor (Chrome should always be foreground).
+- [ ] If still failing, add window title matcher for “Google Cloud Console” or force maximize.
+
+**Success:** OCR sees the Cloud Console page and finds Project Name + Enable buttons without manual prompts.
 
 ### 1. Fix Collaborative Over-Questioning **⚡ DO THIS NOW**
 **Status:** Audit complete, ready to implement  

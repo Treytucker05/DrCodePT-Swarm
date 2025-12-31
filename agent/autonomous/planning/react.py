@@ -47,7 +47,18 @@ _TOOL_ALIASES = {
 def _normalize_tool_name(tool_name: str) -> str:
     if not tool_name:
         return tool_name
-    return _TOOL_ALIASES.get(tool_name, tool_name)
+    name = tool_name.strip()
+    if not name:
+        return name
+    # Drop common wrappers and punctuation.
+    name = name.replace("()", "").replace(" ", "")
+    lowered = name.lower()
+    for prefix in ("functions.", "function.", "tools.", "tool."):
+        if lowered.startswith(prefix):
+            lowered = lowered[len(prefix):]
+            break
+    lowered = lowered.replace("-", "_").strip(".")
+    return _TOOL_ALIASES.get(lowered, lowered)
 
 
 def _normalize_tool_args(tool_name: str, tool_args: dict) -> dict:

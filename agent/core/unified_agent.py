@@ -291,7 +291,30 @@ class UnifiedAgent:
             return self._execute_ui_automation(request, strategy, context)
 
         # Tool-driven tasks (planning, research, filesystem, API, etc.)
-        return self._execute_runner(request, strategy, context, run_id=run_id)
+        return self._execute_runner(request, strategy, context, run_id=run_id)  
+
+    @staticmethod
+    def _extract_quoted_content(text: str, *, prefix: str | None = None) -> Optional[str]:
+        if not text:
+            return None
+        segment = text
+        if prefix:
+            match = re.search(prefix, text, re.IGNORECASE)
+            if not match:
+                return None
+            segment = text[match.end():]
+        quote_pairs = (
+            ('"', '"'),
+            ("'", "'"),
+            ("\u201c", "\u201d"),
+            ("\u2018", "\u2019"),
+        )
+        for open_q, close_q in quote_pairs:
+            pattern = re.escape(open_q) + r"(.*?)" + re.escape(close_q)
+            match = re.search(pattern, segment)
+            if match:
+                return match.group(1)
+        return None
 
     def _try_fast_file_task(self, request: str) -> AgentResult | None:
         """Fast path for trivial file-write/read tasks to avoid long planning."""
@@ -324,10 +347,10 @@ class UnifiedAgent:
                         error=str(exc),
                         steps_taken=1,
                     )
-            content_hint = None
-            hint_match = re.search(r"create it with (?:the )?text [\'\"](?P<content>.*?)[\'\"]", req, re.IGNORECASE)
-            if hint_match:
-                content_hint = hint_match.group("content")
+            content_hint = self._extract_quoted_content(
+                req,
+                prefix=r"create it with (?:the )?text",
+            )
             if content_hint:
                 try:
                     target.write_text(content_hint, encoding="utf-8")
@@ -357,7 +380,12 @@ class UnifiedAgent:
                 )
             ans = answer.strip().strip("\"'")
             if ans.lower() in {"create", "yes", "y"}:
-                content = self._ask_user("What content should I write into it? (leave blank for empty)") or ""
+                if content_hint is not None:
+                    content = content_hint
+                else:
+                    content = self._ask_user(
+                        "What content should I write into it? (leave blank for empty)"
+                    ) or ""
                 try:
                     target.write_text(content, encoding="utf-8")
                     confirmed = target.read_text(encoding="utf-8")
@@ -402,25 +430,44 @@ class UnifiedAgent:
                     )
 
         # Fast write path
-        pattern = re.compile(
-            r"create (?:a )?file (?:named|called) (?P<name>[^\s]+) and put (?P<quote>['\"])(?P<content>.*?)(?P=quote) inside it",
+        name_match = re.search(
+            r"create (?:a )?file (?:named|called) (?P<name>[^\s]+)",
+            req,
             re.IGNORECASE,
         )
-        match = pattern.search(req)
-        if not match:
+        if not name_match:
+            name_match = re.search(
+                r"(?:write|save|put)\s+.*?\s+(?:to|into|in)\s+(?:the\s+file\s+)?(?P<name>[^\s]+)",
+                req,
+                re.IGNORECASE,
+            )
+        if not name_match:
             return None
-        filename = match.group("name").strip()
+        filename = name_match.group("name").strip().strip("\"'").rstrip(".,;:")
         if not filename or any(sep in filename for sep in ("/", "\\")) or ".." in filename:
             return None
-        content = match.group("content")
+        content = self._extract_quoted_content(req)
+        if content is None:
+            return None
         try:
             self._status(f"Fast path: writing {filename}...")
             target = (Path.cwd() / filename).resolve()
             target.write_text(content, encoding="utf-8")
+            confirmed = None
             try:
                 confirmed = target.read_text(encoding="utf-8")
+                if confirmed != content:
+                    target.write_text(content, encoding="utf-8")
+                    confirmed = target.read_text(encoding="utf-8")
             except Exception:
                 confirmed = None
+            if not target.exists():
+                return AgentResult(
+                    success=False,
+                    summary=f"Fast path write failed: {target} was not created.",
+                    error="file_write_failed",
+                    steps_taken=1,
+                )
             open_after = os.getenv("TREYS_AGENT_OPEN_CREATED_FILE", "1").strip().lower() not in {"0", "false", "no", "off"}
             if re.search(r"\b(open|show)\b", req, re.IGNORECASE):
                 open_after = True
@@ -542,6 +589,71 @@ class UnifiedAgent:
                 error = result.get("error", "Unknown error")
                 setup_guide = result.get("setup_guide")
                 if result.get("needs_auth") or "credentials" in error.lower() or "auth" in error.lower():
+                    needs_creds = "credentials" in error.lower() and "missing" in error.lower()
+                    if needs_creds:
+                        consent = self._ask_user(
+                            "Google Calendar isn't configured. I can open Chrome and set up Google Cloud + OAuth now "
+                            "(you'll handle login + 2FA). Proceed? (yes/no)"
+                        )
+                        if consent and consent.strip().lower() in {"yes", "y"}:
+                            try:
+                                from agent.tools.google_cloud_setup import full_google_setup, FullGoogleSetupArgs
+                                project_name = os.getenv("GOOGLE_PROJECT_NAME", "treys-agent")
+                                setup_result = full_google_setup(None, FullGoogleSetupArgs(project_name=project_name))
+                            except Exception as exc:
+                                return AgentResult(
+                                    success=False,
+                                    summary=f"Calendar setup failed: {exc}",
+                                    error=str(exc),
+                                    strategy=strategy,
+                                )
+                            if getattr(setup_result, "success", False):
+                                retry = get_calendar_events(None, args)
+                                if retry.get("success"):
+                                    events = retry.get("events", [])
+                                    if events:
+                                        def _format_event(evt):
+                                            start = evt.get("start", {})
+                                            when = start.get("dateTime") or start.get("date") or "unknown time"
+                                            return f"- {evt.get('summary', 'Untitled')} at {when}"
+
+                                        event_list = "\n".join(_format_event(e) for e in events[:10])
+                                        summary = f"Found {len(events)} events:\n{event_list}"
+                                    else:
+                                        summary = f"No events found for {time_range}"
+                                    return AgentResult(
+                                        success=True,
+                                        summary=summary,
+                                        strategy=strategy,
+                                        steps_taken=1,
+                                    )
+                                retry_error = retry.get("error", "Calendar setup completed, but fetching events failed")
+                                return AgentResult(
+                                    success=False,
+                                    summary=retry_error,
+                                    error=retry_error,
+                                    strategy=strategy,
+                                )
+                            setup_error = getattr(setup_result, "error", None) or "Google Cloud setup failed"
+                            return AgentResult(
+                                success=False,
+                                summary=setup_error,
+                                error=setup_error,
+                                strategy=strategy,
+                            )
+                        if setup_guide:
+                            return AgentResult(
+                                success=False,
+                                summary=setup_guide,
+                                error=error,
+                                strategy=strategy,
+                            )
+                        return AgentResult(
+                            success=False,
+                            summary="Calendar requires OAuth setup before it can be used.",
+                            error=error,
+                            strategy=strategy,
+                        )
                     consent = self._ask_user(
                         "Google Calendar isn't configured. I can run OAuth setup now (opens a browser). Proceed? (yes/no)"
                     )

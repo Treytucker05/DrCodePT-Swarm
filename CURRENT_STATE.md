@@ -1,17 +1,15 @@
 # CURRENT_STATE.md (Snapshot)
 
 **Status:** Historical/Archive. Do not update as a source of truth. See `AGENT_BEHAVIOR.md` and `conductor/tracks.md`.
-
-
+**Update Note (2025-12-31):** Updated per request to capture current blockers and fixes in progress.
 
 Source of truth for agent behavior: `AGENT_BEHAVIOR.md`
-## Summary (Dec 28, 2025)
-- Chat mode works for simple queries.
-- Execute/playbooks are partially working; some flows still require manual steps.
-- Swarm mode is currently broken for repo audits.
-- Google OAuth setup still requires manual login/2FA and manual download placement.
-- "DO NOT execute" wrapper is only applied to swarm reasoning agents; chat/playbook are not wrapped.
-- Codex CLI profiles in `~/.codex/config.toml` target gpt-5 for reasoning and gpt-5.2-codex for execution.
+## Summary (Dec 31, 2025)
+- Unified agent fast-paths work (file create/read/open).
+- Google OAuth desktop setup is mostly automated, but **multi-monitor focus** caused OCR to target the wrong window.
+- Added Win32 focus + move-to-primary logic to force Chrome foreground; needs verification on multi-monitor.
+- Added pytesseract to requirements and explicit OCR dependency checks.
+- Codex CLI errors can occur when running a second agent in a non‑TTY terminal.
 
 ## What Works
 - Chat-only conversation (no tools by default).
@@ -21,7 +19,7 @@ Source of truth for agent behavior: `AGENT_BEHAVIOR.md`
 
 ## Partially Working / Manual Steps
 - Playbooks: some flows still need manual intervention.
-- Google OAuth setup: requires manual browser login/2FA and manual credentials download.
+- Google OAuth setup: manual 2FA required; automation still fails if Chrome is not foreground (multi-monitor focus).
 - Windows-MCP (Desktop Commander) is available but not wired into execute playbook runner yet.
 
 ## Broken

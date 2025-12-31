@@ -2218,7 +2218,17 @@ def main() -> None:
     from agent.context_loader import format_context_for_llm
     from agent.memory.credentials import save_credential
 
+    show_status_lines = os.getenv("TREYS_AGENT_STATUS_LINES", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
+
     def _status(msg: str) -> None:
+        if not show_status_lines:
+            return
         print(f"{YELLOW}[STATUS]{RESET} {msg}")
 
     def _ask(question: str) -> str:
@@ -2227,7 +2237,10 @@ def main() -> None:
         if progress_state["last_len"]:
             sys.stdout.write("\r" + (" " * progress_state["last_len"]) + "\r")
             sys.stdout.flush()
-        return input(f"{CYAN}[ASK]{RESET} {question}\n> ").strip()
+        try:
+            return input(f"{CYAN}[ASK]{RESET} {question}\n> ").strip()
+        finally:
+            pause_event.clear()
 
     approval_required = os.getenv("TREYS_AGENT_APPROVAL_REQUIRED", "1").strip().lower() not in {"0", "false", "no", "off"}
     score_threshold = int(os.getenv("AGENT_SCORE_THRESHOLD", "80"))
@@ -2293,6 +2306,8 @@ def main() -> None:
         def _status_with_tracking(msg: str) -> None:
             last_status["msg"] = msg
             last_status["ts"] = time.time()
+            if not show_status_lines or pause_event.is_set():
+                return
             # Clear the progress line before printing a status line.
             if progress_state["last_len"]:
                 sys.stdout.write("\r" + (" " * progress_state["last_len"]) + "\r")
@@ -2336,6 +2351,10 @@ def main() -> None:
 
         # Skip verification for fast-path or tool-confirmed actions
         if result.success and result.strategy is None and output:
+            print(output)
+            continue
+        # Preserve error responses verbatim to avoid masking actionable failures
+        if not result.success:
             print(output)
             continue
 

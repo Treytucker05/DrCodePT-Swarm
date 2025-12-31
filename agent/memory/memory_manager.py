@@ -89,6 +89,27 @@ class MemoryManager:
         content = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
         self._store.upsert(kind=kind, key=key, content=content, metadata={"key": key})
 
+    def add_completed_task(self, task: Dict[str, Any]) -> None:
+        """Store a completed task record."""
+        timestamp = task.get("timestamp") or ""
+        key = f"completed_task:{timestamp or 'unknown'}"
+        self.store(key, task, kind="completed_task")
+
+    def add_fact(self, fact: str, *, category: str = "lessons") -> None:
+        """Store a learned fact or lesson."""
+        if not fact:
+            return
+        key = f"{category}:{abs(hash(fact))}"
+        payload = {"fact": fact, "category": category}
+        self.store(key, payload, kind=category)
+
+    def add_preference(self, key: str, value: Any) -> None:
+        """Store a user preference."""
+        if not key:
+            return
+        payload = {"key": key, "value": value}
+        self.store(f"pref:{key}", payload, kind="preference")
+
     def retrieve_similar(self, query: str, k: int = 3, *, kinds: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         records = self._store.search(query, kinds=kinds, limit=k)
         results: List[Dict[str, Any]] = []

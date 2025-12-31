@@ -2,6 +2,7 @@ cryptography
 playwright
 pyautogui
 Pillow
+pytesseract
 python-dotenv
 pydantic
 PyYAML

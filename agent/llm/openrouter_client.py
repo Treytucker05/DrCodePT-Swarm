@@ -28,10 +28,10 @@ logger = logging.getLogger(__name__)
 # Default OpenRouter models (fast + general purpose).
 # Updated Dec 2025.
 DEFAULT_MODELS = {
-    "planner": "x-ai/grok-4.1-fast",
-    "chat": "x-ai/grok-4.1-fast",
-    "summarize": "x-ai/grok-4.1-fast",
-    "reason": "x-ai/grok-4.1-fast",
+    "planner": "x-ai/grok-code-fast-1",
+    "chat": "x-ai/grok-code-fast-1",
+    "summarize": "x-ai/grok-code-fast-1",
+    "reason": "x-ai/grok-code-fast-1",
 }
 
 # Allow per-task model overrides via environment variables
@@ -66,7 +66,7 @@ class OpenRouterClient(LLMClient):
     Uses cheap models by default for planning/routing decisions.
     """
     api_key: str = ""
-    model: str = "x-ai/grok-4.1-fast"
+    model: str = "x-ai/grok-code-fast-1"
     timeout_seconds: int = 60
     max_tokens: int = 4096
     temperature: float = 0.7
