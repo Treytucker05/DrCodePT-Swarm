@@ -18,6 +18,7 @@ import logging
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +39,47 @@ _LAST_CHROME_HWND: Optional[int] = None
 _FOCUS_LOCK: bool = False
 
 
+def _debug_enabled() -> bool:
+    return os.getenv("TREYS_AGENT_GOOGLE_DEBUG", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
+
+
+def _debug_log(message: str) -> None:
+    if _debug_enabled():
+        print(f"[DEBUG] {message}")
+
+
+def _debug_foreground(label: str) -> None:
+    if not _debug_enabled():
+        return
+    try:
+        import win32gui
+    except Exception:
+        return
+    try:
+        hwnd = win32gui.GetForegroundWindow()
+        title = win32gui.GetWindowText(hwnd)
+        rect = win32gui.GetWindowRect(hwnd)
+        _debug_log(f"{label} foreground: '{title}' rect={rect}")
+    except Exception:
+        pass
+
+
+def _debug_screen_text(label: str, limit: int = 240) -> None:
+    if not _debug_enabled():
+        return
+    text = _screen_text()
+    if not text:
+        return
+    snippet = " ".join(text.split())
+    _debug_log(f"{label} OCR: {snippet[:limit]}")
+
+
 def _import_pyautogui():
     """Import PyAutoGUI for desktop control."""
     try:
@@ -46,6 +88,25 @@ def _import_pyautogui():
         return pyautogui, None
     except ImportError as e:
         return None, f"PyAutoGUI not installed: {e}"
+
+
+def _import_pynput():
+    """Import pynput for more reliable mouse control."""
+    try:
+        from pynput.mouse import Controller, Button
+        return Controller, Button, None
+    except ImportError as e:
+        return None, None, f"pynput not installed: {e}"
+
+
+def _import_win32api():
+    """Import win32api for Windows-native mouse control."""
+    try:
+        import win32api
+        import win32con
+        return win32api, win32con, None
+    except ImportError as e:
+        return None, None, f"pywin32 not installed: {e}"
 
 
 def _focus_chrome_enabled() -> bool:
@@ -156,10 +217,10 @@ def _query_downloads_from_history(history_path: Path) -> List[Tuple[str, Optiona
         # Try join to URLs
         try:
             cur.execute(
-                f\"\"\"SELECT d.{path_col}, u.url
+                f"""SELECT d.{path_col}, u.url
                     FROM downloads d
                     LEFT JOIN downloads_url_chains u ON d.id = u.id
-                    ORDER BY d.start_time DESC LIMIT 50\"\"\"
+                    ORDER BY d.start_time DESC LIMIT 50"""
             )
             for path, url in cur.fetchall():
                 if path:
@@ -532,6 +593,9 @@ def _take_screenshot(name: str = "screen") -> Optional[Path]:
     path = SCREENSHOTS_DIR / f"{name}_{ts}.png"
     img = pyautogui.screenshot()
     img.save(path)
+    _debug_log(f"Saved screenshot: {path}")
+    _debug_foreground(f"after screenshot {name}")
+    _debug_screen_text(f"{name} screen")
     return path
 
 
@@ -578,33 +642,490 @@ def _open_chrome(url: str) -> bool:
         return False
 
 
-def _navigate_chrome(url: str) -> bool:
+def _navigate_chrome(url: str, expect_tokens: Optional[List[str]] = None) -> bool:
     """Navigate existing Chrome window to a URL without opening new windows."""
     if not _focus_chrome_enabled():
         return _open_chrome(url)
     if not _ensure_chrome_visible(["chrome", "google", "cloud", "console"]):
         return _open_chrome(url)
     try:
+        _debug_log(f"Navigating Chrome to: {url}")
         _hotkey("ctrl", "l")
         time.sleep(0.2)
         _type_text(url)
         _press_key("enter")
         time.sleep(1)
+        if expect_tokens:
+            if not _wait_for_any(expect_tokens, timeout_seconds=8, interval=1.0):
+                _debug_log(f"Expected tokens not found after nav: {expect_tokens}")
+                _debug_screen_text("after navigation")
+        _debug_foreground("after navigation")
         return True
     except Exception:
         return _open_chrome(url)
 
 
-def _click_at(x: int, y: int, clicks: int = 1) -> bool:
-    """Click at specific coordinates."""
-    pyautogui, err = _import_pyautogui()
-    if not pyautogui:
-        return False
+def _save_debug_screenshot_with_coords(name: str, x: int, y: int, click_result: Optional[Dict[str, Any]] = None) -> Optional[Path]:
+    """
+    Save a debug screenshot with coordinate overlay for troubleshooting.
+    
+    Args:
+        name: Screenshot name prefix
+        x: Target X coordinate
+        y: Target Y coordinate
+        click_result: Optional click result dict for additional info
+    
+    Returns:
+        Path to saved screenshot or None
+    """
+    if not _debug_enabled():
+        return None
+    
     try:
-        pyautogui.click(x, y, clicks=clicks)
-        return True
+        pyautogui, _ = _import_pyautogui()
+        if not pyautogui:
+            return None
+        
+        from PIL import Image, ImageDraw, ImageFont
+        
+        # Take screenshot
+        img = pyautogui.screenshot()
+        draw = ImageDraw.Draw(img)
+        
+        # Get current mouse position
+        try:
+            mouse_pos = pyautogui.position()
+            mouse_x, mouse_y = mouse_pos.x, mouse_pos.y
+        except Exception:
+            mouse_x, mouse_y = None, None
+        
+        # Draw target coordinates
+        draw.ellipse([x - 10, y - 10, x + 10, y + 10], outline="red", width=3)
+        draw.line([x - 20, y, x + 20, y], fill="red", width=2)
+        draw.line([x, y - 20, x, y + 20], fill="red", width=2)
+        
+        # Draw current mouse position if available
+        if mouse_x is not None and mouse_y is not None:
+            draw.ellipse([mouse_x - 8, mouse_y - 8, mouse_x + 8, mouse_y + 8], outline="blue", width=2)
+        
+        # Add text annotation
+        info_lines = [f"Target: ({x}, {y})"]
+        if mouse_x is not None and mouse_y is not None:
+            info_lines.append(f"Mouse: ({mouse_x}, {mouse_y})")
+        if click_result:
+            info_lines.append(f"Method: {click_result.get('method_used', 'unknown')}")
+            info_lines.append(f"Distance: {click_result.get('distance_from_target', 0):.1f}px")
+            if click_result.get('conversion_applied'):
+                info_lines.append(f"Converted from: {click_result.get('original_coords')}")
+        
+        # Draw text on image (top-left corner with background)
+        text = "\n".join(info_lines)
+        try:
+            font = ImageFont.load_default()
+        except Exception:
+            font = None
+        
+        # Draw background rectangle for text
+        bbox = draw.textbbox((10, 10), text, font=font) if font else (10, 10, 200, 50)
+        draw.rectangle([bbox[0] - 5, bbox[1] - 5, bbox[2] + 5, bbox[3] + 5], fill="white", outline="black")
+        draw.text((10, 10), text, fill="black", font=font)
+        
+        # Save screenshot
+        SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = SCREENSHOTS_DIR / f"{name}_debug_{ts}.png"
+        img.save(path)
+        _debug_log(f"Saved debug screenshot with coordinates: {path}")
+        return path
+    except Exception as e:
+        _debug_log(f"Failed to save debug screenshot: {e}")
+        return None
+
+
+def _verify_click_success(executor, expected_state_change: str = "enable button should change to manage/disable") -> Tuple[bool, str]:
+    """
+    Verify that a click was successful by taking a new screenshot and checking state.
+    
+    Args:
+        executor: VisionExecutor instance
+        expected_state_change: Description of what should have changed
+    
+    Returns:
+        (success: bool, message: str)
+    """
+    time.sleep(1)  # Wait for page to respond
+    try:
+        # Take new screenshot to verify state changed
+        executor.take_screenshot("post_click_verify")
+        _debug_log(f"Post-click verification: {expected_state_change}")
+        
+        # Get fresh screen text to check state
+        screen_text = _screen_text().lower()
+        
+        # Check if API is already enabled (this indicates either it was already enabled OR click succeeded)
+        has_manage_disable = _screen_has_any(["manage", "disable", "api enabled"])
+        has_enable_button = _screen_has_any(["enable"]) and not has_manage_disable
+        
+        if has_manage_disable:
+            # API is enabled - but we need to check if it was ALREADY enabled or just got enabled
+            # If we see "API Enabled" with checkmark, it might have been there before
+            # We can't perfectly detect this, but if we just clicked, we'll assume success
+            _debug_log("Verification: API appears enabled (Manage/Disable/API Enabled detected)")
+            return True, "API is enabled - click may have succeeded or was already enabled"
+        elif has_enable_button:
+            # Enable button still visible - click likely failed
+            _debug_log("Verification FAILED: Enable button still visible after click")
+            return False, "Enable button still visible - click may have failed"
+        else:
+            # Page might have navigated away or state unclear
+            _debug_log("Verification UNCLEAR: Cannot determine button state")
+            return True, "Page state unclear - assuming click succeeded"
+    except Exception as e:
+        _debug_log(f"Verification error: {e}")
+        return False, f"Verification failed: {e}"
+
+
+def _get_chrome_window_rect() -> Optional[Tuple[int, int, int, int]]:
+    """Get Chrome window rectangle (left, top, right, bottom) in screen coordinates."""
+    global _LAST_CHROME_HWND, _LAST_CHROME_PID
+    try:
+        import win32gui
     except Exception:
-        return False
+        return None
+    
+    # Try using stored HWND first
+    if _LAST_CHROME_HWND:
+        try:
+            rect = win32gui.GetWindowRect(_LAST_CHROME_HWND)
+            return rect
+        except Exception:
+            pass
+    
+    # Try finding by PID
+    if _LAST_CHROME_PID:
+        hwnd = _find_hwnd_by_pid(_LAST_CHROME_PID)
+        if hwnd:
+            try:
+                rect = win32gui.GetWindowRect(hwnd)
+                _LAST_CHROME_HWND = hwnd
+                return rect
+            except Exception:
+                pass
+    
+    # Fallback: find Chrome window by title
+    try:
+        def _enum(hwnd, _):
+            try:
+                if not win32gui.IsWindowVisible(hwnd):
+                    return
+                title = win32gui.GetWindowText(hwnd).lower()
+                if "chrome" in title and ("cloud" in title or "console" in title or "google" in title):
+                    try:
+                        rect = win32gui.GetWindowRect(hwnd)
+                        matches.append((hwnd, rect))
+                    except Exception:
+                        pass
+            except Exception:
+                return
+        
+        matches = []
+        win32gui.EnumWindows(_enum, None)
+        if matches:
+            _LAST_CHROME_HWND = matches[0][0]
+            return matches[0][1]
+    except Exception:
+        pass
+    
+    return None
+
+
+def _click_at(x: int, y: int, clicks: int = 1) -> Dict[str, Any]:
+    """
+    Click at specific coordinates using the most reliable method available.
+    
+    Tries methods in order of reliability:
+    1. pynput (most reliable on Windows)
+    2. win32api SendInput (Windows-native, very reliable)
+    3. PyAutoGUI (fallback, sometimes unreliable)
+    
+    Returns detailed result dict:
+    {
+        "success": bool,
+        "method_used": "pynput" | "win32api" | "pyautogui" | None,
+        "mouse_position_after": (x, y) | None,
+        "distance_from_target": float,
+        "original_coords": (x, y),
+        "converted_coords": (x, y),
+        "conversion_applied": bool,
+        "window_rect": (left, top, right, bottom) | None,
+    }
+    """
+    original_x, original_y = x, y
+    conversion_applied = False
+    window_rect = None
+    
+    # Get screen size for validation (try PyAutoGUI first as it's most common)
+    pyautogui, _ = _import_pyautogui()
+    screen_w, screen_h = 1920, 1080  # defaults
+    if pyautogui:
+        try:
+            screen_w, screen_h = pyautogui.size()
+        except Exception:
+            pass
+    
+    _debug_log(f"Screen size: {screen_w}x{screen_h}, input coordinates: ({x}, {y})")
+    
+    # Try to get Chrome window position to convert window-relative to screen-absolute
+    window_rect = _get_chrome_window_rect()
+    if window_rect:
+        left, top, right, bottom = window_rect
+        window_width = right - left
+        window_height = bottom - top
+        _debug_log(f"Chrome window rect: ({left}, {top}, {right}, {bottom}), size: {window_width}x{window_height}")
+        
+        # If coordinates are small (likely window-relative), convert to screen-absolute
+        if x < window_width and y < window_height:
+            screen_x = left + x
+            screen_y = top + y
+            _debug_log(f"Converting window-relative ({x}, {y}) to screen-absolute ({screen_x}, {screen_y})")
+            x, y = screen_x, screen_y
+            conversion_applied = True
+        else:
+            _debug_log(f"Coordinates ({x}, {y}) seem to be screen-absolute (larger than window {window_width}x{window_height})")
+    else:
+        _debug_log("Could not get Chrome window position - using coordinates as-is (assumed screen-absolute)")
+    
+    # Validate coordinates
+    if x < 0 or y < 0:
+        _debug_log(f"Coordinates ({x}, {y}) are negative - invalid")
+        return {
+            "success": False,
+            "method_used": None,
+            "mouse_position_after": None,
+            "distance_from_target": float('inf'),
+            "original_coords": (original_x, original_y),
+            "converted_coords": (x, y),
+            "conversion_applied": conversion_applied,
+            "window_rect": window_rect,
+        }
+    
+    # Get mouse position before click
+    mouse_before = None
+    if pyautogui:
+        try:
+            mouse_before = pyautogui.position()
+            _debug_log(f"Mouse before click: {mouse_before}")
+        except Exception:
+            pass
+    
+    # Method 1: Try pynput (most reliable on Windows)
+    Controller, Button, err = _import_pynput()
+    if Controller and Button:
+        try:
+            _debug_log(f"[PYNPUT] Step 1: Moving mouse to ({x}, {y})...")
+            mouse = Controller()
+            mouse.position = (x, y)
+            time.sleep(0.3)  # Wait for mouse to actually move
+            
+            # Verify mouse moved using pynput
+            current_pos = mouse.position
+            distance = ((current_pos[0] - x) ** 2 + (current_pos[1] - y) ** 2) ** 0.5
+            _debug_log(f"[PYNPUT] Step 2: Mouse reported at {current_pos}, distance from target: {distance:.1f}px")
+            
+            # CRITICAL: Take screenshot to visually verify mouse is over button
+            _debug_log(f"[PYNPUT] Step 3: Taking screenshot to verify mouse position visually...")
+            debug_shot_before = _save_debug_screenshot_with_coords("before_click_pynput", x, y, None)
+            if debug_shot_before:
+                _debug_log(f"[PYNPUT] Saved verification screenshot: {debug_shot_before}")
+            
+            # Also verify using pyautogui for comparison
+            pyautogui_pos = None
+            if pyautogui:
+                try:
+                    pyautogui_pos = pyautogui.position()
+                    pyautogui_distance = ((pyautogui_pos.x - x) ** 2 + (pyautogui_pos.y - y) ** 2) ** 0.5
+                    _debug_log(f"[PYNPUT] PyAutoGUI reports mouse at ({pyautogui_pos.x}, {pyautogui_pos.y}), distance: {pyautogui_distance:.1f}px")
+                except Exception:
+                    pass
+            
+            # Check if mouse is close enough to target
+            if distance < 50:  # Close enough
+                _debug_log(f"[PYNPUT] Step 4: Mouse is close enough (distance: {distance:.1f}px), proceeding with click...")
+                for i in range(clicks):
+                    mouse.click(Button.left, 1)
+                    if i < clicks - 1:
+                        time.sleep(0.05)
+                
+                time.sleep(0.2)
+                
+                # Take screenshot after click
+                _debug_log(f"[PYNPUT] Step 5: Taking screenshot after click...")
+                debug_shot_after = _save_debug_screenshot_with_coords("after_click_pynput", x, y, None)
+                if debug_shot_after:
+                    _debug_log(f"[PYNPUT] Saved post-click screenshot: {debug_shot_after}")
+                
+                final_pos = mouse.position
+                final_distance = ((final_pos[0] - x) ** 2 + (final_pos[1] - y) ** 2) ** 0.5
+                _debug_log(f"[PYNPUT] Click completed. Final mouse position: {final_pos}, distance: {final_distance:.1f}px")
+                return {
+                    "success": True,
+                    "method_used": "pynput",
+                    "mouse_position_after": (final_pos[0], final_pos[1]),
+                    "distance_from_target": final_distance,
+                    "original_coords": (original_x, original_y),
+                    "converted_coords": (x, y),
+                    "conversion_applied": conversion_applied,
+                    "window_rect": window_rect,
+                    "debug_screenshot_before": str(debug_shot_before) if debug_shot_before else None,
+                    "debug_screenshot_after": str(debug_shot_after) if debug_shot_after else None,
+                }
+            else:
+                _debug_log(f"[PYNPUT] Mouse didn't reach target (distance: {distance:.1f}px), trying fallback...")
+        except Exception as e:
+            _debug_log(f"[PYNPUT] Failed: {e}, trying fallback...")
+            import traceback
+            _debug_log(traceback.format_exc())
+    
+    # Method 2: Try win32api SendInput (Windows-native)
+    win32api, win32con, err = _import_win32api()
+    if win32api and win32con:
+        try:
+            _debug_log(f"[WIN32API] Step 1: Moving mouse to ({x}, {y})...")
+            # Move mouse using SetCursorPos
+            win32api.SetCursorPos((x, y))
+            time.sleep(0.3)  # Wait for mouse to actually move
+            
+            # Verify mouse position
+            current_pos = win32api.GetCursorPos()
+            distance = ((current_pos[0] - x) ** 2 + (current_pos[1] - y) ** 2) ** 0.5
+            _debug_log(f"[WIN32API] Step 2: Mouse reported at {current_pos}, distance from target: {distance:.1f}px")
+            
+            # CRITICAL: Take screenshot to visually verify mouse is over button
+            _debug_log(f"[WIN32API] Step 3: Taking screenshot to verify mouse position visually...")
+            debug_shot_before = _save_debug_screenshot_with_coords("before_click_win32api", x, y, None)
+            if debug_shot_before:
+                _debug_log(f"[WIN32API] Saved verification screenshot: {debug_shot_before}")
+            
+            # Also verify using pyautogui for comparison
+            pyautogui_pos = None
+            if pyautogui:
+                try:
+                    pyautogui_pos = pyautogui.position()
+                    pyautogui_distance = ((pyautogui_pos.x - x) ** 2 + (pyautogui_pos.y - y) ** 2) ** 0.5
+                    _debug_log(f"[WIN32API] PyAutoGUI reports mouse at ({pyautogui_pos.x}, {pyautogui_pos.y}), distance: {pyautogui_distance:.1f}px")
+                except Exception:
+                    pass
+            
+            _debug_log(f"[WIN32API] Step 4: Proceeding with click...")
+            # Click using mouse_event
+            for i in range(clicks):
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, x, y, 0, 0)
+                time.sleep(0.02)
+                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, x, y, 0, 0)
+                if i < clicks - 1:
+                    time.sleep(0.05)
+            
+            time.sleep(0.2)
+            
+            # Take screenshot after click
+            _debug_log(f"[WIN32API] Step 5: Taking screenshot after click...")
+            debug_shot_after = _save_debug_screenshot_with_coords("after_click_win32api", x, y, None)
+            if debug_shot_after:
+                _debug_log(f"[WIN32API] Saved post-click screenshot: {debug_shot_after}")
+            
+            final_pos = win32api.GetCursorPos()
+            final_distance = ((final_pos[0] - x) ** 2 + (final_pos[1] - y) ** 2) ** 0.5
+            _debug_log(f"[WIN32API] Click completed. Final mouse position: {final_pos}, distance: {final_distance:.1f}px")
+            return {
+                "success": True,
+                "method_used": "win32api",
+                "mouse_position_after": (final_pos[0], final_pos[1]),
+                "distance_from_target": final_distance,
+                "original_coords": (original_x, original_y),
+                "converted_coords": (x, y),
+                "conversion_applied": conversion_applied,
+                "window_rect": window_rect,
+                "debug_screenshot_before": str(debug_shot_before) if debug_shot_before else None,
+                "debug_screenshot_after": str(debug_shot_after) if debug_shot_after else None,
+            }
+        except Exception as e:
+            _debug_log(f"[WIN32API] Failed: {e}, trying PyAutoGUI fallback...")
+            import traceback
+            _debug_log(traceback.format_exc())
+    
+    # Method 3: Fallback to PyAutoGUI
+    if pyautogui:
+        try:
+            _debug_log(f"[PYAUTOGUI] Step 1: Moving mouse to ({x}, {y})...")
+            pyautogui.FAILSAFE = False
+            pyautogui.PAUSE = 0.05
+            
+            pyautogui.moveTo(x, y, duration=0.2)
+            time.sleep(0.3)  # Wait for mouse to actually move
+            
+            mouse_after_move = pyautogui.position()
+            distance_after_move = ((mouse_after_move.x - x) ** 2 + (mouse_after_move.y - y) ** 2) ** 0.5
+            _debug_log(f"[PYAUTOGUI] Step 2: Mouse reported at {mouse_after_move}, distance: {distance_after_move:.1f}px")
+            
+            # CRITICAL: Take screenshot to visually verify mouse is over button
+            _debug_log(f"[PYAUTOGUI] Step 3: Taking screenshot to verify mouse position visually...")
+            debug_shot_before = _save_debug_screenshot_with_coords("before_click_pyautogui", x, y, None)
+            if debug_shot_before:
+                _debug_log(f"[PYAUTOGUI] Saved verification screenshot: {debug_shot_before}")
+            
+            _debug_log(f"[PYAUTOGUI] Step 4: Proceeding with click...")
+            pyautogui.click(clicks=clicks)
+            time.sleep(0.2)
+            
+            # Take screenshot after click
+            _debug_log(f"[PYAUTOGUI] Step 5: Taking screenshot after click...")
+            debug_shot_after = _save_debug_screenshot_with_coords("after_click_pyautogui", x, y, None)
+            if debug_shot_after:
+                _debug_log(f"[PYAUTOGUI] Saved post-click screenshot: {debug_shot_after}")
+            
+            mouse_after = pyautogui.position()
+            final_distance = ((mouse_after.x - x) ** 2 + (mouse_after.y - y) ** 2) ** 0.5
+            _debug_log(f"[PYAUTOGUI] Click completed. Final mouse position: {mouse_after}, distance: {final_distance:.1f}px")
+            return {
+                "success": True,
+                "method_used": "pyautogui",
+                "mouse_position_after": (mouse_after.x, mouse_after.y),
+                "distance_from_target": final_distance,
+                "original_coords": (original_x, original_y),
+                "converted_coords": (x, y),
+                "conversion_applied": conversion_applied,
+                "window_rect": window_rect,
+                "debug_screenshot_before": str(debug_shot_before) if debug_shot_before else None,
+                "debug_screenshot_after": str(debug_shot_after) if debug_shot_after else None,
+            }
+        except pyautogui.FailSafeException:
+            _debug_log("[PYAUTOGUI] FailSafeException - mouse moved to corner")
+            return {
+                "success": False,
+                "method_used": "pyautogui",
+                "mouse_position_after": None,
+                "distance_from_target": float('inf'),
+                "original_coords": (original_x, original_y),
+                "converted_coords": (x, y),
+                "conversion_applied": conversion_applied,
+                "window_rect": window_rect,
+            }
+        except Exception as e:
+            _debug_log(f"[PYAUTOGUI] Failed: {type(e).__name__}: {e}")
+            import traceback
+            _debug_log(traceback.format_exc())
+    
+    _debug_log("ERROR: No click method available (pynput, win32api, or pyautogui)")
+    return {
+        "success": False,
+        "method_used": None,
+        "mouse_position_after": None,
+        "distance_from_target": float('inf'),
+        "original_coords": (original_x, original_y),
+        "converted_coords": (x, y),
+        "conversion_applied": conversion_applied,
+        "window_rect": window_rect,
+    }
 
 
 def _type_text(text: str, interval: float = 0.02) -> bool:
@@ -684,7 +1205,14 @@ def _autoclick_enabled() -> bool:
     }
 
 
-def _auto_click_text(targets: List[str], *, attempts: int = 2, delay: float = 1.0) -> bool:
+def _auto_click_text(
+    targets: List[str],
+    *,
+    attempts: int = 2,
+    delay: float = 1.0,
+    min_y: int = 0,
+    max_y: Optional[int] = None,
+) -> bool:
     """Attempt to click a screen element by OCR text match."""
     pyautogui, err = _import_pyautogui()
     if not pyautogui:
@@ -709,11 +1237,164 @@ def _auto_click_text(targets: List[str], *, attempts: int = 2, delay: float = 1.
                 y = int(data["top"][i])
                 w = int(data["width"][i])
                 h = int(data["height"][i])
+                if y < min_y:
+                    continue
+                if max_y is not None and y > max_y:
+                    continue
                 pyautogui.click(x + max(1, w // 2), y + max(1, h // 2))
                 time.sleep(delay)
                 return True
         time.sleep(delay)
     return False
+
+
+def _auto_click_main(targets: List[str], *, attempts: int = 2, delay: float = 1.0) -> bool:
+    """Click OCR text but avoid the browser toolbar/bookmarks area."""
+    return _auto_click_text(targets, attempts=attempts, delay=delay, min_y=120)
+
+
+def _find_button_coordinates_ocr(button_texts: List[str], screenshot_path: Optional[Path] = None) -> Optional[Tuple[int, int]]:
+    """
+    Use OCR to find the exact coordinates of a button by its text.
+    
+    Args:
+        button_texts: List of text patterns to search for (e.g., ["enable", "enable api"])
+        screenshot_path: Optional path to screenshot. If None, takes a new screenshot.
+    
+    Returns:
+        (x, y) coordinates of button center, or None if not found
+    """
+    try:
+        import pytesseract
+        from PIL import Image
+        pyautogui, _ = _import_pyautogui()
+        if not pyautogui:
+            return None
+        
+        # Take or use screenshot
+        if screenshot_path and screenshot_path.exists():
+            img = Image.open(screenshot_path)
+        else:
+            img = pyautogui.screenshot()
+        
+        # Run OCR
+        data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+        texts = data.get("text", [])
+        
+        button_texts_lower = [t.lower() for t in button_texts]
+        
+        # Search for button text
+        best_match = None
+        best_confidence = 0
+        
+        for i, text in enumerate(texts):
+            text_lower = (text or "").strip().lower()
+            if not text_lower:
+                continue
+            
+            # Check if any button text matches
+            # IMPORTANT: Avoid matching "enable" within "API enabled" or other text
+            for btn_text in button_texts_lower:
+                # For "^enable$" pattern, match only standalone "enable" word
+                if btn_text == "^enable$":
+                    # Use word boundary matching - "enable" must be a complete word
+                    import re
+                    if re.search(r'\benable\b', text_lower):
+                        # Found standalone "enable" - this is likely the button
+                        x = int(data["left"][i])
+                        y = int(data["top"][i])
+                        w = int(data["width"][i])
+                        h = int(data["height"][i])
+                        conf = float(data.get("conf", [0])[i] or 0)
+                        
+                        # Calculate center of button
+                        center_x = x + w // 2
+                        center_y = y + h // 2
+                        
+                        # Avoid browser toolbar (y < 120) and avoid text in "API enabled" status
+                        # "API enabled" usually appears in upper/mid section, Enable button is usually lower
+                        if center_y > 120 and center_y > 400:  # Enable button is usually in lower half
+                            if conf > best_confidence:
+                                best_match = (center_x, center_y)
+                                best_confidence = conf
+                                _debug_log(f"Found button '{btn_text}' at ({center_x}, {center_y}) with confidence {conf:.1f}%")
+                elif btn_text in text_lower:
+                    # For phrases like "enable button" or "enable api", match normally
+                    x = int(data["left"][i])
+                    y = int(data["top"][i])
+                    w = int(data["width"][i])
+                    h = int(data["height"][i])
+                    conf = float(data.get("conf", [0])[i] or 0)
+                    
+                    # Calculate center of button
+                    center_x = x + w // 2
+                    center_y = y + h // 2
+                    
+                    # Avoid browser toolbar (y < 120)
+                    if center_y > 120:
+                        if conf > best_confidence:
+                            best_match = (center_x, center_y)
+                            best_confidence = conf
+                            _debug_log(f"Found button '{btn_text}' at ({center_x}, {center_y}) with confidence {conf:.1f}%")
+        
+        if best_match:
+            _debug_log(f"OCR found button at coordinates: {best_match}")
+            return best_match
+        
+        _debug_log(f"OCR could not find button text: {button_texts}")
+        return None
+    except Exception as e:
+        _debug_log(f"OCR button search failed: {e}")
+        return None
+
+
+def _troubleshoot_failed_click(executor, target_text: str, attempted_coords: Tuple[int, int], click_result: Dict[str, Any]) -> Optional[Tuple[int, int]]:
+    """
+    Troubleshoot a failed click by trying alternative approaches.
+    
+    Returns:
+        New coordinates to try, or None if no solution found
+    """
+    _debug_log(f"Troubleshooting failed click for '{target_text}' at {attempted_coords}")
+    
+    # Strategy 1: Use OCR to find exact button location
+    _debug_log("Strategy 1: Using OCR to find exact button coordinates...")
+    new_screenshot = executor.take_screenshot("troubleshoot_ocr")
+    ocr_coords = _find_button_coordinates_ocr([target_text, f"{target_text} api", f"{target_text} button"], new_screenshot.screenshot_path)
+    
+    if ocr_coords:
+        ocr_x, ocr_y = ocr_coords
+        attempted_x, attempted_y = attempted_coords
+        
+        # Check if OCR coordinates are significantly different
+        distance = ((ocr_x - attempted_x) ** 2 + (ocr_y - attempted_y) ** 2) ** 0.5
+        if distance > 20:  # More than 20px difference
+            _debug_log(f"OCR found different coordinates: {ocr_coords} (distance: {distance:.1f}px from attempted {attempted_coords})")
+            return ocr_coords
+        else:
+            _debug_log(f"OCR coordinates similar to attempted ({distance:.1f}px difference), may be correct")
+    
+    # Strategy 2: Try nearby coordinates (button might be slightly offset)
+    _debug_log("Strategy 2: Trying nearby coordinates...")
+    attempted_x, attempted_y = attempted_coords
+    offsets = [
+        (0, -10), (0, 10), (-10, 0), (10, 0),  # Up, down, left, right
+        (-5, -5), (5, 5), (-5, 5), (5, -5),  # Diagonals
+        (0, -20), (0, 20), (-20, 0), (20, 0),  # Further offsets
+    ]
+    
+    for offset_x, offset_y in offsets:
+        new_x = attempted_x + offset_x
+        new_y = attempted_y + offset_y
+        if new_x > 0 and new_y > 120:  # Valid coordinates
+            _debug_log(f"Trying offset coordinates: ({new_x}, {new_y})")
+            return (new_x, new_y)
+    
+    # Strategy 3: Check if we need to scroll first
+    _debug_log("Strategy 3: Button might be off-screen, may need to scroll")
+    # This will be handled by the caller
+    
+    return None
 
 
 def _auto_click_near_label(
@@ -884,13 +1565,197 @@ def _ensure_logged_in(creds: Optional[Dict[str, str]], *, twofa_wait: int) -> bo
     _auto_click_near_label(["password"])
     _type_text(creds.get("password", ""))
     _press_key("enter")
-
-    _wait_for_continue(
-        "Complete any remaining login steps (including 2FA). Type 'continue' when done.",
-        seconds=twofa_wait,
-    )
+    
+    # Wait a moment for 2FA screen to appear
+    time.sleep(2)
+    
+    # Attempt automatic 2FA handling
+    if _handle_2fa_automatically(creds):
+        # 2FA handled automatically, continue
+        pass
+    else:
+        # Fall back to manual wait
+        _wait_for_continue(
+            "Complete any remaining login steps (including 2FA). Type 'continue' when done.",
+            seconds=twofa_wait,
+        )
 
     return _wait_for_any(logged_in_tokens, timeout_seconds=90, interval=2.0)
+
+
+def _handle_2fa_automatically(creds: Optional[Dict[str, str]]) -> bool:
+    """
+    Automatically handle 2FA by:
+    1. Detecting 2FA screen
+    2. Clicking "Send code to email" option
+    3. Opening Gmail in new tab
+    4. Extracting verification code from email
+    5. Entering code back into 2FA form
+    """
+    twofa_tokens = [
+        "verify",
+        "verification",
+        "2-step",
+        "2 step",
+        "two-step",
+        "two step",
+        "enter the code",
+        "enter code",
+        "verification code",
+        "google verification",
+    ]
+    
+    # Check if we're on a 2FA screen
+    if not _screen_has_any(twofa_tokens):
+        _debug_log("Not on 2FA screen, skipping automatic 2FA handling")
+        return False
+    
+    _debug_log("2FA screen detected, attempting automatic handling...")
+    
+    # Step 1: Click "Send code to email" or similar option
+    email_option_tokens = [
+        "send code to",
+        "send to email",
+        "get code via email",
+        "email",
+        "send it",
+    ]
+    
+    # Try to find and click email option
+    clicked_email_option = False
+    if _screen_has_any(["email"]) or _screen_has_any(["send"]):
+        # Look for radio button or button with email option
+        clicked_email_option = _auto_click_text(email_option_tokens, attempts=3, delay=0.5)
+        if not clicked_email_option:
+            # Try clicking near "email" text
+            clicked_email_option = _auto_click_near_label(email_option_tokens)
+    
+    if clicked_email_option:
+        _debug_log("Clicked email option for 2FA code")
+        time.sleep(1)
+        # Press Enter or click "Next" to send code
+        _press_key("enter")
+        time.sleep(2)
+    else:
+        _debug_log("Could not click email option, trying Enter as fallback")
+        _press_key("enter")
+        time.sleep(2)
+    
+    # Step 2: Open Gmail in new tab
+    _debug_log("Opening Gmail in new tab to retrieve code...")
+    _hotkey("ctrl", "t")  # Open new tab
+    time.sleep(0.5)
+    _hotkey("ctrl", "l")  # Focus address bar
+    time.sleep(0.3)
+    _type_text("https://mail.google.com")
+    _press_key("enter")
+    time.sleep(3)  # Wait for Gmail to load
+    
+    # Step 3: Extract verification code from Gmail
+    code = _extract_2fa_code_from_gmail()
+    
+    if not code:
+        _debug_log("Could not extract 2FA code from Gmail, falling back to manual")
+        # Close Gmail tab and return False
+        _hotkey("ctrl", "w")
+        return False
+    
+    _debug_log(f"Extracted 2FA code: {code}")
+    
+    # Step 4: Switch back to original tab (Ctrl+PageUp or Alt+Tab)
+    _hotkey("ctrl", "pageup")  # Switch to previous tab
+    time.sleep(1)
+    # Alternative: use Alt+Tab to switch windows
+    pyautogui, _ = _import_pyautogui()
+    if pyautogui:
+        pyautogui.hotkey("alt", "tab")
+        time.sleep(0.5)
+    
+    # Step 5: Enter the code
+    _debug_log("Entering 2FA code...")
+    time.sleep(1)
+    
+    # Find code input field
+    code_input_tokens = ["code", "enter code", "verification code", "enter the code"]
+    _auto_click_near_label(code_input_tokens)
+    time.sleep(0.5)
+    
+    # Type the code
+    _type_text(code)
+    time.sleep(0.5)
+    _press_key("enter")
+    
+    # Wait a moment for verification
+    time.sleep(3)
+    
+    _debug_log("2FA code entered, waiting for verification...")
+    return True
+
+
+def _extract_2fa_code_from_gmail() -> Optional[str]:
+    """
+    Extract 2FA verification code from Gmail.
+    Looks for the most recent email from Google/noreply with a verification code.
+    """
+    import re
+    
+    # Wait for Gmail to load
+    time.sleep(2)
+    
+    # Use OCR to find verification code
+    ocr_text = _screen_text()
+    if not ocr_text:
+        return None
+    
+    _debug_log(f"Gmail OCR text (first 500 chars): {ocr_text[:500]}")
+    
+    # Look for common verification code patterns
+    # Google codes are usually 6 digits
+    code_patterns = [
+        r'\b(\d{6})\b',  # 6-digit code
+        r'code[:\s]+(\d{6})',  # "code: 123456"
+        r'verification[:\s]+(\d{6})',  # "verification: 123456"
+        r'(\d{6})\s+is your',  # "123456 is your"
+        r'Your code is[:\s]+(\d{6})',  # "Your code is: 123456"
+        r'G-(\d{6})',  # Google format: G-123456
+    ]
+    
+    for pattern in code_patterns:
+        matches = re.findall(pattern, ocr_text, re.IGNORECASE)
+        if matches:
+            # Take the first match (most recent)
+            code = matches[0] if isinstance(matches[0], str) else matches[0][0] if matches[0] else None
+            if code:
+                # Clean up code (remove G- prefix if present)
+                code = re.sub(r'G-', '', str(code)).strip()
+                if len(code) >= 4:  # Valid codes are usually 4-8 digits
+                    return code
+    
+    # If OCR didn't work, try scrolling to top and looking at email preview
+    # Click on first email if visible
+    pyautogui, _ = _import_pyautogui()
+    if pyautogui:
+        try:
+            # Try clicking first email in inbox
+            w, h = pyautogui.size()
+            pyautogui.click(int(w * 0.3), int(h * 0.4))  # Approximate location of first email
+            time.sleep(2)
+            
+            # Try OCR again
+            ocr_text = _screen_text()
+            if ocr_text:
+                for pattern in code_patterns:
+                    matches = re.findall(pattern, ocr_text, re.IGNORECASE)
+                    if matches:
+                        code = matches[0] if isinstance(matches[0], str) else matches[0][0] if matches[0] else None
+                        if code:
+                            code = re.sub(r'G-', '', str(code)).strip()
+                            if len(code) >= 4:
+                                return code
+        except Exception as exc:
+            _debug_log(f"Failed to click email: {exc}")
+    
+    return None
 
 
 def _sleep_with_countdown(seconds: int, label: str) -> None:
@@ -998,6 +1863,24 @@ def _wait_for_continue(message: str, *, seconds: int) -> str:
         print("Type 'continue' to proceed.")
 
 
+def _prompt_user_guidance(message: str) -> str:
+    """Ask for a direct instruction to recover UI automation."""
+    print(f"\n[USER GUIDANCE] {message}")
+    answer = input("> ").strip()
+    lower = answer.lower()
+    if lower in {"continue", "c", "go", "ok"}:
+        return ""
+    if lower.startswith(("open ", "goto ", "url ")):
+        parts = answer.split(None, 1)
+        if len(parts) == 2:
+            _navigate_chrome(parts[1].strip())
+            return ""
+    if "enable" in lower:
+        _auto_click_main(["enable", "enable api", "enable to"])
+        return ""
+    return answer
+
+
 def _get_saved_google_creds() -> Optional[Dict[str, str]]:
     """Retrieve saved Google credentials (if available)."""
     try:
@@ -1009,6 +1892,20 @@ def _get_saved_google_creds() -> Optional[Dict[str, str]]:
         if creds and (creds.get("username") or creds.get("password")):
             return creds
     return None
+
+
+def _normalize_text(value: str) -> str:
+    import re
+    return re.sub(r"[^a-z0-9]+", "", (value or "").lower())
+
+
+def _project_is_active(project_name: str) -> bool:
+    if not project_name:
+        return False
+    screen = _screen_text()
+    if not screen:
+        return False
+    return _normalize_text(project_name) in _normalize_text(screen)
 
 
 def _find_downloaded_credentials() -> Optional[Path]:
@@ -1109,6 +2006,10 @@ class FullGoogleSetupArgs(BaseModel):
     skip_if_configured: bool = Field(
         default=True,
         description="Skip setup if already configured"
+    )
+    apis_needed: List[str] = Field(
+        default=["calendar", "tasks"],
+        description="List of APIs to enable: 'calendar', 'tasks', or both. Determined from user request."
     )
 
 
@@ -1218,214 +2119,811 @@ def full_google_setup(ctx, args: FullGoogleSetupArgs):
         )
     _take_screenshot("step2_logged_in")
 
-    # Step 3: Navigate to project creation
-    print("\n[STEP 2] Navigating to project creation...")
-    _navigate_chrome("https://console.cloud.google.com/projectcreate")
-    time.sleep(2)
-    if not _screen_has_any(["google", "cloud", "project"]):
-        fail_shot = _take_screenshot("step3_project_create_not_visible")
-        return ToolResult(
-            success=False,
-            error=(
-                "Chrome/Cloud Console not visible in foreground. "
-                "Please ensure Chrome is visible and retry."
-                + (f" Screenshot: {fail_shot}" if fail_shot else "")
-            ),
-            retryable=True,
-        )
-    _take_screenshot("step3_project_create")
+    # Reasoned UI loop (observe → reason → act → verify) for setup steps
+    if os.getenv("TREYS_AGENT_GOOGLE_REASONED", "1").strip().lower() in {"1", "true", "yes", "y", "on"}:
+        try:
+            from agent.autonomous.vision_executor import get_vision_executor
+        except Exception as exc:
+            return ToolResult(success=False, error=f"Vision executor unavailable: {exc}", retryable=True)
 
-    # Step 4: Create project (auto-first; manual only if allowed)
-    created = False
-    if _autoclick_enabled():
-        created = _attempt_project_creation(args.project_name)
-        if not created:
-            time.sleep(1)
-            created = _attempt_project_creation(args.project_name)
-    if not created:
-        fail_shot = _take_screenshot("step4_project_create_failed")
-        manual_ok = _prompt_manual_or_fail(
-            f"Create a new project:\n"
-            f"1. Enter project name: {args.project_name}\n"
-            f"2. Click 'Create'\n"
-            f"3. Wait for project to be created\n\n"
-            f"Complete these steps in the browser.",
-            seconds=step_wait,
+        executor = get_vision_executor()
+        max_steps = int(os.getenv("TREYS_AGENT_GOOGLE_REASONING_STEPS", "80"))
+        executor.max_steps = max_steps
+
+        project_detected = _project_is_active(args.project_name)
+        project_note = (
+            f"Project '{args.project_name}' appears to be selected already; do NOT create a new project."
+            if project_detected
+            else (
+                f"Project '{args.project_name}' already exists. Open the project selector and switch to it. "
+                "Only create a new project if it truly does not exist."
+            )
         )
-        if not manual_ok:
+        # Build API list for objective
+        api_names = []
+        if "calendar" in [a.lower() for a in args.apis_needed]:
+            api_names.append("Google Calendar API")
+        if "tasks" in [a.lower() for a in args.apis_needed]:
+            api_names.append("Google Tasks API")
+
+        api_text = " and ".join(api_names)
+
+        objective = (
+            f"Set up Google Cloud for {api_text} using the project name "
+            f"'{args.project_name}'. {project_note} "
+            f"Enable {api_text}. "
+            "Configure OAuth consent screen as External with app name 'Treys Agent' and developer/support email set. "
+            "Create OAuth Client ID for Desktop app named 'Treys Agent Desktop'. "
+            "Download the JSON credentials file. If Chrome opens bookmarks or a wrong page, "
+            "use the address bar to navigate back to the correct Google Cloud Console URL."
+        )
+
+        # Build context URLs
+        context_urls = []
+        if "calendar" in [a.lower() for a in args.apis_needed]:
+            context_urls.append(f"- Calendar API: https://console.cloud.google.com/apis/library/calendar-json.googleapis.com?project={args.project_name}\n")
+        if "tasks" in [a.lower() for a in args.apis_needed]:
+            context_urls.append(f"- Tasks API: https://console.cloud.google.com/apis/library/tasks.googleapis.com?project={args.project_name}\n")
+
+        context = (
+            "Use the Chrome address bar (Ctrl+L) to navigate. "
+            "URLs:\n"
+            f"- Project create: https://console.cloud.google.com/projectcreate\n"
+            f"- Project home: https://console.cloud.google.com/home/dashboard?project={args.project_name}\n"
+            + "".join(context_urls) +
+            f"- Consent screen: https://console.cloud.google.com/apis/credentials/consent?project={args.project_name}\n"
+            f"- Credentials: https://console.cloud.google.com/apis/credentials?project={args.project_name}\n"
+            "If you see chrome://bookmarks, navigate to the credentials URL above. "
+            "Avoid clicking the bookmarks bar. "
+            "If login/2FA is required, ask the user to complete it."
+        )
+
+        # Build list of API keywords to detect based on apis_needed
+        api_keywords = []
+        if "calendar" in [a.lower() for a in args.apis_needed]:
+            api_keywords.append("calendar api")
+        if "tasks" in [a.lower() for a in args.apis_needed]:
+            api_keywords.append("tasks api")
+        
+        steps_taken = 0
+        wait_count = 0
+        low_conf_count = 0
+        stall_count = 0
+        last_observation = ""
+        low_conf_threshold = float(os.getenv("TREYS_AGENT_UI_CONFIDENCE_MIN", "0.35"))
+        low_conf_steps = int(os.getenv("TREYS_AGENT_UI_LOW_CONFIDENCE_STEPS", "2"))
+        stall_steps = int(os.getenv("TREYS_AGENT_UI_STALL_STEPS", "3"))
+        enable_attempts = 0
+        enable_skip_until_nav = False  # Skip Enable detection after too many failures
+        consecutive_enable_failures = 0
+        max_enable_failures = int(os.getenv("TREYS_AGENT_GOOGLE_MAX_ENABLE_FAILURES", "8"))  # Hard limit
+        
+        # WRAP ENTIRE LOOP IN TRY/EXCEPT to catch all exceptions
+        try:
+            while steps_taken < max_steps:
+                steps_taken += 1
+                
+                # HARD EXIT: Stop if too many consecutive Enable failures
+                if consecutive_enable_failures >= max_enable_failures:
+                    error_msg = (
+                        f"Failed to click Enable button after {consecutive_enable_failures} consecutive attempts. "
+                        "The UI automation may be misreading the button state. "
+                        "Please manually enable the APIs and re-run setup, or check the debug screenshots."
+                    )
+                    _debug_log(error_msg)
+                    fail_shot = _take_screenshot("enable_button_hard_fail")
+                    return ToolResult(
+                        success=False,
+                        error=error_msg + (f" Screenshot: {fail_shot}" if fail_shot else ""),
+                        retryable=True,
+                    )
+                
+                # Ensure Chrome is in focus before taking screenshot (critical for multi-monitor)
+                _focus_chrome(["chrome", "google", "cloud", "console"])
+                time.sleep(0.3)  # Brief pause to ensure window is actually focused
+                state = executor.take_screenshot(f"gcloud_reason_{steps_taken}")
+                analysis = executor.analyze_screen(objective, context)
+                action_type = analysis.get("action")
+                observation = (analysis.get("observation") or "").strip().lower()
+                confidence = float(analysis.get("confidence", 1.0) or 0.0)
+
+                if observation and observation == last_observation:
+                    stall_count += 1
+                else:
+                    stall_count = 0
+                    last_observation = observation
+
+                if confidence < low_conf_threshold:
+                    low_conf_count += 1
+                else:
+                    low_conf_count = 0
+
+                if _debug_enabled():
+                    _debug_log(f"Reasoned step {steps_taken}: {analysis}")
+
+                # Deterministic fallback: click "Enable" when on API page
+                # CRITICAL: Check if API is already enabled FIRST before trying to enable
+                if not enable_skip_until_nav and _screen_has_any(api_keywords):
+                    # Check if API is already enabled (MUST check this first!)
+                    if _screen_has_any(["manage", "disable", "api enabled"]):
+                        # API is already enabled - reset counters and skip all enable logic
+                        _debug_log("API already enabled (Manage/Disable/API Enabled detected) - skipping enable logic")
+                        enable_attempts = 0
+                        consecutive_enable_failures = 0
+                        enable_skip_until_nav = False  # Reset skip flag so we can navigate
+                        # Let vision executor handle navigation to next API or credentials page
+                        # Don't block here - continue to vision executor
+                    # Only try to enable if API is NOT already enabled AND we see "enable" button text
+                    elif _screen_has_any(["enable"]) and not _screen_has_any(["manage", "disable", "api enabled"]):
+                        enable_attempts += 1
+                        consecutive_enable_failures += 1
+                        
+                        # HARD EXIT CHECK: If we've hit max failures, exit immediately
+                        if consecutive_enable_failures >= max_enable_failures:
+                            error_msg = (
+                                f"Failed to click Enable button after {consecutive_enable_failures} consecutive attempts. "
+                                "Please manually enable the APIs and re-run setup."
+                            )
+                            _debug_log(error_msg)
+                            fail_shot = _take_screenshot("enable_button_hard_fail")
+                            return ToolResult(
+                                success=False,
+                                error=error_msg + (f" Screenshot: {fail_shot}" if fail_shot else ""),
+                                retryable=True,
+                            )
+                        
+                        _debug_log(f"Enable button detected on API page (attempt {enable_attempts})")
+                        # IMPROVEMENT: Use OCR first to find exact Enable button coordinates
+                        # Search for standalone "Enable" button, not "enable" within other text
+                        _debug_log("Step 1 (deterministic): Using OCR to find exact 'Enable' button coordinates...")
+                        executor.take_screenshot("enable_button_ocr_search")
+                        # Search for button text that's more specific - look for standalone "Enable" button
+                        ocr_coords = _find_button_coordinates_ocr(["enable button", "enable api", "^enable$"])
+                        
+                        clicked = False
+                        click_result = None
+                        ocr_x, ocr_y = None, None
+                        x, y = None, None
+                        
+                        # Try OCR coordinates first (more accurate)
+                        if ocr_coords:
+                            ocr_x, ocr_y = ocr_coords
+                            _debug_log(f"OCR found Enable button at: ({ocr_x}, {ocr_y})")
+                            _focus_chrome(["chrome", "google", "cloud"])
+                            time.sleep(0.3)
+                            click_result = _click_at(ocr_x, ocr_y)
+                            clicked = click_result.get("success", False)
+                            _debug_log(f"OCR-based click result: method={click_result.get('method_used')}, "
+                                     f"success={clicked}, distance={click_result.get('distance_from_target', 0):.1f}px")
+                            _save_debug_screenshot_with_coords("enable_button_click_ocr", ocr_x, ocr_y, click_result)
+                        
+                        # Fallback: Try using coordinates from vision analysis if OCR didn't work
+                        if not clicked:
+                            target = analysis.get("target", {})
+                            if isinstance(target, dict) and target.get("x") and target.get("y"):
+                                try:
+                                    x, y = int(float(target.get("x", 0))), int(float(target.get("y", 0)))
+                                    if x > 0 and y > 0:
+                                        _debug_log(f"OCR failed, trying vision-provided coordinates: ({x}, {y})")
+                                        _focus_chrome(["chrome", "google", "cloud"])
+                                        time.sleep(0.3)
+                                        click_result = _click_at(x, y)
+                                        clicked = click_result.get("success", False)
+                                        _debug_log(f"Vision-based click result: method={click_result.get('method_used')}, "
+                                                 f"success={clicked}, distance={click_result.get('distance_from_target', 0):.1f}px, "
+                                                 f"converted={click_result.get('conversion_applied')}")
+                                        _save_debug_screenshot_with_coords("enable_button_click_vision", x, y, click_result)
+                                except Exception as exc:
+                                    _debug_log(f"Coordinate click exception: {exc}")
+                        
+                        if clicked:
+                            _debug_log(f"Clicked Enable button successfully")
+                            # Verify immediately instead of just waiting
+                            # Wait a bit longer for state change
+                            time.sleep(2)
+                            verify_success, verify_msg = _verify_click_success(
+                                executor,
+                                "Enable button should change to Manage/Disable"
+                            )
+                            _debug_log(f"Enable button verification (deterministic): {verify_msg}")
+                            if verify_success:
+                                enable_attempts = 0
+                                consecutive_enable_failures = 0
+                                enable_skip_until_nav = False
+                                wait_count = 0
+                                continue
+                            else:
+                                _debug_log(f"Verification failed - consecutive failures: {consecutive_enable_failures}")
+                                # TROUBLESHOOTING: Try troubleshooting if verification failed
+                                if click_result:
+                                    troubleshoot_coords = _troubleshoot_failed_click(executor, "enable", 
+                                        (ocr_x if ocr_coords else (x if x else 0), 
+                                         ocr_y if ocr_coords else (y if y else 0)), 
+                                        click_result)
+                                    if troubleshoot_coords:
+                                        _debug_log(f"Troubleshooting found alternative coordinates, retrying...")
+                                        click_result = _click_at(*troubleshoot_coords)
+                                        verify_success, verify_msg = _verify_click_success(executor, "Enable button should change")
+                                        if verify_success:
+                                            enable_attempts = 0
+                                            consecutive_enable_failures = 0
+                                            enable_skip_until_nav = False
+                                            wait_count = 0
+                                            continue
+                        time.sleep(1)  # Brief wait if verification unclear
+                        
+                        # Fallback to OCR-based click if coordinate click didn't work or wasn't available
+                        if not clicked:
+                            _debug_log("Trying OCR-based Enable button click")
+                            clicked = _auto_click_main(["enable", "enable api", "enable to"], attempts=3, delay=0.8)
+                            if clicked:
+                                _debug_log("OCR-based Enable click succeeded")
+                        if clicked:
+                            wait_count = 0
+                            # Verify click success immediately
+                            time.sleep(2)  # Wait for state change
+                            verify_success, verify_msg = _verify_click_success(
+                                executor,
+                                "Enable button should change to Manage/Disable"
+                            )
+                            _debug_log(f"Enable button verification: {verify_msg}")
+                            
+                            if verify_success or _wait_for_any(["manage", "disable", "api enabled"], timeout_seconds=6):
+                                enable_attempts = 0
+                                consecutive_enable_failures = 0
+                                enable_skip_until_nav = False
+                                _debug_log("Enable button click successful - API enabled")
+                                continue
+                            else:
+                                _debug_log(f"Click executed but state hasn't changed yet - consecutive failures: {consecutive_enable_failures}")
+                        
+                        # If still not enabled after attempts, try pressing Enter in case button is focused
+                        if enable_attempts >= 2 and not clicked:
+                            _debug_log("Trying Enter key as fallback")
+                            _focus_chrome(["chrome", "google", "cloud"])
+                            _press_key("enter")
+                            time.sleep(2)
+                            if _wait_for_any(["manage", "disable", "api enabled"], timeout_seconds=6):
+                                enable_attempts = 0
+                                consecutive_enable_failures = 0  # Reset on success
+                                _debug_log("Enter key press successful - API enabled")
+                                continue
+                        
+                        if enable_attempts >= 3 or consecutive_enable_failures >= 5:
+                            _debug_log(f"Enable button click failed after {enable_attempts} attempts, {consecutive_enable_failures} consecutive failures")
+                            
+                            # Skip Enable button detection until we navigate away (to prevent infinite loop)
+                            enable_skip_until_nav = True
+                            _debug_log("Skipping Enable button detection until navigation occurs (to prevent infinite loop)")
+                            
+                            guidance = _prompt_user_guidance(
+                                f"I've tried clicking the Enable button {enable_attempts} times but it's not working. "
+                                f"Please click Enable manually and type 'continue', or tell me what to do next. "
+                                f"You can also say 'navigate to <url>' to move to a different page."
+                            )
+                            if guidance:
+                                context = f"{context}\nUser said: {guidance}"
+                                # If user says navigate or provides a URL, reset skip flag
+                                if "navigate" in guidance.lower() or "goto" in guidance.lower() or "http" in guidance.lower():
+                                    enable_skip_until_nav = False
+                                    consecutive_enable_failures = 0  # Reset when user guides navigation
+                            enable_attempts = 0  # Reset counter but keep skip flag
+                            continue
+
+                # Prevent unnecessary ask_user prompts for simple Enable button clicks
+                if action_type == "ask_user":
+                    # If we can handle it deterministically, don't ask user
+                    # Check if observation mentions any of the APIs we're setting up
+                    observation_has_api = any(api_kw in observation for api_kw in api_keywords)
+                    if "enable" in observation or observation_has_api:
+                        if _screen_has_any(["enable"]) and not _screen_has_any(["manage", "disable", "api enabled"]):
+                            # Try to enable automatically
+                            if _auto_click_main(["enable", "enable api"], attempts=2):
+                                time.sleep(2)
+                                if _wait_for_any(["manage", "disable", "api enabled"], timeout_seconds=6):
+                                    consecutive_enable_failures = 0  # Reset on success
+                                    continue
+                    # For navigation, don't ask - just do it
+                    # Check if observation mentions any of the APIs we're setting up
+                    observation_has_api = any(api_kw in observation for api_kw in api_keywords)
+                    if "navigate" in observation.lower() or "goto" in observation.lower() or observation_has_api:
+                        if observation_has_api:
+                            # Navigate to the appropriate API page based on which API is mentioned
+                            if "tasks api" in observation and "tasks" in [a.lower() for a in args.apis_needed]:
+                                _navigate_chrome(f"https://console.cloud.google.com/apis/library/tasks.googleapis.com?project={args.project_name}")
+                            elif "calendar api" in observation and "calendar" in [a.lower() for a in args.apis_needed]:
+                                _navigate_chrome(f"https://console.cloud.google.com/apis/library/calendar-json.googleapis.com?project={args.project_name}")
+                            consecutive_enable_failures = 0  # Reset on navigation
+                            continue
+                        if "calendar api" in observation:
+                            _navigate_chrome(f"https://console.cloud.google.com/apis/library/calendar-json.googleapis.com?project={args.project_name}")
+                            consecutive_enable_failures = 0  # Reset on navigation
+                            continue
+
+                # Bookmarks recovery
+                if _screen_has_any(["bookmarks"]) and not _screen_has_any(["google cloud"]):
+                    _navigate_chrome(f"https://console.cloud.google.com/apis/credentials?project={args.project_name}")
+                    wait_count = 0
+                    consecutive_enable_failures = 0  # Reset on navigation
+                    continue
+
+                if action_type == "done":
+                    break
+                if action_type == "ask_user":
+                    answer = _prompt_user_guidance(
+                        analysis.get("value", "Need help. You can say: click enable / open <url> / continue."),
+                    )
+                    if answer:
+                        context = f"{context}\nUser said: {answer}"
+                    continue
+                if action_type == "goto":
+                    url = analysis.get("value") or ""
+                    if url:
+                        # Navigation occurred - reset Enable skip flag
+                        if enable_skip_until_nav:
+                            _debug_log("Navigation detected - resetting Enable button skip flag")
+                            enable_skip_until_nav = False
+                            consecutive_enable_failures = 0  # Reset on navigation
+                        _navigate_chrome(url)
+                    else:
+                        context = f"{context}\nPrevious action failed: missing URL for goto."
+                    continue
+                if action_type == "error":
+                    return ToolResult(
+                        success=False,
+                        error=analysis.get("value", "Reasoned UI loop reported error"),
+                        retryable=True,
+                    )
+                
+                # Handle click actions directly when we have coordinates (more reliable than vision executor)
+                if action_type == "click":
+                    target = analysis.get("target", {})
+                    observation_lower = observation.lower()
+                    _debug_log(f"Click action detected, target: {target}, action_type: {action_type}, observation: {observation[:100]}")
+                    
+                    # Extract button text from observation for troubleshooting
+                    button_text = None
+                    if "enable" in observation_lower:
+                        button_text = "enable"
+                    elif "manage" in observation_lower:
+                        button_text = "manage"
+                    
+                    if isinstance(target, dict) and target.get("x") and target.get("y"):
+                        try:
+                            x, y = int(float(target.get("x", 0))), int(float(target.get("y", 0)))
+                            _debug_log(f"Attempting direct click at vision-provided coordinates: ({x}, {y})")
+                            if x > 0 and y > 0:
+                                _focus_chrome(["chrome", "google", "cloud"])
+                                time.sleep(0.4)
+                                
+                                # IMPROVEMENT: Use OCR to verify/find exact coordinates before clicking
+                                if button_text:
+                                    _debug_log(f"Step 1: Using OCR to find exact '{button_text}' button coordinates...")
+                                    executor.take_screenshot("pre_click_ocr_search")
+                                    ocr_coords = _find_button_coordinates_ocr([button_text, f"{button_text} api"])
+                                    if ocr_coords:
+                                        ocr_x, ocr_y = ocr_coords
+                                        vision_distance = ((ocr_x - x) ** 2 + (ocr_y - y) ** 2) ** 0.5
+                                        _debug_log(f"OCR found button at ({ocr_x}, {ocr_y}), vision said ({x}, {y}), distance: {vision_distance:.1f}px")
+                                        
+                                        # If OCR coordinates are significantly different, use OCR coordinates
+                                        if vision_distance > 30:  # More than 30px difference
+                                            _debug_log(f"OCR coordinates differ by {vision_distance:.1f}px - using OCR coordinates instead")
+                                            x, y = ocr_x, ocr_y
+                                        elif vision_distance > 10:
+                                            _debug_log(f"Coordinates differ by {vision_distance:.1f}px - trying OCR coordinates first")
+                                            # Try OCR first, then fall back to vision
+                                            original_x, original_y = x, y
+                                            x, y = ocr_x, ocr_y
+                                
+                                # Click and get detailed result
+                                click_result = _click_at(x, y)
+                                _debug_log(f"Click result: method={click_result.get('method_used')}, "
+                                         f"success={click_result.get('success')}, "
+                                         f"distance={click_result.get('distance_from_target', 0):.1f}px, "
+                                         f"mouse_pos={click_result.get('mouse_position_after')}, "
+                                         f"converted={click_result.get('conversion_applied')}")
+                                
+                                # Save debug screenshot with coordinate overlay
+                                _save_debug_screenshot_with_coords("click_attempt", x, y, click_result)
+                                
+                                # If mouse didn't reach target, try alternative approach
+                                if click_result.get("success") and click_result.get("distance_from_target", float('inf')) > 10:
+                                    _debug_log(f"WARNING: Click reported success but mouse is {click_result.get('distance_from_target', 0):.1f}px away from target")
+                                    _debug_log("Attempting alternative click method...")
+                                    # Try pressing Enter as fallback if button might be focused
+                                    _press_key("enter")
+                                    time.sleep(1)
+                                
+                                if click_result.get("success"):
+                                    _debug_log(f"Direct click executed at coordinates: ({x}, {y}) using {click_result.get('method_used')}")
+                                    
+                                    # Immediate post-click verification
+                                    verify_success, verify_msg = _verify_click_success(
+                                        executor, 
+                                        "Enable button should change to Manage/Disable"
+                                    )
+                                    _debug_log(f"Post-click verification: {verify_msg}")
+                                    
+                                    # TROUBLESHOOTING: If click succeeded but verification failed, try troubleshooting
+                                    if not verify_success and button_text:
+                                        _debug_log("Click succeeded but verification failed - troubleshooting...")
+                                        troubleshoot_coords = _troubleshoot_failed_click(executor, button_text, (x, y), click_result)
+                                        if troubleshoot_coords:
+                                            new_x, new_y = troubleshoot_coords
+                                            _debug_log(f"Troubleshooting found new coordinates: ({new_x}, {new_y}), retrying click...")
+                                            click_result = _click_at(new_x, new_y)
+                                            verify_success, verify_msg = _verify_click_success(executor, "Enable button should change to Manage/Disable")
+                                            _debug_log(f"Troubleshoot retry verification: {verify_msg}")
+                                    
+                                    if verify_success:
+                                        # Take one more screenshot and re-analyze to confirm
+                                        executor.take_screenshot("post_click_confirmed")
+                                        
+                                        # Double-check with vision executor
+                                        re_analysis = executor.analyze_screen(
+                                            "Is the Enable button still visible, or has it changed to Manage/Disable?",
+                                            "We just clicked the Enable button. Verify the state changed."
+                                        )
+                                        re_observation = (re_analysis.get("observation") or "").strip().lower()
+                                        
+                                        if "manage" in re_observation or "disable" in re_observation or "enabled" in re_observation:
+                                            _debug_log("Verification confirmed: Button state changed successfully")
+                                            wait_count = 0
+                                            enable_attempts = 0
+                                            consecutive_enable_failures = 0  # Reset on success
+                                            enable_skip_until_nav = False
+                                            continue
+                                        elif "enable" in re_observation and "button" in re_observation:
+                                            _debug_log("Verification failed: Enable button still visible after click")
+                                            # Don't increment here - already incremented at start of Enable detection
+                                            # If too many failures, skip Enable detection
+                                            if consecutive_enable_failures >= 5:
+                                                enable_skip_until_nav = True
+                                                _debug_log(f"Too many consecutive failures ({consecutive_enable_failures}), skipping Enable detection")
+                                            # Click may have failed - continue to retry logic
+                                        else:
+                                            _debug_log("Verification unclear: Page state unknown, assuming success")
+                                            wait_count = 0
+                                            consecutive_enable_failures = 0  # Reset on success
+                                            enable_skip_until_nav = False
+                                            continue
+                                    else:
+                                        _debug_log("Post-click verification failed - click may not have worked")
+                                        # Don't increment here - already incremented at start of Enable detection
+                                        if consecutive_enable_failures >= 5:
+                                            enable_skip_until_nav = True
+                                        # Continue to retry or ask user
+                                    
+                                    # Additional state check
+                                    if _screen_has_any(api_keywords):
+                                        if _wait_for_any(["manage", "disable", "enabled"], timeout_seconds=3):
+                                            _debug_log("Click successful - API enabled/state changed (confirmed by OCR)")
+                                            wait_count = 0
+                                            enable_attempts = 0
+                                            consecutive_enable_failures = 0  # Reset on success
+                                            continue
+                                        else:
+                                            _debug_log("Still showing Enable button - click may have failed")
+                                    else:
+                                        # Not on API page anymore, assume click worked and navigated away
+                                        _debug_log("No longer on API page, assuming click succeeded")
+                                        wait_count = 0
+                                        consecutive_enable_failures = 0  # Reset on navigation
+                                        continue
+                                else:
+                                    _debug_log(f"Click failed: method={click_result.get('method_used')}, "
+                                             f"distance={click_result.get('distance_from_target', 0):.1f}px")
+                                    _debug_log("Coordinate click failed - falling through to vision executor")
+                        except Exception as exc:
+                            _debug_log(f"Coordinate click exception: {exc}")
+                            import traceback
+                            _debug_log(traceback.format_exc())
+
+                success, message = executor.execute_action(analysis)
+                if not success:
+                    context = f"{context}\nPrevious action failed: {message}"
+                    continue
+
+                if action_type == "wait":
+                    wait_count += 1
+                else:
+                    wait_count = 0
+
+                if (wait_count >= 3) or (low_conf_count >= low_conf_steps) or (stall_count >= stall_steps):
+                    guidance = _prompt_user_guidance(
+                        "I may be stuck. If you see the Enable button, click it and type 'continue'. "
+                        "Or tell me: open <url> / click enable."
+                    )
+                    if guidance:
+                        context = f"{context}\nUser said: {guidance}"
+                    wait_count = 0
+                    low_conf_count = 0
+                    stall_count = 0
+                    continue
+            
+            # Loop exited without completing (max_steps reached)
+            _debug_log(f"Reasoned UI loop completed {steps_taken} steps but setup may be incomplete")
+            fail_shot = _take_screenshot("reasoned_loop_max_steps_reached")
             return ToolResult(
                 success=False,
                 error=(
-                    "Auto-creation failed: could not locate the Project Name field or Create button."
+                    f"Setup automation reached maximum steps ({max_steps}) without completing. "
+                    f"Enable failures: {consecutive_enable_failures}. "
+                    "Please check the current state and manually complete setup if needed."
                     + (f" Screenshot: {fail_shot}" if fail_shot else "")
                 ),
                 retryable=True,
             )
-    _take_screenshot("step4_project_created")
+            
+        except Exception as exc:
+            # CATCH ALL EXCEPTIONS IN THE LOOP
+            import traceback
+            error_trace = traceback.format_exc()
+            _debug_log(f"Exception in reasoned UI loop: {exc}")
+            _debug_log(error_trace)
+            fail_shot = _take_screenshot("reasoned_loop_exception")
+            return ToolResult(
+                success=False,
+                error=(
+                    f"Exception during Google Cloud setup automation: {exc}\n"
+                    f"Steps taken: {steps_taken}, Enable failures: {consecutive_enable_failures}\n"
+                    f"Check debug logs for details."
+                    + (f" Screenshot: {fail_shot}" if fail_shot else "")
+                ),
+                retryable=True,
+            )
 
-    # Step 5: Enable Calendar API
-    print("\n[STEP 3] Enabling Calendar API...")
-    _navigate_chrome(f"https://console.cloud.google.com/apis/library/calendar-json.googleapis.com?project={args.project_name}")
-    time.sleep(2)
-    _focus_chrome(["calendar", "google", "cloud"])
-
-    if _autoclick_enabled():
-        # Wait for page to load key tokens
-        _wait_for_any(["enable", "manage", "disable", "api", "calendar"], timeout_seconds=12, interval=1.0)
-        enabled_tokens = ["api enabled", "manage", "disable", "enabled"]
-        enabled = _screen_has_any(enabled_tokens)
-        if not enabled:
-            enabled = _auto_click_text(["enable", "enable api", "enable to", "activate"], attempts=4, delay=0.9)
-        if not enabled:
-            _press_key("pagedown")
-            time.sleep(1)
-            enabled = _auto_click_text(["enable", "enable api", "enable to", "activate"], attempts=2, delay=0.9)
-        if not enabled:
-            fail_shot = _take_screenshot("step5_calendar_enable_failed")
+    else:
+        # Fallback to scripted flow (legacy)
+        if _project_is_active(args.project_name):
+            print("\n[STEP 2] Project already selected; continuing...")
+            _take_screenshot("step2_project_selected")
+        else:
+            print("\n[STEP 2] Opening project dashboard to select existing project...")
+            _navigate_chrome(
+                f"https://console.cloud.google.com/home/dashboard?project={args.project_name}",
+                expect_tokens=["google", "cloud"],
+            )
+            time.sleep(2)
+            if _project_is_active(args.project_name):
+                _take_screenshot("step2_project_dashboard")
+            else:
+                print("\n[STEP 2B] Project not detected; navigating to project creation as fallback...")
+                _navigate_chrome(
+                    "https://console.cloud.google.com/projectcreate",
+                    expect_tokens=["project", "create", "google cloud"],
+                )
+                time.sleep(2)
+                if not _screen_has_any(["google", "cloud", "project"]):
+                    fail_shot = _take_screenshot("step3_project_create_not_visible")
+                    return ToolResult(
+                        success=False,
+                        error=(
+                            "Chrome/Cloud Console not visible in foreground. "
+                            "Please ensure Chrome is visible and retry."
+                            + (f" Screenshot: {fail_shot}" if fail_shot else "")
+                        ),
+                        retryable=True,
+                    )
+                _take_screenshot("step3_project_create")
+                created = False
+                if _autoclick_enabled():
+                    created = _attempt_project_creation(args.project_name)
+                    if not created:
+                        time.sleep(1)
+                        created = _attempt_project_creation(args.project_name)
+                if not created:
+                    fail_shot = _take_screenshot("step4_project_create_failed")
+                    manual_ok = _prompt_manual_or_fail(
+                        f"Create a new project:\n"
+                        f"1. Enter project name: {args.project_name}\n"
+                        f"2. Click 'Create'\n"
+                        f"3. Wait for project to be created\n\n"
+                        f"Complete these steps in the browser.",
+                        seconds=step_wait,
+                    )
+                    if not manual_ok:
+                        return ToolResult(
+                            success=False,
+                            error=(
+                                "Auto-creation failed: could not locate the Project Name field or Create button."
+                                + (f" Screenshot: {fail_shot}" if fail_shot else "")
+                            ),
+                            retryable=True,
+                        )
+                _take_screenshot("step4_project_created")
+        
+        # Enable Calendar API if needed
+        if "calendar" in [a.lower() for a in args.apis_needed]:
+            print("\n[STEP 3] Enabling Calendar API...")
+            _navigate_chrome(
+                f"https://console.cloud.google.com/apis/library/calendar-json.googleapis.com?project={args.project_name}",
+                expect_tokens=["calendar", "api", "google cloud"],
+            )
+            time.sleep(2)
+            _focus_chrome(["calendar", "google", "cloud"])
+            if _autoclick_enabled():
+                _wait_for_any(["enable", "manage", "disable", "api", "calendar"], timeout_seconds=12, interval=1.0)
+                enabled_tokens = ["api enabled", "manage", "disable", "enabled"]
+                enabled = _screen_has_any(enabled_tokens)
+                if not enabled:
+                    enabled = _auto_click_text(["enable", "enable api", "enable to", "activate"], attempts=4, delay=0.9)
+                if not enabled:
+                    _press_key("pagedown")
+                    time.sleep(1)
+                    enabled = _auto_click_text(["enable", "enable api", "enable to", "activate"], attempts=2, delay=0.9)
+                if not enabled:
+                    fail_shot = _take_screenshot("step5_calendar_enable_failed")
+                    manual_ok = _prompt_manual_or_fail(
+                        "Click 'Enable' to enable the Google Calendar API.",
+                        seconds=step_wait,
+                    )
+                    if not manual_ok:
+                        return ToolResult(
+                            success=False,
+                            error=(
+                                "Auto-enable failed: could not locate the Enable button for Calendar API."
+                                + (f" Screenshot: {fail_shot}" if fail_shot else "")
+                            ),
+                            retryable=True,
+                        )
+            else:
+                manual_ok = _prompt_manual_or_fail(
+                    "Click 'Enable' to enable the Google Calendar API.",
+                    seconds=step_wait,
+                )
+                if not manual_ok:
+                    return ToolResult(
+                        success=False,
+                        error="Auto-enable disabled and manual fallback not allowed.",
+                        retryable=True,
+                    )
+            _take_screenshot("step5_calendar_enabled")
+        
+        # Enable Tasks API if needed
+        if "tasks" in [a.lower() for a in args.apis_needed]:
+            print("\n[STEP 4] Enabling Tasks API...")
+            _navigate_chrome(
+                f"https://console.cloud.google.com/apis/library/tasks.googleapis.com?project={args.project_name}",
+                expect_tokens=["tasks", "api", "google cloud"],
+            )
+            time.sleep(2)
+            _focus_chrome(["tasks", "google", "cloud"])
+            if _autoclick_enabled():
+                _wait_for_any(["enable", "manage", "disable", "api", "tasks"], timeout_seconds=12, interval=1.0)
+                enabled_tokens = ["api enabled", "manage", "disable", "enabled"]
+                enabled = _screen_has_any(enabled_tokens)
+                if not enabled:
+                    enabled = _auto_click_text(["enable", "enable api", "enable to", "activate"], attempts=4, delay=0.9)
+                if not enabled:
+                    _press_key("pagedown")
+                    time.sleep(1)
+                    enabled = _auto_click_text(["enable", "enable api", "enable to", "activate"], attempts=2, delay=0.9)
+                if not enabled:
+                    fail_shot = _take_screenshot("step6_tasks_enable_failed")
+                    manual_ok = _prompt_manual_or_fail(
+                        "Click 'Enable' to enable the Google Tasks API.",
+                        seconds=step_wait,
+                    )
+                    if not manual_ok:
+                        return ToolResult(
+                            success=False,
+                            error=(
+                                "Auto-enable failed: could not locate the Enable button for Tasks API."
+                                + (f" Screenshot: {fail_shot}" if fail_shot else "")
+                            ),
+                            retryable=True,
+                        )
+            else:
+                manual_ok = _prompt_manual_or_fail(
+                    "Click 'Enable' to enable the Google Tasks API.",
+                    seconds=step_wait,
+                )
+                if not manual_ok:
+                    return ToolResult(
+                        success=False,
+                        error="Auto-enable disabled and manual fallback not allowed.",
+                        retryable=True,
+                    )
+                return ToolResult(
+                    success=False,
+                    error="Auto-enable disabled and manual fallback not allowed.",
+                    retryable=True,
+                )
+        _take_screenshot("step6_tasks_enabled")
+        print("\n[STEP 5] Configuring OAuth consent screen...")
+        _navigate_chrome(
+            f"https://console.cloud.google.com/apis/credentials/consent?project={args.project_name}",
+            expect_tokens=["consent", "oauth", "google cloud"],
+        )
+        time.sleep(3)
+        _focus_chrome(["consent", "oauth", "google", "cloud"])
+        if _autoclick_enabled():
+            if not _screen_has_any(["publishing status", "oauth consent screen", "edit app"]):
+                _auto_click_main(["external"])
+                _auto_click_main(["create"])
+                time.sleep(2)
+            email = (creds or {}).get("username") or ""
+            _fill_field_by_label(["app", "name"], "Treys Agent")
+            if email:
+                _fill_field_by_label(["support", "email"], email)
+                _fill_field_by_label(["developer", "contact"], email)
+            for _ in range(3):
+                _auto_click_main(["save and continue", "save & continue"])
+                time.sleep(2)
+            if email and _screen_has_any(["test users", "add users"]):
+                _fill_field_by_label(["add users", "test users"], email)
+                _press_key("enter")
+                _auto_click_main(["save and continue", "save & continue"])
+                time.sleep(2)
+            _auto_click_main(["back to dashboard"])
+        else:
             manual_ok = _prompt_manual_or_fail(
-                "Click 'Enable' to enable the Google Calendar API.",
+                "Configure the OAuth consent screen manually.",
+                seconds=step_wait * 2,
+            )
+            if not manual_ok:
+                return ToolResult(
+                    success=False,
+                    error="Auto-consent setup disabled and manual fallback not allowed.",
+                    retryable=True,
+                )
+        _take_screenshot("step7_consent_configured")
+        print("\n[STEP 6] Creating OAuth credentials...")
+        if _autoclick_enabled():
+            success = False
+            for _ in range(2):
+                _navigate_chrome(
+                    f"https://console.cloud.google.com/apis/credentials?project={args.project_name}",
+                    expect_tokens=["credentials", "oauth", "google cloud"],
+                )
+                time.sleep(3)
+                _focus_chrome(["credentials", "oauth", "google", "cloud"])
+                if _screen_has_any(["bookmarks", "chrome://bookmarks"]):
+                    _debug_log("Detected bookmarks page; re-navigating to credentials.")
+                    continue
+                _auto_click_main(["create credentials"])
+                time.sleep(1)
+                if _screen_has_any(["bookmarks", "chrome://bookmarks"]):
+                    _debug_log("Bookmarks page opened after Create Credentials; retrying.")
+                    continue
+                _auto_click_main(["oauth client id"])
+                time.sleep(2)
+                _auto_click_main(["application type"])
+                time.sleep(1)
+                _auto_click_main(["desktop app"])
+                _fill_field_by_label(["name"], "Treys Agent Desktop")
+                _auto_click_main(["create"])
+                time.sleep(2)
+                _auto_click_main(["download json", "download"])
+                time.sleep(1)
+                _auto_click_main(["ok", "done"])
+                success = True
+                break
+            if not success:
+                fail_shot = _take_screenshot("step8_oauth_create_failed")
+                return ToolResult(
+                    success=False,
+                    error=(
+                        "Failed to create OAuth credentials; page navigation was unstable (bookmarks page)."
+                        + (f" Screenshot: {fail_shot}" if fail_shot else "")
+                    ),
+                    retryable=True,
+                )
+        else:
+            manual_ok = _prompt_manual_or_fail(
+                "Create OAuth credentials manually.",
                 seconds=step_wait,
             )
             if not manual_ok:
                 return ToolResult(
                     success=False,
-                    error=(
-                        "Auto-enable failed: could not locate the Enable button for Calendar API."
-                        + (f" Screenshot: {fail_shot}" if fail_shot else "")
-                    ),
+                    error="Auto-credential creation disabled and manual fallback not allowed.",
                     retryable=True,
                 )
-    else:
-        manual_ok = _prompt_manual_or_fail(
-            "Click 'Enable' to enable the Google Calendar API.",
-            seconds=step_wait,
-        )
-        if not manual_ok:
-            return ToolResult(
-                success=False,
-                error="Auto-enable disabled and manual fallback not allowed.",
-                retryable=True,
-            )
-    _take_screenshot("step5_calendar_enabled")
-
-    # Step 6: Enable Tasks API
-    print("\n[STEP 4] Enabling Tasks API...")
-    _navigate_chrome(f"https://console.cloud.google.com/apis/library/tasks.googleapis.com?project={args.project_name}")
-    time.sleep(2)
-    _focus_chrome(["tasks", "google", "cloud"])
-
-    if _autoclick_enabled():
-        _wait_for_any(["enable", "manage", "disable", "api", "tasks"], timeout_seconds=12, interval=1.0)
-        enabled_tokens = ["api enabled", "manage", "disable", "enabled"]
-        enabled = _screen_has_any(enabled_tokens)
-        if not enabled:
-            enabled = _auto_click_text(["enable", "enable api", "enable to", "activate"], attempts=4, delay=0.9)
-        if not enabled:
-            _press_key("pagedown")
-            time.sleep(1)
-            enabled = _auto_click_text(["enable", "enable api", "enable to", "activate"], attempts=2, delay=0.9)
-        if not enabled:
-            fail_shot = _take_screenshot("step6_tasks_enable_failed")
-            manual_ok = _prompt_manual_or_fail(
-                "Click 'Enable' to enable the Google Tasks API.",
-                seconds=step_wait,
-            )
-            if not manual_ok:
-                return ToolResult(
-                    success=False,
-                    error=(
-                        "Auto-enable failed: could not locate the Enable button for Tasks API."
-                        + (f" Screenshot: {fail_shot}" if fail_shot else "")
-                    ),
-                    retryable=True,
-                )
-    else:
-        manual_ok = _prompt_manual_or_fail(
-            "Click 'Enable' to enable the Google Tasks API.",
-            seconds=step_wait,
-        )
-        if not manual_ok:
-            return ToolResult(
-                success=False,
-                error="Auto-enable disabled and manual fallback not allowed.",
-                retryable=True,
-            )
-    _take_screenshot("step6_tasks_enabled")
-
-    # Step 7: Configure OAuth consent screen (auto)
-    print("\n[STEP 5] Configuring OAuth consent screen...")
-    _navigate_chrome(f"https://console.cloud.google.com/apis/credentials/consent?project={args.project_name}")
-    time.sleep(3)
-    _focus_chrome(["consent", "oauth", "google", "cloud"])
-
-    if _autoclick_enabled():
-        # If already configured, skip
-        if not _screen_has_any(["publishing status", "oauth consent screen", "edit app"]):
-            _auto_click_text(["external"])
-            _auto_click_text(["create"])
-            time.sleep(2)
-        email = (creds or {}).get("username") or ""
-        _fill_field_by_label(["app", "name"], "Treys Agent")
-        if email:
-            _fill_field_by_label(["support", "email"], email)
-            _fill_field_by_label(["developer", "contact"], email)
-        # Save and continue through steps
-        for _ in range(3):
-            _auto_click_text(["save and continue", "save & continue"])
-            time.sleep(2)
-        # Test users page
-        if email and _screen_has_any(["test users", "add users"]):
-            _fill_field_by_label(["add users", "test users"], email)
-            _press_key("enter")
-            _auto_click_text(["save and continue", "save & continue"])
-            time.sleep(2)
-        _auto_click_text(["back to dashboard"])
-    else:
-        manual_ok = _prompt_manual_or_fail(
-            "Configure the OAuth consent screen manually.",
-            seconds=step_wait * 2,
-        )
-        if not manual_ok:
-            return ToolResult(
-                success=False,
-                error="Auto-consent setup disabled and manual fallback not allowed.",
-                retryable=True,
-            )
-    _take_screenshot("step7_consent_configured")
-
-    # Step 8: Create OAuth credentials (auto)
-    print("\n[STEP 6] Creating OAuth credentials...")
-    _navigate_chrome(f"https://console.cloud.google.com/apis/credentials?project={args.project_name}")
-    time.sleep(3)
-    _focus_chrome(["credentials", "oauth", "google", "cloud"])
-
-    if _autoclick_enabled():
-        _auto_click_text(["create credentials"])
-        time.sleep(1)
-        _auto_click_text(["oauth client id"])
-        time.sleep(2)
-        _auto_click_text(["application type"])
-        time.sleep(1)
-        _auto_click_text(["desktop app"])
-        _fill_field_by_label(["name"], "Treys Agent Desktop")
-        _auto_click_text(["create"])
-        time.sleep(2)
-        _auto_click_text(["download json", "download"])
-        time.sleep(1)
-        _auto_click_text(["ok", "done"])
-    else:
-        manual_ok = _prompt_manual_or_fail(
-            "Create OAuth credentials manually.",
-            seconds=step_wait,
-        )
-        if not manual_ok:
-            return ToolResult(
-                success=False,
-                error="Auto-credential creation disabled and manual fallback not allowed.",
-                retryable=True,
-            )
-    _take_screenshot("step8_oauth_created")
-    _take_screenshot("step9_downloaded")
+        _take_screenshot("step8_oauth_created")
+        _take_screenshot("step9_downloaded")
 
     # Step 10: Find and move credentials
     print("\n[STEP 7] Looking for downloaded credentials...")
@@ -1444,38 +2942,52 @@ def full_google_setup(ctx, args: FullGoogleSetupArgs):
                 retryable=True,
             )
     else:
-        if not _manual_fallback_allowed():
-            return ToolResult(
-                success=False,
-                error="Downloaded credentials not found automatically. Manual fallback is disabled.",
-                retryable=True,
-            )
-        manual_path = _wait_and_prompt(
-            f"Could not find the downloaded credentials.\n"
-            f"Please enter the full path to the downloaded JSON file\n"
-            f"(or press Enter to check Downloads folder again):"
-        )
-        if manual_path:
-            src = Path(manual_path)
-            if src.exists():
-                _move_credentials_to_place(src)
+        # Attempt recovery: dialogs, chrome://downloads, history lookup
+        recovered = _recover_downloaded_credentials()
+        if recovered and recovered.exists():
+            print(f"Recovered credentials at: {recovered}")
+            if _move_credentials_to_place(recovered):
+                print(f"Moved to: {DEFAULT_CREDENTIALS_PATH}")
+                _log_to_reflexion("credentials_saved", True, f"Recovered from {recovered}")
             else:
                 return ToolResult(
                     success=False,
-                    error=f"File not found: {manual_path}",
+                    error=f"Recovered credentials but failed to move to {DEFAULT_CREDENTIALS_PATH}",
                     retryable=True,
                 )
         else:
-            # Try again
-            creds_file = _find_downloaded_credentials()
-            if creds_file:
-                _move_credentials_to_place(creds_file)
-            else:
+            if not _manual_fallback_allowed():
                 return ToolResult(
                     success=False,
-                    error=f"Please manually copy the client_secret*.json to: {DEFAULT_CREDENTIALS_PATH}",
+                    error="Downloaded credentials not found automatically. Manual fallback is disabled.",
                     retryable=True,
                 )
+            manual_path = _wait_and_prompt(
+                f"Could not find the downloaded credentials.\n"
+                f"Please enter the full path to the downloaded JSON file\n"
+                f"(or press Enter to check Downloads folder again):"
+            )
+            if manual_path:
+                src = Path(manual_path)
+                if src.exists():
+                    _move_credentials_to_place(src)
+                else:
+                    return ToolResult(
+                        success=False,
+                        error=f"File not found: {manual_path}",
+                        retryable=True,
+                    )
+            else:
+                # Try again
+                creds_file = _find_downloaded_credentials()
+                if creds_file:
+                    _move_credentials_to_place(creds_file)
+                else:
+                    return ToolResult(
+                        success=False,
+                        error=f"Please manually copy the client_secret*.json to: {DEFAULT_CREDENTIALS_PATH}",
+                        retryable=True,
+                    )
 
     # Step 11: Run OAuth flow
     print("\n[STEP 8] Completing OAuth flow...")

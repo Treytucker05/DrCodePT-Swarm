@@ -502,6 +502,12 @@ EXAMPLES:
 
         self.action_history = []
         steps_taken = 0
+        low_conf_threshold = float(os.getenv("TREYS_AGENT_UI_CONFIDENCE_MIN", "0.35"))
+        low_conf_steps = int(os.getenv("TREYS_AGENT_UI_LOW_CONFIDENCE_STEPS", "2"))
+        stall_steps = int(os.getenv("TREYS_AGENT_UI_STALL_STEPS", "3"))
+        low_conf_count = 0
+        stall_count = 0
+        last_observation = ""
 
         while steps_taken < self.max_steps:
             steps_taken += 1
@@ -511,6 +517,33 @@ EXAMPLES:
 
             # Analyze screen
             analysis = self.analyze_screen(objective, context)
+
+            # Confidence / stall guard -> ask for human correction
+            confidence = float(analysis.get("confidence", 1.0) or 0.0)
+            observation = (analysis.get("observation") or "").strip().lower()
+            if observation and observation == last_observation:
+                stall_count += 1
+            else:
+                stall_count = 0
+                last_observation = observation
+
+            if confidence < low_conf_threshold:
+                low_conf_count += 1
+            else:
+                low_conf_count = 0
+
+            if analysis.get("action") not in {"done", "ask_user", "error"} and on_user_input:
+                if low_conf_count >= low_conf_steps or stall_count >= stall_steps:
+                    analysis = {
+                        "observation": analysis.get("observation", ""),
+                        "reasoning": "Low confidence or stalled; requesting user guidance.",
+                        "action": "ask_user",
+                        "target": None,
+                        "value": "I'm not confident about the next UI action. What should I do next? You can say: click <target>, type <text>, open <url>.",
+                        "confidence": confidence,
+                    }
+                    low_conf_count = 0
+                    stall_count = 0
 
             # Callback
             if on_step:

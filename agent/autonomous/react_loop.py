@@ -192,7 +192,10 @@ If the task is already complete, set action to "finish" and include a brief summ
         print("[REACT] Tools listed:", len(tool_names))
         print("[REACT] Prompt:\n" + prompt)
 
-        response = self.llm_quick.chat_simple(prompt, timeout_seconds=15)
+        # Increase timeout for action selection - Codex CLI can take 30-60s with reasoning
+        import os
+        action_timeout = int(os.getenv("REACT_ACTION_TIMEOUT_SECONDS", "60"))
+        response = self.llm_quick.chat_simple(prompt, timeout_seconds=action_timeout)
         if not response:
             return self._fallback_action("decide_next_step", "timeout or empty response")
         if not isinstance(response, dict):

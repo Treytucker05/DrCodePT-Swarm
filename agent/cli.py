@@ -418,9 +418,12 @@ def interactive_loop() -> int:
     Run an interactive REPL that feeds tasks to AgentRunner.
 
     This replaces the old treys_agent.py routing logic.
+    Uses persistent memory across all tasks so the agent learns and remembers.
     """
     from agent.autonomous.config import AgentConfig, PlannerConfig, RunnerConfig
     from agent.autonomous.runner import AgentRunner
+    from agent.autonomous.memory.sqlite_store import SqliteMemoryStore
+    from pathlib import Path
 
     _setup_logging(verbose=False)
 
@@ -436,6 +439,20 @@ def interactive_loop() -> int:
     except RuntimeError as e:
         print(f"[ERROR] {e}")
         return 1
+
+    # Create persistent memory store that persists across all tasks in this session
+    # This allows the agent to remember past tasks, learn from failures, and improve
+    memory_store = None
+    try:
+        repo_root = Path(__file__).resolve().parent.parent
+        memory_path = repo_root / "agent" / "memory" / "autonomous_memory.sqlite3"
+        memory_path.parent.mkdir(parents=True, exist_ok=True)
+        memory_store = SqliteMemoryStore(path=memory_path)
+        print(f"[MEMORY] Using persistent memory: {memory_path}")
+        print(f"[MEMORY] Agent will remember past tasks and learn from experience")
+    except Exception as e:
+        logger.debug(f"Could not initialize persistent memory: {e}")
+        print(f"[WARNING] Persistent memory unavailable - agent won't remember past tasks")
 
     while True:
         try:
@@ -505,6 +522,7 @@ Examples:
             continue
 
         # Everything else goes to AgentRunner
+        # Use persistent memory store so agent remembers past tasks and learns
         runner_cfg = RunnerConfig(
             max_steps=30,
             timeout_seconds=600,
@@ -515,6 +533,7 @@ Examples:
         agent_cfg = AgentConfig(
             allow_human_ask=True,
             allow_interactive_tools=True,
+            memory_db_path=Path(memory_store.path) if memory_store else None,
         )
 
         planner_cfg = PlannerConfig(mode="react")
@@ -524,6 +543,7 @@ Examples:
             agent_cfg=agent_cfg,
             planner_cfg=planner_cfg,
             llm=llm,
+            memory_store=memory_store,  # Share memory across all tasks
         )
 
         print(f"\n[TASK] {user_input}")

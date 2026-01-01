@@ -33,9 +33,10 @@ if /I "%TREYS_AGENT_DEBUG%"=="1" (
   echo [START] Launching Unified Agent...
 )
 
-rem Use the unified treys_agent entrypoint (single-loop, no modes)
-rem Set TREYS_AGENT_LEGACY=1 to use the old mode-based flow
-"%PY%" "%~dp0..\agent\treys_agent.py"
+rem Use the interactive mode with persistent memory (AgentRunner + ReAct planning)
+rem This is the recommended mode: reasons through tasks, remembers past work, learns from failures
+rem For legacy mode, set TREYS_AGENT_LEGACY=1 and use: "%PY%" "%~dp0..\agent\treys_agent.py"
+"%PY%" -m agent --interactive
 
 echo.
 pause

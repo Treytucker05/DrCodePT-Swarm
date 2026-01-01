@@ -33,6 +33,7 @@ import webbrowser
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Literal
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -148,6 +149,21 @@ PLAN_SCHEMA = {
     "required": ["plan_type", "summary", "steps"]
 }
 
+# JSON Schema for research synthesis
+RESEARCH_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "summary": {"type": "string"},
+        "setup_steps": {"type": "array", "items": {"type": "string"}},
+        "execution_steps": {"type": "array", "items": {"type": "string"}},
+        "success_checks": {"type": "array", "items": {"type": "string"}},
+        "caveats": {"type": "array", "items": {"type": "string"}},
+        "sources": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["summary", "sources"],
+}
+
 
 class TaskResult(BaseModel):
     """Result of executing a task."""
@@ -208,6 +224,21 @@ class PlanPayload(BaseModel):
     steps: List[PlanStepPayload] = Field(default_factory=list)
     estimated_time: Optional[str] = None
     risks: List[str] = Field(default_factory=list)
+
+    if ConfigDict:
+        model_config = ConfigDict(extra="forbid")
+    else:
+        class Config:
+            extra = "forbid"
+
+
+class ResearchPayload(BaseModel):
+    summary: str
+    setup_steps: List[str] = Field(default_factory=list)
+    execution_steps: List[str] = Field(default_factory=list)
+    success_checks: List[str] = Field(default_factory=list)
+    caveats: List[str] = Field(default_factory=list)
+    sources: List[str] = Field(default_factory=list)
 
     if ConfigDict:
         model_config = ConfigDict(extra="forbid")
@@ -328,6 +359,59 @@ class LearningAgent:
         # Default to yes for autonomy
         return "yes"
 
+    def _looks_sensitive(self, text: str) -> bool:
+        """Best-effort detection of sensitive user input to avoid storing secrets."""
+        if not text:
+            return False
+        lowered = text.lower()
+        if any(k in lowered for k in ("password", "passcode", "2fa", "otp", "token", "secret")):
+            return True
+        try:
+            import re
+            if re.search(r"\b\d{6,}\b", text):
+                return True
+            if re.search(r"[A-Za-z0-9+/=]{20,}", text):
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _store_ui_lesson(
+        self,
+        *,
+        objective: str,
+        plan_summary: str,
+        question: str,
+        answer: str,
+        ui_state: Dict[str, Any],
+    ) -> None:
+        """Store a UI correction lesson for future runs."""
+        if not answer or self._looks_sensitive(answer):
+            return
+        try:
+            from agent.memory.unified_memory import store_lesson
+
+            analysis = ui_state.get("analysis") if isinstance(ui_state, dict) else None
+            observation = ""
+            if isinstance(analysis, dict):
+                observation = analysis.get("observation", "")
+            screenshot = ui_state.get("screenshot") if isinstance(ui_state, dict) else None
+            context = (
+                f"Objective: {objective}\n"
+                f"Plan: {plan_summary}\n"
+                f"Observation: {observation}\n"
+                f"Question: {question}\n"
+                f"User instruction: {answer}\n"
+                f"Screenshot: {screenshot}"
+            )
+            store_lesson(
+                lesson=f"UI correction: {answer}",
+                context=context,
+                tags=["ui_correction", "human_guidance"],
+            )
+        except Exception as exc:
+            logger.debug(f"Could not store UI lesson: {exc}")
+
     def run(self, user_request: str) -> TaskResult:
         """
         Execute a user request autonomously.
@@ -375,9 +459,15 @@ class LearningAgent:
         else:
             self._status(f"  [X] No {intent.auth_provider} credentials found")
 
-        calendar_result = self._handle_calendar_request(intent)
-        if calendar_result is not None:
-            return calendar_result
+        # Check if this is a calendar request that needs setup
+        # But DON'T auto-execute yet - let it go through research and planning first
+        needs_google_setup = (
+            intent.action in {"calendar.list_events", "get_calendar_events"}
+            and intent.auth_provider == "google"
+            and not creds_exist
+        )
+        if needs_google_setup:
+            self._status("  [INFO] Google Calendar setup needed - will proceed to research and planning first")
 
         # Check skill library
         matching_skills = self.skill_library.search(user_request, k=3)
@@ -397,14 +487,22 @@ class LearningAgent:
         # STEP 3: Research if we don't know how to do this
         # ============================================================
         if is_local_task:
-            self._status("Step 3: Skipping research for local app automation...")
+            self._status("Step 3: Analyzing local app automation task...")
+            self._status("  [REASONING] This is a local application task - will use vision-guided automation")
             research = {
                 "success": True,
-                "summary": "Local app automation",
+                "summary": "Local app automation using vision-guided desktop automation",
                 "execution_steps": [user_request],
+                "reasoning": "Local app tasks require UI automation rather than API calls",
             }
         elif not creds_exist or not matching_skills or matching_skills[0][1] < 0.5:
-            self._status("Step 3: Researching how to do this...")
+            self._status("Step 3: Researching and reasoning about this task...")
+            self._status("  [REASONING] Need to understand:")
+            self._status("    - What service/API is required?")
+            self._status("    - What authentication is needed?")
+            self._status("    - What are the exact steps to complete this?")
+            self._status("    - What could go wrong and how to handle it?")
+            
             research = self._do_research(user_request, intent)
 
             if not research["success"]:
@@ -415,24 +513,123 @@ class LearningAgent:
                     research_performed=True,
                 )
 
-            self._status(f"  [OK] Found approach: {research.get('summary', 'Unknown')[:100]}")
+            self._status(f"  [OK] Research complete!")
+            self._status(f"  [SUMMARY] {research.get('summary', 'Unknown')}")
+            if research.get("sources"):
+                self._status(f"\n  [SOURCES] Found {len(research.get('sources', []))} reference sources:")
+                for i, source in enumerate(research.get("sources", [])[:5], 1):
+                    source_url = source if isinstance(source, str) else source.get("url", source.get("title", "Unknown"))
+                    self._status(f"    {i}. {source_url}")
+            if research.get("setup_steps"):
+                self._status(f"\n  [SETUP STEPS FOUND] {len(research.get('setup_steps', []))} setup steps identified")
+            if research.get("execution_steps"):
+                self._status(f"  [EXECUTION STEPS FOUND] {len(research.get('execution_steps', []))} execution steps identified")
+            if research.get("caveats"):
+                self._status(f"\n  [CAVEATS] {len(research.get('caveats', []))} potential issues:")
+                for i, caveat in enumerate(research.get("caveats", [])[:3], 1):
+                    self._status(f"    {i}. {caveat}")
         else:
+            self._status("Step 3: Using existing knowledge...")
+            self._status(f"  [REASONING] Found matching skill with {matching_skills[0][1]:.0%} confidence")
             research = {"success": True, "summary": "Using existing knowledge"}
 
         # ============================================================
         # STEP 4: Create plan and get user approval
         # ============================================================
-        self._status("Step 4: Creating execution plan...")
+        self._status("\n" + "=" * 60)
+        self._status("STEP 4: CREATING EXECUTION PLAN")
+        self._status("=" * 60)
+        self._status("Analyzing research findings and building step-by-step plan...")
         plan = self._build_plan(user_request, intent, research, creds_exist)
 
-        self._status("\n" + "=" * 50)
-        self._status("EXECUTION PLAN")
-        self._status("=" * 50)
-        for i, step in enumerate(plan.steps, 1):
-            self._status(f"  {i}. [{step['phase']}] {step['description']}")
-        self._status("=" * 50 + "\n")
+        self._status("\n" + "=" * 60)
+        self._status("📋 TO-DO LIST (EXECUTION PLAN)")
+        self._status("=" * 60)
+        if not plan.steps:
+            self._status("  ⚠️  WARNING: Plan has no steps!")
+        else:
+            for i, step in enumerate(plan.steps, 1):
+                phase_emoji = "🔧" if step.get('phase') == "SETUP" else "✅" if step.get('phase') == "VERIFY" else "⚙️"
+                action_type = step.get('action', 'unknown')
+                self._status(f"  {i}. {phase_emoji} [{step.get('phase', 'UNKNOWN')}] {step.get('description', 'No description')}")
+                if action_type != 'unknown':
+                    self._status(f"      → Action: {action_type}")
+        self._status("=" * 60)
+        self._status(f"\n📊 PLAN SUMMARY:")
+        self._status(f"   • Total steps: {len(plan.steps)}")
+        self._status(f"   • Plan type: {plan.plan_type}")
+        if plan.research_summary:
+            self._status(f"   • Based on research: {plan.research_summary[:150]}...")
+        self._status("=" * 60 + "\n")
 
         if plan.plan_type == "SETUP_GUIDE":
+            # For Google Calendar/Tasks setup, automatically attempt setup instead of showing guide
+            if intent.auth_provider == "google" and (intent.service in {"google_calendar", "google_tasks"} or "google" in (intent.service or "").lower()):
+                # Before calling _attempt_google_setup(), determine APIs needed:
+                apis_needed = []
+                # Check intent.service for calendar/tasks keywords
+                if intent.service:
+                    service_lower = intent.service.lower()
+                    if "calendar" in service_lower:
+                        apis_needed.append("calendar")
+                    if "tasks" in service_lower or "task" in service_lower:
+                        apis_needed.append("tasks")
+
+                # Check intent.action for calendar/tasks keywords
+                if intent.action:
+                    action_lower = intent.action.lower()
+                    if "calendar" in action_lower:
+                        if "calendar" not in apis_needed:
+                            apis_needed.append("calendar")
+                    if "task" in action_lower:
+                        if "tasks" not in apis_needed:
+                            apis_needed.append("tasks")
+
+                # Default to calendar if nothing found (most common case)
+                if not apis_needed:
+                    apis_needed = ["calendar"]
+
+                self._status(f"  [INFO] Will set up APIs: {', '.join(apis_needed)}")
+                
+                self._status("\n" + "=" * 60)
+                self._status("🚀 AUTO-EXECUTING SETUP")
+                self._status("=" * 60)
+                self._status("Google setup detected. The plan above will be executed automatically...")
+                self._status("=" * 60 + "\n")
+                setup_result = self._attempt_google_setup(apis_needed=apis_needed)
+                
+                if setup_result and setup_result.success:
+                    self._status("  [OK] Google setup completed successfully!")
+                    # Verify credentials now exist
+                    if self._check_credentials("google"):
+                        # Retry the original calendar request if that's what we were trying to do
+                        if intent.action in {"calendar.list_events", "get_calendar_events"}:
+                            calendar_result = self._handle_calendar_request(intent)
+                            if calendar_result:
+                                return calendar_result
+                        
+                        return TaskResult(
+                            success=True,
+                            summary="Google Calendar and Tasks setup completed successfully! You can now ask me to check your calendar or manage tasks.",
+                            steps_taken=1,
+                        )
+                    else:
+                        return TaskResult(
+                            success=False,
+                            summary="Setup completed but credentials verification failed. Please try checking your calendar again.",
+                            steps_taken=1,
+                            error="Setup verification failed",
+                        )
+                else:
+                    error_msg = (setup_result.error if setup_result else "Setup failed") if setup_result else "Setup unavailable"
+                    return TaskResult(
+                        success=False,
+                        summary=f"Automatic Google setup failed: {error_msg}\n\nPlease complete the setup manually using the steps above, then re-run your request.",
+                        steps_taken=0,
+                        error="Google setup failed",
+                    )
+            
+            # For other SETUP_GUIDE cases, return the guide
             return TaskResult(
                 success=False,
                 summary="Setup required. Follow the steps above and re-run your request.",
@@ -477,33 +674,47 @@ class LearningAgent:
     def _get_llm(self):
         """Get or create an LLM client for reasoning."""
         if self.llm and not self._disable_codex:
-            return self.llm
-
+            provider = getattr(self.llm, 'provider', 'unknown')
+            if 'codex' in provider.lower():
+                return self.llm
+        
         if not self._disable_codex:
             try:
                 from agent.llm.codex_cli_client import CodexCliClient
                 client = CodexCliClient.from_env()
-                if hasattr(client, "check_auth") and not client.check_auth():
-                    self._disable_codex = True
-                    raise RuntimeError("Codex CLI auth check failed")
+                # Don't fail on auth check - let Codex try and fail naturally
+                if hasattr(client, "check_auth"):
+                    try:
+                        auth_ok = client.check_auth()
+                        if not auth_ok:
+                            self._status("[WARN] Codex auth check failed, but will attempt to use Codex anyway...")
+                    except Exception as auth_exc:
+                        self._status(f"[WARN] Codex auth check error: {auth_exc}, but will attempt to use Codex anyway...")
+                
                 self.llm = client
-                self._status("[LLM] provider=codex_cli model=default")
+                self._status("[LLM] provider=codex_cli model=default (PREFERRED)")
                 return self.llm
             except Exception as e:
                 error_str = str(e).lower()
-                if "not authenticated" in error_str:
+                # Only disable if it's a clear authentication/availability issue
+                if "not authenticated" in error_str or "auth" in error_str or "not found" in error_str:
+                    self._status(f"[ERROR] Codex unavailable: {e}")
                     self._disable_codex = True
-                logger.warning(f"Codex CLI not available: {e}")
-
-        if os.getenv("OPENROUTER_API_KEY"):
+                else:
+                    # Don't disable on other errors - might be temporary
+                    self._status(f"[WARN] Codex error (non-fatal): {e}, will retry")
+                logger.warning(f"Codex CLI error: {e}")
+        
+        # Only fall back to OpenRouter if Codex is explicitly disabled
+        if self._disable_codex and os.getenv("OPENROUTER_API_KEY"):
             try:
                 from agent.llm.openrouter_client import OpenRouterClient        
                 self.llm = OpenRouterClient.from_env()
-                self._status(f"[LLM] provider=openrouter model={self.llm.model}")
+                self._status(f"[LLM] provider=openrouter model={self.llm.model} (FALLBACK - Codex disabled)")
                 return self.llm
             except Exception as e:
                 logger.warning(f"OpenRouter not available: {e}")
-
+        
         return None
 
     def _skill_match_threshold(self, is_local_task: bool) -> float:
@@ -1225,6 +1436,69 @@ Return a JSON object matching the schema."""
             return False
         return False
 
+    def _attempt_google_setup(self, apis_needed: Optional[List[str]] = None) -> Optional[Any]:
+        """Attempt to automatically set up Google Cloud APIs.
+        
+        Args:
+            apis_needed: List of APIs to enable: ['calendar'], ['tasks'], or ['calendar', 'tasks']
+        """
+        try:
+            from agent.tools.google_cloud_setup import full_google_setup, FullGoogleSetupArgs
+            from agent.autonomous.config import RunContext
+            from agent.autonomous.models import ToolResult
+            import tempfile
+            
+            # Create a temporary run directory for setup
+            setup_dir = Path(tempfile.mkdtemp(prefix="google_setup_"))
+            ctx = RunContext(
+                run_id="google_setup",
+                run_dir=setup_dir,
+                workspace_dir=setup_dir,
+                profile=None,
+                usage=None,
+            )
+            
+            # Default to calendar if not specified (most common case)
+            if apis_needed is None:
+                apis_needed = ["calendar"]
+            
+            args = FullGoogleSetupArgs(
+                skip_if_configured=True,
+                apis_needed=apis_needed
+            )
+            result = full_google_setup(ctx, args)
+            return result
+        except Exception as exc:
+            logger.error(f"Failed to attempt Google setup: {exc}")
+            # Return a failed ToolResult-like object
+            from agent.autonomous.models import ToolResult
+            return ToolResult(
+                success=False,
+                error=f"Setup tool unavailable: {exc}",
+                retryable=True,
+            )
+
+    def _store_setup_lesson(self, user_guidance: str, error_msg: str) -> None:
+        """Store user guidance about setup in memory for learning."""
+        try:
+            if not self.memory_store:
+                return
+            
+            lesson = (
+                f"User guidance for Google Calendar setup: {user_guidance}\n"
+                f"Context: Setup failed with error: {error_msg}\n"
+                f"User provided specific instructions that should be remembered for future setup attempts."
+            )
+            
+            self.memory_store.upsert(
+                kind="experience",
+                content=lesson,
+                key=f"google_setup_lesson_{int(time.time())}",
+            )
+            logger.debug("Stored setup lesson in memory")
+        except Exception as exc:
+            logger.debug(f"Could not store setup lesson: {exc}")
+
     def _handle_calendar_request(self, intent: ParsedIntent) -> Optional[TaskResult]:
         """Handle Google Calendar list requests directly via the skill."""
         if intent.action not in {"calendar.list_events", "get_calendar_events"}:
@@ -1245,12 +1519,78 @@ Return a JSON object matching the schema."""
         skill = GoogleCalendarSkill()
         status = skill.auth_status()
         if status == AuthStatus.NOT_CONFIGURED:
-            guide = skill.setup_guide()
-            return TaskResult(
-                success=False,
-                summary=guide,
-                error="Google Calendar not configured",
-            )
+            # Automatically attempt Google Cloud setup instead of just showing guide
+            # Determine which APIs are needed based on intent
+            apis_needed = ["calendar"]  # Default for calendar requests
+            self._status("  [AUTO] Google Calendar not configured. Attempting automatic setup...")
+            self._status(f"  [INFO] Will set up APIs: {', '.join(apis_needed)}")
+            setup_result = self._attempt_google_setup(apis_needed=apis_needed)
+            
+            if setup_result and setup_result.success:
+                self._status("  [OK] Google Calendar setup completed successfully!")
+                # Retry calendar request after setup
+                skill = GoogleCalendarSkill()  # Recreate to pick up new config
+                status = skill.auth_status()
+                if status == AuthStatus.NOT_CONFIGURED:
+                    # Setup didn't complete fully, ask for help
+                    guide = skill.setup_guide()
+                    return TaskResult(
+                        success=False,
+                        summary=f"Setup started but not fully complete. {guide}\n\nYou can guide me through the remaining steps, or set it up manually and ask me to check your calendar again.",
+                        error="Google Calendar setup incomplete",
+                    )
+                # Setup successful, continue with calendar request (fall through to code below)
+            else:
+                # Setup failed or needs user help
+                error_msg = setup_result.error if setup_result else "Setup failed"
+                guide = skill.setup_guide()
+                user_guidance = self._ask_user(
+                    f"Automatic setup failed: {error_msg}\n\n"
+                    f"{guide}\n\n"
+                    "What would you like me to do?\n"
+                    "1. Try setup again\n"
+                    "2. You'll set it up manually (just say 'manual')\n"
+                    "3. Guide me through specific steps (tell me what to do next)"
+                )
+                
+                # Store the guidance in memory for learning
+                if user_guidance and user_guidance.lower() not in {"manual", "2"}:
+                    self._store_setup_lesson(user_guidance, error_msg)
+                    if "try again" in user_guidance.lower() or "1" in user_guidance:
+                        # Retry setup (use calendar as default for calendar requests)
+                        apis_needed = ["calendar"]
+                        setup_result = self._attempt_google_setup(apis_needed=apis_needed)
+                        if setup_result and setup_result.success:
+                            skill = GoogleCalendarSkill()
+                            status = skill.auth_status()
+                            if status != AuthStatus.NOT_CONFIGURED:
+                                # Setup successful, continue with calendar request
+                                pass  # Fall through
+                            else:
+                                return TaskResult(
+                                    success=False,
+                                    summary="Setup still incomplete after retry. Please check the steps above.",
+                                    error="Google Calendar setup incomplete",
+                                )
+                        else:
+                            return TaskResult(
+                                success=False,
+                                summary=f"Setup failed again: {setup_result.error if setup_result else 'unknown error'}. {guide}",
+                                error="Google Calendar setup failed",
+                            )
+                    else:
+                        # User will guide or do manually
+                        return TaskResult(
+                            success=False,
+                            summary=f"Noted. {guide}\n\nAfter you complete setup, ask me to check your calendar again.",
+                            error="Google Calendar setup deferred",
+                        )
+                else:
+                    return TaskResult(
+                        success=False,
+                        summary=f"Understood. {guide}\n\nAfter setup, ask me to check your calendar again.",
+                        error="Google Calendar setup deferred",
+                    )
 
         time_range = intent.parameters.get("time_range", "tomorrow")
         now = datetime.now().astimezone()
@@ -1351,7 +1691,9 @@ Return ONLY the search query, nothing else. Keep it under 10 words.""",
             # Use LLM to generate a better search query
             query = self._generate_search_query(request, intent)
 
-            self._status(f"  Searching: {query}")
+            self._status(f"\n  🔍 RESEARCH: Generating search query...")
+            self._status(f"  📝 Query: {query}")
+            self._status(f"  ⏳ Searching web for relevant information...")
 
             # Create context for the tools
             ctx = RunContext(
@@ -1366,22 +1708,92 @@ Return ONLY the search query, nothing else. Keep it under 10 words.""",
             search_result = web_search(ctx, WebSearchArgs(query=query, max_results=5))
 
             if not search_result.success:
-                self._status(f"  Search failed: {search_result.error}")
+                self._status(f"  ❌ Search failed: {search_result.error}")
+                self._status(f"  ⚠️  Falling back to pattern-based research...")
                 return self._fallback_research(intent)
-
+            
             results = search_result.output.get("results", [])
+            self._status(f"  ✅ Search successful! Found {len(results)} results")
             if not results:
-                return self._fallback_research(intent)
+                hint = self._ask_user(
+                    "Research returned no results. Provide a URL or keyword to search (or press Enter to use built-in steps)."
+                )
+                if hint:
+                    if hint.strip().lower().startswith(("http://", "https://")):
+                        results = [{"url": hint.strip(), "title": hint.strip(), "snippet": ""}]
+                    else:
+                        search_result = web_search(ctx, WebSearchArgs(query=hint.strip(), max_results=5))
+                        results = search_result.output.get("results", []) if search_result.success else []
+                if not results:
+                    return self._fallback_research(intent)
 
-            # Fetch and summarize top results
+            # Prefer authoritative sources first
+            preferred_domains = [
+                "developers.google.com",
+                "cloud.google.com",
+                "support.google.com",
+                "learn.microsoft.com",
+                "docs.microsoft.com",
+            ]
+
+            def _score_result(item: Dict[str, Any]) -> int:
+                url = (item or {}).get("url") or ""
+                host = urlparse(url).netloc.lower()
+                return 1 if any(host.endswith(d) for d in preferred_domains) else 0
+
+            results = sorted(results, key=_score_result, reverse=True)
+
+            max_sources = int(os.getenv("TREYS_AGENT_RESEARCH_MAX_SOURCES", "3"))
+            excerpt_chars = int(os.getenv("TREYS_AGENT_RESEARCH_EXCERPT_CHARS", "4000"))
+
+            sources = []
+            excerpts = []
+            for result in results[:max_sources]:
+                url = result.get("url", "")
+                title = result.get("title", "")
+                snippet = result.get("snippet", "") or ""
+                if not url:
+                    continue
+                fetch = web_fetch(ctx, WebFetchArgs(url=url, strip_html=True, timeout_seconds=20))
+                text = ""
+                if fetch.success and isinstance(fetch.output, dict):
+                    text = (fetch.output.get("text") or "").strip()
+                excerpt = (text or snippet)[:excerpt_chars]
+                if excerpt:
+                    excerpts.append(f"Source: {title}\nURL: {url}\nEXCERPT:\n{excerpt}")
+                    sources.append(url)
+
+            if excerpts:
+                prompt = (
+                    "You are a research assistant. Use ONLY the sources below to produce a concrete plan.\n"
+                    "Return JSON with summary, setup_steps, execution_steps, success_checks, caveats, sources.\n"
+                    f"Objective: {request}\n"
+                    f"Service: {intent.service}\n"
+                    f"Auth Provider: {intent.auth_provider}\n\n"
+                    "SOURCES:\n"
+                    + "\n\n".join(excerpts)
+                )
+                payload = self._call_llm_json(prompt, RESEARCH_SCHEMA, timeout=45, model_cls=ResearchPayload)
+                if payload and "summary" in payload:
+                    return {
+                        "success": True,
+                        "summary": payload.get("summary", ""),
+                        "service": intent.service,
+                        "auth_provider": intent.auth_provider,
+                        "setup_steps": payload.get("setup_steps") or self._get_setup_steps(intent),
+                        "execution_steps": payload.get("execution_steps") or self._get_execution_steps(intent),
+                        "success_checks": payload.get("success_checks") or [],
+                        "caveats": payload.get("caveats") or [],
+                        "sources": payload.get("sources") or sources,
+                    }
+
+            # Fallback: use snippets-only summary if fetch or synthesis failed
             summaries = []
             for result in results[:3]:
-                url = result.get("url", "")
                 title = result.get("title", "")
                 snippet = result.get("snippet", "")
                 summaries.append(f"- {title}: {snippet[:200]}")
 
-            # Build research summary
             summary = self._build_research_summary(intent, summaries)
 
             return {
@@ -1391,6 +1803,7 @@ Return ONLY the search query, nothing else. Keep it under 10 words.""",
                 "auth_provider": intent.auth_provider,
                 "setup_steps": self._get_setup_steps(intent),
                 "execution_steps": self._get_execution_steps(intent),
+                "sources": sources,
             }
 
         except Exception as e:
@@ -1579,8 +1992,18 @@ PARSED INTENT:
 
 RESEARCH FINDINGS:
 {research.get('summary', 'No research available')}
+RESEARCH SOURCES:
+{json.dumps(research.get('sources', []))}
+RESEARCH SETUP STEPS:
+{json.dumps(research.get('setup_steps', []))}
+RESEARCH EXECUTION STEPS:
+{json.dumps(research.get('execution_steps', []))}
+SUCCESS CHECKS:
+{json.dumps(research.get('success_checks', []))}
+RESEARCH CAVEATS:
+{json.dumps(research.get('caveats', []))}
 
-CURRENT STATE:
+  CURRENT STATE:
 - Credentials exist: {creds_exist}
 - Needs authentication: {intent.needs_auth}
 
@@ -1704,13 +2127,31 @@ Return a JSON object with the plan."""
                     steps_completed += 1
 
             elif action == "vision_guided":
+                last_ui: Dict[str, Any] = {"screenshot": None, "analysis": None}
+
+                def _on_step(s: Dict[str, Any]) -> None:
+                    last_ui["screenshot"] = s.get("screenshot")
+                    last_ui["analysis"] = s.get("analysis")
+                    self._status(
+                        f"    [{s.get('method', 'Hybrid')}] {s.get('action', {}).get('reasoning', '')[:80]}"
+                    )
+
+                def _ask_user_ui(question: str) -> str:
+                    answer = self._ask_user(question)
+                    self._store_ui_lesson(
+                        objective=step["description"],
+                        plan_summary=plan.research_summary or "",
+                        question=question,
+                        answer=answer,
+                        ui_state=last_ui,
+                    )
+                    return answer
+
                 result = self.executor.run_task(
                     objective=step["description"],
                     context=f"Plan: {plan.research_summary}\nCurrent step: {step['description']}",
-                    on_step=lambda s: self._status(
-                        f"    [{s.get('method', 'Hybrid')}] {s.get('action', {}).get('reasoning', '')[:80]}"
-                    ),
-                    on_user_input=self._ask_user,
+                    on_step=_on_step,
+                    on_user_input=_ask_user_ui,
                 )
 
                 if not result["success"]:
@@ -1734,13 +2175,31 @@ Return a JSON object with the plan."""
 
             elif action == "manual":
                 if self._is_local_app_task(plan.intent, plan.request):
+                    last_ui: Dict[str, Any] = {"screenshot": None, "analysis": None}
+
+                    def _on_step(s: Dict[str, Any]) -> None:
+                        last_ui["screenshot"] = s.get("screenshot")
+                        last_ui["analysis"] = s.get("analysis")
+                        self._status(
+                            f"    [{s.get('method', 'Hybrid')}] {s.get('action', {}).get('reasoning', '')[:80]}"
+                        )
+
+                    def _ask_user_ui(question: str) -> str:
+                        answer = self._ask_user(question)
+                        self._store_ui_lesson(
+                            objective=step["description"],
+                            plan_summary=plan.research_summary or "",
+                            question=question,
+                            answer=answer,
+                            ui_state=last_ui,
+                        )
+                        return answer
+
                     result = self.executor.run_task(
                         objective=step["description"],
                         context=f"Plan: {plan.research_summary}\nCurrent step: {step['description']}",
-                        on_step=lambda s: self._status(
-                            f"    [{s.get('method', 'Hybrid')}] {s.get('action', {}).get('reasoning', '')[:80]}"
-                        ),
-                        on_user_input=self._ask_user,
+                        on_step=_on_step,
+                        on_user_input=_ask_user_ui,
                     )
                     if not result["success"]:
                         if result.get("summary", "").startswith("Need user input"):

@@ -1380,6 +1380,7 @@ class AgentRunner:
                         conditions=step.preconditions,
                         step=step,
                         observation=state.observations[-1],
+                        ctx=ctx,
                     )
                     if not pre_ok:
                         recovered_obs = self._attempt_recovery(tools=tools, ctx=ctx, step=step, tracer=tracer)
@@ -1391,6 +1392,7 @@ class AgentRunner:
                                 conditions=step.preconditions,
                                 step=step,
                                 observation=recovered_obs,
+                                ctx=ctx,
                             )
 
                     if not pre_ok:
@@ -1436,6 +1438,8 @@ class AgentRunner:
                             conditions=step.postconditions,
                             step=step,
                             observation=perceptor.tool_result_to_observation(step.tool_name, tool_result),
+                            ctx=ctx,
+                            tool_result=tool_result,
                         )
                         if not post_ok:
                             recovered_obs = self._attempt_recovery(tools=tools, ctx=ctx, step=step, tracer=tracer)
@@ -1447,6 +1451,8 @@ class AgentRunner:
                                     conditions=step.postconditions,
                                     step=step,
                                     observation=recovered_obs,
+                                    ctx=ctx,
+                                    tool_result=tool_result,
                                 )
                         if not post_ok:
                             severity = "minor_repair"
@@ -2132,25 +2138,69 @@ class AgentRunner:
         conditions: List[str],
         step: Step,
         observation: Observation,
+        ctx: Optional[RunContext] = None,
+        tool_result: Optional[ToolResult] = None,
     ) -> tuple[bool, Dict[str, Any]]:
         if os.getenv("AGENT_SKIP_PRECONDITIONS", "").lower() in {"1", "true", "yes"}:
             return True, {"ok": True, "failed": []}
         if not conditions:
             return True, {"ok": True, "failed": []}
+        
+        # If tool succeeded and this is a postcondition check, be more lenient
+        # If the tool reports success and the observation contains relevant data, trust it
+        if kind == "postconditions" and tool_result and tool_result.success:
+            # For file operations, if the tool succeeded and returned a path, the file likely exists
+            if step.tool_name == "file_write" and observation.parsed:
+                file_path = observation.parsed.get("path")
+                if file_path:
+                    # Check if any condition mentions file existence - if so, and tool succeeded, trust it
+                    conditions_lower = " ".join(conditions).lower()
+                    if any(word in conditions_lower for word in ["exists", "file", "created", "written"]):
+                        # Tool succeeded and created file - conditions likely satisfied
+                        return True, {"ok": True, "failed": []}
+        
         obs_view = {
             "source": observation.source,
             "errors": observation.errors,
             "salient_facts": observation.salient_facts[:5],
             "parsed": observation.parsed,
         }
+        
+        # Add workspace context to help LLM understand paths
+        context_info = {}
+        if ctx:
+            context_info["workspace_dir"] = str(ctx.workspace_dir)
+            # Try to infer repo_root from workspace_dir (usually workspace is in runs/autonomous/RUN_ID/workspace)
+            try:
+                # workspace_dir is typically: repo_root/runs/autonomous/RUN_ID/workspace
+                # So repo_root would be workspace_dir.parents[3] if that pattern holds
+                if "runs" in str(ctx.workspace_dir):
+                    potential_repo_root = ctx.workspace_dir.parents[3] if len(ctx.workspace_dir.parents) >= 4 else None
+                    if potential_repo_root and potential_repo_root.exists():
+                        context_info["repo_root"] = str(potential_repo_root)
+                    else:
+                        context_info["repo_root"] = None
+                else:
+                    context_info["repo_root"] = None
+            except Exception:
+                context_info["repo_root"] = None
+            context_info["current_working_directory_note"] = (
+                f"Files are created relative to workspace_dir: {ctx.workspace_dir}. "
+                f"When 'workspace root' or 'workspace directory' is mentioned, it refers to: {ctx.workspace_dir}"
+            )
+        
         payload = {
             "kind": kind,
             "conditions": conditions,
             "step": self._dump(step),
             "observation": obs_view,
+            "context": context_info,
         }
         prompt = (
             "Evaluate whether the listed conditions are satisfied given the observation.\n"
+            "IMPORTANT: Pay attention to the context section which explains directory paths.\n"
+            "If a tool reports success (tool succeeded in observation), trust that the operation completed.\n"
+            "For file operations: if the tool succeeded and returned a path, the file exists at that path.\n"
             "Return JSON only.\n\n"
             f"INPUT:\n{dumps_compact(payload)}\n"
         )

@@ -1,6 +1,7 @@
 cryptography
 playwright
 pyautogui
+pynput
 Pillow
 pytesseract
 python-dotenv

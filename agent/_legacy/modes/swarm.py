@@ -2207,8 +2207,10 @@ Your reasoning must stay strictly within your Phase 1 model.
         for future, role in list(futures.items()):
             try:
                 outputs[role] = future.result()
+                logger.info(f"[SWARM DEBUG] {role} output length: {len(outputs[role])} chars")
             except Exception as exc:
                 outputs[role] = f"[FAILED - {type(exc).__name__}]"
+                logger.error(f"[SWARM DEBUG] {role} failed with exception: {exc}")
 
     # Supervisor checks & re-run if needed
     for role in ("Static", "Dynamic", "Research"):
@@ -2304,8 +2306,10 @@ Your reasoning must stay strictly within your Phase 1 model.
             else:
                 print(f"- {label} | variance=unknown")
 
+logger.info(f"[SWARM DEBUG] Prepared critic inputs for agents: {list(all_agent_results.keys())}")
     critic_prompt = _build_critic_prompt()
     critic_text = _call_llm("Critic", critic_prompt, effort="high", timeout=timeout_critic, log_name="critic")
+    logger.info(f"[SWARM DEBUG] Critic output received, length: {len(critic_text)} chars")
     gap_scores = _parse_confidence_lines(critic_text)
     global_avg, agent_avgs, uncertain = _confidence_stats(gap_scores)
     _log_uncertain(uncertain)
@@ -2317,6 +2321,7 @@ Your reasoning must stay strictly within your Phase 1 model.
             weakest: "Overall confidence <0.70; add evidence and file references for weak gaps."
         }
         print(f"[Critic] Low average confidence; forcing reanalysis of {weakest}.")
+        logger.info(f"[SWARM DEBUG] Reanalysis triggered for agents: {list(reanalysis.keys())}")
     if reanalysis:
         for agent, guidance in reanalysis.items():
             if agent == "Static":

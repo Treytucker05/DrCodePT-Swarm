@@ -41,6 +41,24 @@ Enable a single, unified assistant that:
    - Spawn helpers for parallel research or subtasks only when beneficial.
    - Respect a token/cost budget.
 
+9) UI automation must be reasoned (no scripted flows)
+   - Observe -> Think -> Act -> Verify -> Recover at each step.
+   - If the UI deviates (wrong page/dialog/download blocked), the agent must
+     reason about the current state and choose corrective actions.
+   - Do not use fixed click scripts or rigid step lists for OAuth/setup flows.
+
+10) Research must be real and authoritative
+   - Use web_search -> web_fetch; do not rely on snippets alone.
+   - Prefer official docs and vendor console pages.
+   - Produce steps + success checks grounded in sources.
+
+11) Human correction channel (when stuck)
+   - If confidence drops or progress stalls, pause and ask for a direct user
+     instruction (click/type/open URL).
+   - Store the correction as a reusable UI lesson.
+   - Do not require manual config toggles for normal operation.
+   - Prefer auto-detection of state (current project, login status, downloads).
+
 ## Implementation Tracks
 
 ### Track 1 - Unified Behavior (Highest Priority)
@@ -60,10 +78,16 @@ Enable a single, unified assistant that:
 ### Track 4 - Credential Management
 - Secure storage for passwords/tokens.
 - OAuth flows for Google Calendar/Tasks.
+- OAuth/UI setup must use the reasoned UI loop (no scripted click flows).
 
 ### Track 5 - Multi-Agent Coordination
 - Allow delegate workers.
 - Control max workers + cost limits.
+
+### Track 6 - Research Quality + Human Correction
+- Fetch and summarize authoritative sources (no snippet-only plans).
+- Build step-by-step plans with verification checkpoints.
+- Add a user correction prompt when stuck; store UI lessons.
 
 ## Success Criteria (Examples)
 - Simple task: "Create test.txt with ‘hello world' and open it."
@@ -72,6 +96,8 @@ Enable a single, unified assistant that:
 
 - Complex task: "Check Google Calendar for tomorrow's clients."
   - If not configured, agent guides OAuth setup and stores credentials.
+  - Uses reasoned UI loop (observe/think/act) to handle UI variance.
+  - Research/plan uses authoritative sources + explicit verification steps.
   - Returns correct events with times.
 
 ## Anti-Drift Rule

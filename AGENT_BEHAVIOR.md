@@ -42,6 +42,11 @@ files. Update this file first, then align prompts/configs/code to it.
 ## Research Rules
 - Default to fast local reasoning first.
 - Use web research only when knowledge is missing or likely outdated.
+- When research is required, do **real browsing**: web_search → web_fetch.
+- Do **not** rely on snippets alone; read source pages.
+- Prefer authoritative sources (official docs, vendor consoles).
+- If sources conflict or are unclear, continue research or ask the user.
+- Build a **step-by-step plan with sources + success checks**.
 - Cite sources when factual accuracy depends on them.
 
 ## Execution Rules
@@ -49,11 +54,23 @@ files. Update this file first, then align prompts/configs/code to it.
 - Use OpenRouter only when Codex is unavailable or for special cases.
 - Use multi-agent help for large tasks, but bound costs/parallelism.
 - Stop on errors; do not blindly continue.
+- **UI Automation Rule:** For complex desktop/web UI tasks (e.g., OAuth setup), use a *reasoned UI loop*:
+  Observe (screenshot/DOM) -> Think -> Act -> Verify -> Recover. Do **not** rely on fixed click scripts.
+  If the UI deviates (wrong page, dialog, download blocked), the agent must reason about the new state,
+  choose corrective actions (navigate, retry, dismiss dialogs), and continue.
+- **Human Correction Channel:** When confidence is low or progress stalls,
+  pause and ask the user for a direct instruction (e.g., "click X", "type Y",
+  "open URL"). Store the correction as a UI lesson for reuse.
+- **Auto-detect state:** Do not require manual 0/1 toggles for normal operation.
+  Infer state from the UI (current project selected, login state, download status).
+  Use config flags only for debugging, never as a required step for users.
 
 ## Memory & Learning
 - Short-term memory: current run context, errors, and attempted fixes.
 - Long-term memory: persistent lessons, user preferences, successful workflows.
 - Store lessons after failures with root cause + fix.
+- Store **UI lessons** (state -> action) and **research corrections** so the agent
+  stops repeating the same mistakes.
 
 ## Credentials & Security
 - Credentials must be stored securely using Windows DPAPI (SecretStore).
@@ -62,10 +79,11 @@ files. Update this file first, then align prompts/configs/code to it.
   approves and storage is supported.
 
 ## Scoring & Verification
-- Use a simple rubric: accuracy, completeness, alignment with user intent.      
+- Use a simple rubric: accuracy, completeness, alignment with user intent.
 - Default pass threshold: 80/100 (configurable).
-- If below threshold, attempt a single improvement pass and return the best     
+- If below threshold, attempt a single improvement pass and return the best
   answer with any remaining risks noted.
+- Verification is mandatory for tool actions (read-back, file check, API check).
 
 ## Success & Timeout Rules
 - If the goal is achieved, finish immediately with tool_name="finish".

@@ -38,11 +38,20 @@ if errorlevel 1 (
   exit /b 1
 )
 
-if /I "%SETUP_VERBOSE%"=="1" echo [SETUP] Ensuring UI automation deps (pywinauto, uiautomation)...
-"%PY%" -m pip install -q pywinauto uiautomation >nul 2>nul
+if /I "%SETUP_VERBOSE%"=="1" echo [SETUP] Ensuring UI automation deps (pywinauto, uiautomation, pynput)...
+"%PY%" -m pip install -q pywinauto uiautomation pynput >nul 2>nul
 if errorlevel 1 (
   echo [ERROR] Failed to install UI automation dependencies.
   exit /b 1
+)
+
+rem Check if Tesseract OCR is available (required for screen reading)
+if /I "%SETUP_VERBOSE%"=="1" echo [SETUP] Checking Tesseract OCR installation...
+"%PY%" -c "import pytesseract; pytesseract.get_tesseract_version()" >nul 2>nul
+if errorlevel 1 (
+  echo [WARN] Tesseract OCR not found. Screen text reading will be limited.
+  echo [WARN] Install Tesseract from: https://github.com/UB-Mannheim/tesseract/wiki
+  echo [WARN] Or use chocolatey: choco install tesseract
 )
 
 rem Install Playwright browsers (Chromium) if not present - silent mode
