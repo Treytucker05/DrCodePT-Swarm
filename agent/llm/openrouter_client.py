@@ -26,12 +26,12 @@ from .base import LLMClient
 logger = logging.getLogger(__name__)
 
 # Default OpenRouter models (fast + general purpose).
-# Updated Jan 2026 - Moonshot Kimi K2 primary.
+# Updated Jan 2026 - Moonshot Kimi K2 Thinking primary.
 DEFAULT_MODELS = {
-    "planner": "moonshotai/kimi-k2-instruct",
-    "chat": "moonshotai/kimi-k2-instruct",
-    "summarize": "moonshotai/kimi-k2-instruct",
-    "reason": "moonshotai/kimi-k2-instruct",
+    "planner": "moonshotai/kimi-k2-thinking",
+    "chat": "moonshotai/kimi-k2-thinking",
+    "summarize": "moonshotai/kimi-k2-thinking",
+    "reason": "moonshotai/kimi-k2-thinking",
 }
 
 # Allow per-task model overrides via environment variables
@@ -67,7 +67,7 @@ class OpenRouterClient(LLMClient):
     Uses cheap models by default for planning/routing decisions.
     """
     api_key: str = ""
-    model: str = "moonshotai/kimi-k2-instruct"
+    model: str = "moonshotai/kimi-k2-thinking"
     timeout_seconds: int = 60
     max_tokens: int = 4096
     temperature: float = 0.7
@@ -88,7 +88,7 @@ class OpenRouterClient(LLMClient):
         # Default to Moonshot Kimi K2 unless explicitly overridden
         default_model = os.getenv("OPENROUTER_MODEL", "").strip()
         if not default_model:
-            default_model = "moonshotai/kimi-k2-instruct"  # Use Kimi K2 Instruct as default
+            default_model = "moonshotai/kimi-k2-thinking"  # Use Kimi K2 Thinking as default
         
         return OpenRouterClient(
             api_key=api_key,
@@ -267,12 +267,12 @@ class OpenRouterClient(LLMClient):
         # Load schema
         schema = json.loads(schema_path.read_text())
 
-        # Use Kimi K2 Instruct for JSON tasks (strong reasoning)
+        # Use Kimi K2 Thinking for JSON tasks (strong reasoning)
         # This ensures consistent behavior regardless of env var overrides
         return self.generate_json(
             prompt,
             schema=schema,
-            model="moonshotai/kimi-k2-instruct",
+            model="moonshotai/kimi-k2-thinking",
         )
 
     def reason_json(
@@ -290,12 +290,12 @@ class OpenRouterClient(LLMClient):
         """
         schema = json.loads(schema_path.read_text())
 
-        # Use Kimi K2 Instruct for reasoning tasks (strong reasoning)
+        # Use Kimi K2 Thinking for reasoning tasks (strong reasoning)
         # This ensures consistent behavior regardless of env var overrides
         return self.generate_json(
             prompt,
             schema=schema,
-            model="moonshotai/kimi-k2-instruct",
+            model="moonshotai/kimi-k2-thinking",
         )
 
     def plan_next_action(
