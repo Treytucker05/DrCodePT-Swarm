@@ -26,12 +26,12 @@ from .base import LLMClient
 logger = logging.getLogger(__name__)
 
 # Default OpenRouter models (fast + general purpose).
-# Updated Jan 2026 - Moonshot Kimi K2 Thinking primary.
+# Updated Jan 2026 - Use fast free models for routine tasks, reasoning for complex.
 DEFAULT_MODELS = {
-    "planner": "moonshotai/kimi-k2-thinking",
-    "chat": "moonshotai/kimi-k2-thinking",
-    "summarize": "moonshotai/kimi-k2-thinking",
-    "reason": "moonshotai/kimi-k2-thinking",
+    "planner": "qwen/qwen3-coder:free",  # Fast planning decisions
+    "chat": "qwen/qwen3-coder:free",     # Fast chat responses
+    "summarize": "qwen/qwen3-coder:free",  # Fast summaries
+    "reason": "moonshotai/kimi-k2-thinking",  # Deep reasoning only
 }
 
 # Allow per-task model overrides via environment variables
@@ -67,7 +67,7 @@ class OpenRouterClient(LLMClient):
     Uses cheap models by default for planning/routing decisions.
     """
     api_key: str = ""
-    model: str = "moonshotai/kimi-k2-thinking"
+    model: str = "qwen/qwen3-coder:free"  # Fast default
     timeout_seconds: int = 60
     max_tokens: int = 4096
     temperature: float = 0.7
@@ -85,10 +85,10 @@ class OpenRouterClient(LLMClient):
                 "OPENROUTER_API_KEY not set. Get one at https://openrouter.ai/keys"
             )
 
-        # Default to Moonshot Kimi K2 unless explicitly overridden
+        # Default to fast model unless explicitly overridden
         default_model = os.getenv("OPENROUTER_MODEL", "").strip()
         if not default_model:
-            default_model = "moonshotai/kimi-k2-thinking"  # Use Kimi K2 Thinking as default
+            default_model = "qwen/qwen3-coder:free"  # Fast free model for routine tasks
         
         return OpenRouterClient(
             api_key=api_key,
