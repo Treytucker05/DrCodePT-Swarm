@@ -17,6 +17,7 @@ import base64
 import json
 import logging
 import os
+import re
 import subprocess
 import shutil
 import time
@@ -126,6 +127,8 @@ class VisionExecutor:
         self.action_history: List[Dict[str, Any]] = []
         self.max_steps = 50
         self.step_delay = 0.5  # seconds between actions
+        self._ocr_cache: Optional[Dict[str, Any]] = None  # Cache OCR results per screenshot
+        self.successful_patterns: List[Dict[str, Any]] = []  # Store successful coordinate patterns
 
         # Multi-tier model strategy for speed
         self.consecutive_failures = 0  # Track when to escalate to reasoning
@@ -206,6 +209,8 @@ class VisionExecutor:
         img.save(path)
 
         self.current_state = ScreenState(path, ts)
+        # Clear OCR cache when screenshot changes
+        self._ocr_cache = None
         return self.current_state
 
     def analyze_screen(self, objective: str, context: str = "") -> Dict[str, Any]:
@@ -247,6 +252,9 @@ class VisionExecutor:
                 f"- {a['action']}: {a.get('description', '')}" for a in recent
             )
 
+        screen_width = self.current_state.width if self.current_state else 1920
+        screen_height = self.current_state.height if self.current_state else 1080
+
         return f"""You are a desktop automation agent. Analyze this screenshot and decide the next action.
 
 OBJECTIVE: {objective}
@@ -255,7 +263,57 @@ OBJECTIVE: {objective}
 
 {history_text}
 
-Screen size: {self.current_state.width if self.current_state else 1920}x{self.current_state.height if self.current_state else 1080}
+Screen size: {screen_width}x{screen_height}
+
+STEP 1: OBSERVE
+Look at the screenshot carefully. Identify:
+- What UI elements are visible?
+- Where is the element you need to interact with?
+- What is its approximate position (top/middle/bottom, left/center/right)?
+
+STEP 2: ESTIMATE COORDINATES (CRITICAL FOR ACCURACY)
+To find precise coordinates, use this systematic approach:
+
+1. VISUAL GRID METHOD:
+   - Divide screen into a 10x10 grid mentally
+   - Each grid cell is {screen_width//10}px wide x {screen_height//10}px tall
+   - Identify which grid cell(s) contain your target element
+   - Example: If element is in column 3 (0-indexed), x ≈ 3 * {screen_width//10} = {3*screen_width//10}
+   - Example: If element is in row 2 (0-indexed), y ≈ 2 * {screen_height//10} = {2*screen_height//3}
+
+2. BOUNDING BOX METHOD (MORE ACCURATE):
+   - First, estimate the element's bounding box: [left, top, right, bottom]
+   - Visualize where the element starts and ends
+   - Calculate CENTER: x = (left + right) / 2, y = (top + bottom) / 2
+   - This is more accurate than guessing a single point
+
+3. REFERENCE POINTS:
+   - Top-left corner: (0, 0)
+   - Center of screen: ({screen_width//2}, {screen_height//2})
+   - Bottom-right: ({screen_width}, {screen_height})
+   - Use these as anchors to estimate relative positions
+
+4. SHOW YOUR WORK:
+   - In "reasoning", explain: "Element appears at [left, top, right, bottom], center is (x, y)"
+   - Include your calculation steps
+   - This helps verify accuracy
+
+STEP 3: VALIDATE & CALIBRATE CONFIDENCE
+Before responding, verify:
+- Coordinates within bounds? (0-{screen_width}, 0-{screen_height})
+- Clicking the CENTER of the element, not the edge?
+- Element is clearly visible and identifiable?
+
+CONFIDENCE CALIBRATION (be honest):
+- 0.9-1.0: Element is large, clearly visible, unambiguous (e.g., large button in center)
+- 0.7-0.9: Element is visible but may be small or near similar elements
+- 0.5-0.7: Element is partially visible, obscured, or you're estimating from context
+- 0.3-0.5: Element is hard to see, very small, or you're making educated guesses
+- <0.3: You're not confident - consider using "ask_user" or "wait" to get better view
+
+IMPORTANT: Lower confidence is OK - just be accurate about it. The system will handle low confidence appropriately.
+
+STEP 4: RESPOND
 
 Analyze the screenshot and respond with a JSON object:
 {{
@@ -292,22 +350,73 @@ CRITICAL RULES:
 8. NEVER use "ask_user" or "error" unless you've tried multiple approaches
 9. If the objective is complete or you see what you need, use "done" action
 
-EXAMPLES OF COORDINATES:
-- Left sidebar menu item: {{"x": 150, "y": 300}}
-- Main area button: {{"x": 600, "y": 400}}
-- Top search bar: {{"x": 500, "y": 60}}
-- Hamburger menu (top left): {{"x": 20, "y": 100}}
+EXAMPLES WITH CALCULATIONS:
+
+Example 1: Button in center of screen
+- Observation: "I see a blue 'Submit' button in the center of the page"
+- Reasoning: "Button appears in center region. Screen is {screen_width}x{screen_height}, so center is approximately ({screen_width//2}, {screen_height//2}). Button bounding box estimated as [{screen_width//2-50}, {screen_height//2-15}, {screen_width//2+50}, {screen_height//2+15}]. Center: ({screen_width//2}, {screen_height//2})"
+- Target: {{"x": {screen_width//2}, "y": {screen_height//2}}}
+- Confidence: 0.85
+
+Example 2: Left sidebar menu
+- Observation: "Left sidebar has menu items, I need to click 'Settings'"
+- Reasoning: "Sidebar is typically 200px wide. Menu item 'Settings' appears to be 3rd item down. Each item is ~40px tall. Top of sidebar is ~100px from top. So: left = 100 (center of 200px sidebar), top = 100 + (3 * 40) = 220, bottom = 220 + 40 = 260. Center: (100, 240)"
+- Target: {{"x": 100, "y": 240}}
+- Confidence: 0.75
+
+Example 3: Top navigation bar
+- Observation: "Search bar at top of page"
+- Reasoning: "Search bar is typically centered horizontally. Screen width {screen_width}, so center x ≈ {screen_width//2}. Top navigation is typically 50-80px from top, so y ≈ 65. Search bar bounding box: [{screen_width//2-200}, 50, {screen_width//2+200}, 80]. Center: ({screen_width//2}, 65)"
+- Target: {{"x": {screen_width//2}, "y": 65}}
+- Confidence: 0.9
 
 NAVIGATION EXAMPLES:
-- Wrong page? Use goto: {{"action": "goto", "value": "https://console.cloud.google.com/apis/library", ...}}
-- Need to click address bar? Provide coordinates: {{"action": "click", "target": {{"x": 360, "y": 35}}, ...}}
+- Wrong page? Use goto: {{"action": "goto", "value": "https://console.cloud.google.com/apis/library", "target": null, "confidence": 1.0}}
+- Need to click address bar? Estimate: {{"action": "click", "target": {{"x": {screen_width//2}, "y": 35}}, "confidence": 0.8}}
 """
 
     def _call_vision_llm(self, prompt: str, state: ScreenState) -> Optional[str]:
-        """Call the LLM with the screenshot for analysis."""
+        """Call the LLM with the screenshot for analysis.
+        
+        Optimizes model selection for vision tasks:
+        - Prefers vision-capable models (GPT-4 Vision, Claude 3.5 Sonnet)
+        - Uses lower temperature for coordinate accuracy
+        - Adjusts timeout for vision tasks
+        """
         if self.llm and hasattr(self.llm, "chat_with_image"):
             self._log_llm_use(self.llm, "vision_action")
-            return self.llm.chat_with_image(prompt, state.screenshot_path)
+            
+            # Use lower temperature for better coordinate accuracy
+            # Vision models work better with lower temperature (0.1-0.3)
+            temperature = 0.2 if not self.use_reasoning else 0.3
+            
+            # Try to use vision-optimized model if available
+            model = None
+            if hasattr(self.llm, "provider_name"):
+                provider = self.llm.provider_name
+                if provider == "openrouter":
+                    # Prefer Claude 3.5 Sonnet or GPT-4o for vision
+                    model = "anthropic/claude-3.5-sonnet" if not self.use_reasoning else "openai/gpt-4o"
+                elif provider == "openai":
+                    model = "gpt-4o" if not self.use_reasoning else "gpt-4o"
+            
+            try:
+                return self.llm.chat_with_image(
+                    prompt,
+                    state.screenshot_path,
+                    temperature=temperature,
+                    timeout=90,  # Vision tasks take longer
+                    model=model,
+                )
+            except Exception as e:
+                logger.warning(f"Vision API call failed, trying without model override: {e}")
+                # Fallback: try without model specification
+                return self.llm.chat_with_image(
+                    prompt,
+                    state.screenshot_path,
+                    temperature=temperature,
+                    timeout=90,
+                )
 
         try:
             return self._call_codex_vision(prompt, state)
@@ -316,7 +425,7 @@ NAVIGATION EXAMPLES:
             return None
 
     def _call_codex_vision(self, prompt: str, state: ScreenState) -> str:
-        """Call Codex CLI with an image using fast or reasoning model."""
+        """Call Codex CLI with an image."""
         # Find codex binary
         codex_paths = [
             shutil.which("codex"),
@@ -327,28 +436,17 @@ NAVIGATION EXAMPLES:
         if not codex_bin:
             raise RuntimeError("Codex CLI not found")
 
-        # Choose model based on whether we need reasoning
-        # Fast: gpt-5.1-codex-mini (default, quick decisions)
-        # Reasoning: gpt-5.2-codex (only when stuck or complex)
-        model = os.getenv("CODEX_MODEL_REASON" if self.use_reasoning else "CODEX_MODEL_FAST", "gpt-5.1-codex-mini")
-        reasoning_effort = os.getenv("CODEX_REASONING_EFFORT_REASON" if self.use_reasoning else "CODEX_REASONING_EFFORT_FAST", "low")
-
-        logger.info(f"Vision using {'REASONING' if self.use_reasoning else 'FAST'} model: {model}")
-
         # Note: -i goes with exec subcommand, not before it
         cmd = [
             codex_bin,
             "--dangerously-bypass-approvals-and-sandbox",
             "exec",
             "--skip-git-repo-check",
-            "--model", model,
-            "--reasoning-effort", reasoning_effort,
             "-i", str(state.screenshot_path),  # Image input (after exec)
             "-",  # Read prompt from stdin
         ]
 
-        # Fast model gets shorter timeout
-        timeout = 120 if self.use_reasoning else 30
+        timeout = 90  # Vision takes longer
 
         result = subprocess.run(
             cmd,
@@ -402,7 +500,16 @@ NAVIGATION EXAMPLES:
 
         try:
             if action_type == "click":
-                return self._do_click(target)
+                confidence = float(action.get("confidence", 1.0) or 1.0)
+                # Try to extract expected text from reasoning or observation
+                expected_text = None
+                reasoning = action.get("reasoning", "")
+                observation = action.get("observation", "")
+                # Look for quoted text or button names in reasoning
+                text_matches = re.findall(r'["\']([^"\']+)["\']', reasoning + " " + observation)
+                if text_matches:
+                    expected_text = text_matches[0]  # Use first quoted text
+                return self._do_click(target, confidence, expected_text)
 
             elif action_type == "type":
                 if not value:
@@ -445,30 +552,282 @@ NAVIGATION EXAMPLES:
         except Exception as e:
             return False, f"Action failed: {e}"
 
-    def _do_click(self, target: Any) -> Tuple[bool, str]:
-        """Execute a click action."""
+    def _validate_coordinates(self, x: float, y: float) -> Tuple[bool, Optional[str]]:
+        """Validate coordinates are within screen bounds and reasonable.
+        
+        Returns:
+            (is_valid, error_message)
+        """
+        if not self.current_state:
+            return True, None  # Can't validate without screen state
+        
+        screen_width = self.current_state.width
+        screen_height = self.current_state.height
+        
+        # Check bounds
+        if x < 0 or y < 0:
+            return False, f"Coordinates ({x}, {y}) are negative - must be positive"
+        
+        if x >= screen_width or y >= screen_height:
+            return False, f"Coordinates ({x}, {y}) exceed screen bounds ({screen_width}x{screen_height})"
+        
+        # Warn if coordinates are very close to edges (might be inaccurate)
+        margin = 10
+        if x < margin or y < margin or x > screen_width - margin or y > screen_height - margin:
+            logger.warning(f"Coordinates ({x}, {y}) are near screen edge - may be inaccurate")
+        
+        return True, None
+
+    def _refine_coordinates(self, x: float, y: float, confidence: float) -> Tuple[float, float]:
+        """Refine coordinates based on confidence and screen state.
+        
+        For low confidence, we might want to adjust slightly or request bounding box.
+        Currently returns coordinates as-is, but can be extended.
+        """
+        # Round to integers (pixel coordinates are discrete)
+        x = round(x)
+        y = round(y)
+        
+        # If confidence is very low, we might want to add small random offset
+        # to avoid systematic errors, but for now we'll trust the model
+        # This can be enhanced later with learning from failures
+        
+        return float(x), float(y)
+
+    def _do_click(self, target: Any, confidence: float = 1.0, expected_text: Optional[str] = None) -> Tuple[bool, str]:
+        """Execute a click action with validation, refinement, and OCR verification."""
         if isinstance(target, dict):
             if "x" in target and "y" in target:
-                x, y = int(target["x"]), int(target["y"])
-                # Validate coordinates are within screen bounds
-                if x < 0 or y < 0:
-                    return False, f"Invalid coordinates ({x}, {y}) - coordinates must be positive"
-                if self.current_state and (x > self.current_state.width or y > self.current_state.height):
-                    logger.warning(f"Coordinates ({x}, {y}) may be outside screen bounds ({self.current_state.width}x{self.current_state.height})")
-                self.pyautogui.click(x, y)
-                return True, f"Clicked at ({x}, {y})"
+                x, y = float(target["x"]), float(target["y"])
+                
+                # If confidence is low and we have expected text, try OCR first
+                if confidence < 0.6 and expected_text:
+                    ocr_coords = self._find_text_with_ocr(expected_text)
+                    if ocr_coords:
+                        ocr_x, ocr_y = ocr_coords
+                        # Check distance between vision and OCR coordinates
+                        distance = ((ocr_x - x) ** 2 + (ocr_y - y) ** 2) ** 0.5
+                        if distance > 30:  # More than 30px difference
+                            logger.info(f"OCR found '{expected_text}' at ({ocr_x}, {ocr_y}), vision said ({x}, {y}), using OCR")
+                            x, y = float(ocr_x), float(ocr_y)
+                            confidence = 0.8  # Boost confidence when OCR confirms
+                
+                # Refine coordinates
+                x, y = self._refine_coordinates(x, y, confidence)
+                
+                # Validate coordinates
+                is_valid, error_msg = self._validate_coordinates(x, y)
+                if not is_valid:
+                    return False, error_msg or f"Invalid coordinates ({x}, {y})"
+                
+                # Optional: Verify with OCR if expected text provided
+                if expected_text and confidence < 0.8:
+                    verified, verify_msg = self._verify_coordinates_with_ocr(x, y, expected_text)
+                    if not verified:
+                        logger.warning(f"OCR verification failed: {verify_msg}")
+                        # Don't fail, but log warning
+                
+                # Convert to integers for clicking
+                x_int, y_int = int(x), int(y)
+                
+                # Log the click for debugging
+                logger.info(f"Clicking at ({x_int}, {y_int}) with confidence {confidence:.2f}")
+                
+                try:
+                    self.pyautogui.click(x_int, y_int)
+                    # Success - reset failure counter and store pattern
+                    if self.consecutive_failures > 0:
+                        self.consecutive_failures = 0
+                    # Store successful pattern for learning
+                    if expected_text:
+                        self.successful_patterns.append({
+                            "text": expected_text,
+                            "coords": (x_int, y_int),
+                            "confidence": confidence,
+                            "timestamp": datetime.now().isoformat(),
+                        })
+                        # Keep only last 20 patterns
+                        if len(self.successful_patterns) > 20:
+                            self.successful_patterns.pop(0)
+                    return True, f"Clicked at ({x_int}, {y_int})"
+                except Exception as e:
+                    # Failure - increment counter and try nearby coordinates
+                    self.consecutive_failures += 1
+                    return self._try_nearby_coordinates(x_int, y_int, expected_text, str(e))
             elif "text" in target:
-                # Text targets are not supported - provide helpful error
+                # Try OCR-based click
                 text = target["text"]
-                return False, f"RETRY_WITH_COORDINATES: Cannot click on '{text}' by text. Look at the screenshot and provide exact x,y pixel coordinates for this element."
+                return self._click_text(text)
         elif target is None:
             return False, "No click target provided - need x,y coordinates"
         return False, f"Invalid click target format: {target}. Expected {{\"x\": number, \"y\": number}}"
 
+    def _find_text_with_ocr(self, text_query: str, screenshot_path: Optional[Path] = None) -> Optional[Tuple[int, int]]:
+        """Find text on screen using OCR and return its center coordinates.
+        
+        Args:
+            text_query: Text to search for (can be partial, case-insensitive)
+            screenshot_path: Path to screenshot (uses current_state if None)
+            
+        Returns:
+            (x, y) coordinates of text center, or None if not found
+        """
+        try:
+            import pytesseract
+            from PIL import Image
+        except ImportError:
+            logger.debug("pytesseract or PIL not available for OCR")
+            return None
+        
+        # Use provided screenshot or current state
+        img_path = screenshot_path or (self.current_state.screenshot_path if self.current_state else None)
+        if not img_path or not img_path.exists():
+            return None
+        
+        try:
+            # Load image
+            img = Image.open(img_path)
+            
+            # Run OCR with bounding boxes
+            data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+            
+            # Search for text
+            text_query_lower = text_query.lower().strip()
+            best_match = None
+            best_confidence = 0.0
+            
+            n_boxes = len(data['text'])
+            for i in range(n_boxes):
+                text = data['text'][i].strip().lower()
+                conf = float(data['conf'][i]) if data['conf'][i] != -1 else 0.0
+                
+                # Check if text matches (exact or contains)
+                if text_query_lower in text or text in text_query_lower:
+                    # Calculate center of bounding box
+                    x = (data['left'][i] + data['width'][i] / 2)
+                    y = (data['top'][i] + data['height'][i] / 2)
+                    
+                    # Prefer higher confidence matches
+                    if conf > best_confidence:
+                        best_match = (int(x), int(y))
+                        best_confidence = conf
+            
+            if best_match:
+                logger.info(f"OCR found '{text_query}' at {best_match} (confidence: {best_confidence:.1f}%)")
+                return best_match
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"OCR search failed: {e}")
+            return None
+
+    def _verify_coordinates_with_ocr(self, x: float, y: float, expected_text: Optional[str] = None) -> Tuple[bool, Optional[str]]:
+        """Verify that coordinates point to expected text using OCR.
+        
+        Args:
+            x, y: Coordinates to verify
+            expected_text: Optional text that should be near these coordinates
+            
+        Returns:
+            (is_valid, message)
+        """
+        if not expected_text or not self.current_state:
+            return True, None  # Can't verify without text or screenshot
+        
+        try:
+            import pytesseract
+            from PIL import Image
+        except ImportError:
+            return True, None  # OCR not available, skip verification
+        
+        try:
+            img = Image.open(self.current_state.screenshot_path)
+            
+            # Extract text in a small region around the coordinates
+            margin = 50
+            x_int, y_int = int(x), int(y)
+            region = img.crop((
+                max(0, x_int - margin),
+                max(0, y_int - margin),
+                min(img.width, x_int + margin),
+                min(img.height, y_int + margin)
+            ))
+            
+            # Run OCR on region
+            ocr_text = pytesseract.image_to_string(region).lower()
+            expected_lower = expected_text.lower()
+            
+            # Check if expected text appears in OCR result
+            if expected_lower in ocr_text or any(word in ocr_text for word in expected_lower.split()):
+                return True, f"OCR verified '{expected_text}' near coordinates"
+            
+            return False, f"OCR did not find '{expected_text}' near coordinates ({x_int}, {y_int})"
+            
+        except Exception as e:
+            logger.debug(f"OCR verification failed: {e}")
+            return True, None  # Don't fail on OCR errors
+
+    def _try_nearby_coordinates(self, x: int, y: int, expected_text: Optional[str], error: str) -> Tuple[bool, str]:
+        """Try clicking at nearby coordinates if initial click failed.
+        
+        This implements a visual feedback loop: if a click fails, try small offsets.
+        """
+        # Try nearby coordinates in a pattern
+        offsets = [
+            (0, -5), (0, 5), (-5, 0), (5, 0),  # Up, down, left, right
+            (-3, -3), (3, 3), (-3, 3), (3, -3),  # Diagonals
+            (0, -10), (0, 10), (-10, 0), (10, 0),  # Further offsets
+        ]
+        
+        for offset_x, offset_y in offsets:
+            new_x = x + offset_x
+            new_y = y + offset_y
+            
+            # Validate new coordinates
+            is_valid, _ = self._validate_coordinates(new_x, new_y)
+            if not is_valid:
+                continue
+            
+            try:
+                logger.info(f"Trying nearby coordinates ({new_x}, {new_y}) after failed click at ({x}, {y})")
+                self.pyautogui.click(new_x, new_y)
+                # Success with nearby coordinates
+                self.consecutive_failures = 0
+                return True, f"Clicked at nearby coordinates ({new_x}, {new_y}) after initial failure"
+            except Exception:
+                continue
+        
+        # If OCR is available and we have expected text, try OCR-based click
+        if expected_text:
+            ocr_coords = self._find_text_with_ocr(expected_text)
+            if ocr_coords:
+                ocr_x, ocr_y = ocr_coords
+                distance = ((ocr_x - x) ** 2 + (ocr_y - y) ** 2) ** 0.5
+                if distance > 20:  # Significant difference
+                    try:
+                        logger.info(f"Trying OCR coordinates ({ocr_x}, {ocr_y}) after coordinate click failed")
+                        self.pyautogui.click(ocr_x, ocr_y)
+                        self.consecutive_failures = 0
+                        return True, f"Clicked using OCR coordinates ({ocr_x}, {ocr_y}) after coordinate click failed"
+                    except Exception:
+                        pass
+        
+        # All retries failed
+        return False, f"Click failed at ({x}, {y}) and nearby coordinates: {error}"
+
     def _click_text(self, text: str) -> Tuple[bool, str]:
-        """Try to click on text found on screen - NOT IMPLEMENTED, needs coordinates."""
-        # Text search is not implemented - LLM must provide coordinates
-        return False, f"RETRY_WITH_COORDINATES: Look at the screenshot and provide the x,y pixel coordinates for '{text}'"
+        """Try to click on text found on screen using OCR."""
+        coords = self._find_text_with_ocr(text)
+        if coords:
+            x, y = coords
+            try:
+                self.pyautogui.click(x, y)
+                self.consecutive_failures = 0
+                return True, f"Clicked on '{text}' at ({x}, {y}) using OCR"
+            except Exception as e:
+                return False, f"Failed to click OCR coordinates ({x}, {y}): {e}"
+        return False, f"Could not find '{text}' on screen using OCR. Please provide x,y coordinates."
 
     def _do_goto(self, url: str) -> Tuple[bool, str]:
         """Open a URL in the browser."""
@@ -643,12 +1002,30 @@ NAVIGATION EXAMPLES:
             success, message = self.execute_action(analysis)
 
             if not success:
+                # Visual feedback: analyze what went wrong
+                self.consecutive_failures += 1
+                
+                # If we've failed multiple times, take a new screenshot and analyze
+                if self.consecutive_failures >= 2:
+                    logger.warning(f"Multiple failures ({self.consecutive_failures}), taking new screenshot to analyze")
+                    new_state = self.take_screenshot(f"failure_analysis_{steps_taken}")
+                    
+                    # Add failure context for next analysis
+                    context = f"{context}\nPrevious action failed: {message}\nAttempted: {analysis.get('action')} at {analysis.get('target')}"
+                    
+                    # If we have successful patterns, try to use them
+                    if self.successful_patterns and analysis.get("target"):
+                        # Look for similar patterns
+                        target_text = analysis.get("observation", "")
+                        for pattern in self.successful_patterns[-5:]:  # Check recent patterns
+                            if pattern["text"].lower() in target_text.lower():
+                                logger.info(f"Found successful pattern for '{pattern['text']}': {pattern['coords']}")
+                
                 # Add error to context and retry
                 context = f"{context}\nPrevious action failed: {message}"
                 logger.warning(f"Action failed: {message}")
 
                 # Escalate to reasoning model after 2 consecutive failures
-                self.consecutive_failures += 1
                 if self.consecutive_failures >= 2 and not self.use_reasoning:
                     logger.info("Escalating to reasoning model after repeated failures")
                     self.use_reasoning = True

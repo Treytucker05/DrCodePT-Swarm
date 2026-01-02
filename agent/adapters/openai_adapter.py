@@ -9,11 +9,13 @@ Environment Variables:
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 
 import requests
 
@@ -31,6 +33,14 @@ from .llm_client import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "gpt-4o-mini"
+
+# Models that support vision
+VISION_CAPABLE_MODELS = [
+    "gpt-4o",
+    "gpt-4o-mini",
+    "gpt-4-vision-preview",
+    "gpt-4-turbo",
+]
 
 
 class OpenAIAdapter(LLMClient):
@@ -240,6 +250,118 @@ class OpenAIAdapter(LLMClient):
                 error_type=LLMErrorType.INVALID_INPUT,
                 provider=self.provider_name,
             )
+
+    def _encode_image(self, image_input: Union[str, Path, Any]) -> str:
+        """Encode an image to base64 string.
+        
+        Args:
+            image_input: Can be a file path (str/Path) or PIL Image object
+            
+        Returns:
+            Base64 encoded image string with data URI prefix
+        """
+        try:
+            from PIL import Image
+        except ImportError:
+            raise LLMError(
+                "PIL/Pillow is required for image processing. Install with: pip install Pillow",
+                error_type=LLMErrorType.INVALID_INPUT,
+                provider=self.provider_name,
+            )
+        
+        # Handle PIL Image object
+        if hasattr(image_input, 'save'):
+            import io
+            buffer = io.BytesIO()
+            image_input.save(buffer, format='PNG')
+            image_bytes = buffer.getvalue()
+        # Handle file path
+        elif isinstance(image_input, (str, Path)):
+            path = Path(image_input)
+            if not path.exists():
+                raise LLMError(
+                    f"Image file not found: {path}",
+                    error_type=LLMErrorType.INVALID_INPUT,
+                    provider=self.provider_name,
+                )
+            with open(path, 'rb') as f:
+                image_bytes = f.read()
+        else:
+            raise LLMError(
+                f"Unsupported image input type: {type(image_input)}",
+                error_type=LLMErrorType.INVALID_INPUT,
+                provider=self.provider_name,
+            )
+        
+        # Encode to base64
+        base64_image = base64.b64encode(image_bytes).decode('utf-8')
+        return f"data:image/png;base64,{base64_image}"
+
+    def chat_with_image(
+        self,
+        prompt: str,
+        image_input: Union[str, Path, Any],
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.2,  # Lower temperature for vision tasks
+        max_tokens: int = 2048,
+        timeout: int = 90,  # Vision tasks take longer
+        model: Optional[str] = None,
+    ) -> str:
+        """Send a chat message with an image and get a response.
+        
+        Args:
+            prompt: Text prompt describing what to do with the image
+            image_input: Image file path (str/Path) or PIL Image object
+            system_prompt: Optional system prompt
+            temperature: Sampling temperature (default 0.2 for accuracy)
+            max_tokens: Maximum tokens in response
+            timeout: Request timeout in seconds
+            model: Model to use (defaults to vision-capable model if available)
+            
+        Returns:
+            Response text from the model
+        """
+        # Select vision-capable model if not specified
+        use_model = model or self._model
+        if not any(vm in use_model for vm in VISION_CAPABLE_MODELS):
+            # Default to gpt-4o if available, otherwise gpt-4o-mini
+            use_model = "gpt-4o" if "gpt-4o" in str(self._model) else "gpt-4o-mini"
+            logger.info(f"Using vision-capable model: {use_model}")
+        
+        # Encode image
+        image_data_uri = self._encode_image(image_input)
+        
+        # Build messages with image
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        
+        # Format message with image (OpenAI format)
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": image_data_uri
+                    }
+                }
+            ]
+        })
+        
+        result = self._make_request(
+            messages=messages,
+            model=use_model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
+        
+        # Parse response
+        choice = result.get("choices", [{}])[0]
+        content = choice.get("message", {}).get("content", "")
+        return content
 
 
 # Register the adapter
