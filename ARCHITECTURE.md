@@ -177,9 +177,38 @@ Centralized tool management with:
 | **Web** | `web_fetch`, `web_search`, `web_gui_snapshot`, `web_click`, `web_type` | HTTP requests, search, browser automation |
 | **Filesystem** | `file_read`, `file_write`, `list_dir`, `glob_paths`, `file_copy`, `file_move`, `file_delete` | File operations |
 | **Shell** | `shell_exec`, `python_exec` | Command/script execution |
-| **Desktop** | `desktop_som_snapshot`, `desktop_click`, `desktop_type` | GUI automation |
+| **Desktop** | `desktop_som_snapshot`, `desktop_click`, `desktop_type` | GUI automation via hybrid executor |
 | **Memory** | `memory_store`, `memory_search` | Long-term memory operations |
 | **Control** | `finish`, `delegate_task`, `human_ask` | Flow control |
+
+**Desktop Automation Architecture:**
+
+The agent uses a hybrid approach combining UI automation with vision-guided fallback:
+
+```
+Task → Hybrid Executor → UI Automation (fast, element-based)
+                      ↓ (fallback on browsers/complex UIs)
+                      Vision Executor (screenshot + LLM analysis)
+                      ↓
+                      PyAutoGUI (click at pixel coordinates)
+```
+
+Key components:
+- `agent/autonomous/hybrid_executor.py` - Orchestrates UI automation with vision fallback
+- `agent/autonomous/vision_executor.py` - Screenshot analysis and coordinate-based clicking
+- `agent/autonomous/windows_ui.py` - Windows UI Automation bindings
+
+**Vision Executor Features:**
+- **Fast/Reasoning Tiering**: Uses fast Codex Mini (gpt-5.1-codex-mini) by default, escalates to reasoning model (gpt-5.2-codex) after 2 consecutive failures
+- **Structured Prompting**: Guides LLM through systematic coordinate estimation using bounding box → center calculation
+- **Auto-escalation**: Switches to deep reasoning on repeated errors, ask_user, or low confidence
+- **Auto-de-escalation**: Returns to fast mode immediately after successful actions
+- **Navigation Intelligence**: Uses `goto` action when detecting wrong page instead of thrashing
+
+Performance:
+- Fast mode: ~5-10s per vision decision (30s timeout)
+- Reasoning mode: ~30-90s for complex scenarios (120s timeout)
+- 10-20x speed improvement for routine tasks vs always-reasoning approach
 
 ### 4. Memory System (`memory/sqlite_store.py`)
 

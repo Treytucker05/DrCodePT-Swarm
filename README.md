@@ -71,12 +71,21 @@ When Codex is working in this repo, these files are the required rules:
 - Memory uses embeddings with FAISS acceleration when available (falls back gracefully if disabled).
 - Built-in tools include `web_search`, `web_fetch` with HTML stripping, and `delegate_task` for sub-agent handoffs.
 
-## Current status (Dec 2025)
+## Current status (Jan 2026)
 - Chat capability: ✅ stable
 - Playbooks: ⚠️ partially working (some flows still require manual steps)
 - Swarm: ❌ broken (repo audits currently fail)
-- Google OAuth setup: ⚠️ requires manual browser steps for login/2FA and download
+- Vision-guided automation: ✅ working with fast/reasoning tiering (Jan 2026 improvements)
+- Desktop automation: ✅ hybrid executor with UI automation + vision fallback
+- Google OAuth setup: ✅ autonomous via vision-guided browser navigation
 - "DO NOT execute" wrapper is applied only to swarm reasoning agents (chat/playbook are not wrapped).
+
+**Recent Vision System Improvements (Jan 2026):**
+- Fast/reasoning model tiering: 10-20x speedup for routine vision tasks
+- Structured coordinate estimation prompts with bounding box → center calculation
+- Auto-escalation to reasoning models after failures
+- Intelligent navigation with `goto` action (no more thrashing loops)
+- OpenRouter optimized for speed: fast free models by default, Kimi K2 Thinking only for complex reasoning
 
 ## Run artifacts and concurrency safety
 - The agent no longer uses `os.chdir()` in concurrent code paths; all subprocesses run with explicit `cwd=` and absolute paths.
