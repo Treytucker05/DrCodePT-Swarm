@@ -91,32 +91,37 @@ def get_default_llm() -> LLMClient:
 
     primary = (os.getenv("TREYS_AGENT_LLM_PRIMARY") or os.getenv("AGENT_LLM_PRIMARY") or "").strip().lower()
 
+    # Honor explicit primary preference
     if primary == "openrouter":
         if os.getenv("OPENROUTER_API_KEY"):
             from agent.llm.openrouter_client import OpenRouterClient
             return OpenRouterClient.from_env()
-    if primary == "codex":
+    
+    # Priority: Codex first (no auth check gate - use if client creation succeeds)
+    if primary == "codex" or not primary:
         try:
             from agent.llm.codex_cli_client import CodexCliClient
             codex = CodexCliClient.from_env()
-            if hasattr(codex, "check_auth") and codex.check_auth():
-                return codex
+            # Client creation succeeded - use it (don't gate on auth check)
+            return codex
         except Exception:
             pass
-
+    
+    # Try Codex regardless of primary setting (Codex is always preferred)
     try:
         from agent.llm.codex_cli_client import CodexCliClient
-
         codex = CodexCliClient.from_env()
-        if hasattr(codex, "check_auth") and codex.check_auth():
-            return codex
+        # Client creation succeeded - use it (don't gate on auth check)
+        return codex
     except Exception:
         pass
 
+    # Only fall back to OpenRouter if Codex client creation failed entirely
     if os.getenv("OPENROUTER_API_KEY"):
         from agent.llm.openrouter_client import OpenRouterClient
         return OpenRouterClient.from_env()
 
+    # Final fallback: try Codex one more time
     from agent.llm.codex_cli_client import CodexCliClient
     return CodexCliClient.from_env()
 

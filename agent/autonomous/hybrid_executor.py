@@ -145,19 +145,16 @@ class HybridExecutor:
         if self.llm and not self._disable_codex:
             return self.llm
 
-        # Prefer Codex if available
+        # Prefer Codex if available - use if client creation succeeds (no auth check gate)
         if not self._disable_codex:
             try:
                 from agent.llm.codex_cli_client import CodexCliClient
 
                 client = CodexCliClient.from_env()
-                if hasattr(client, "check_auth") and not client.check_auth():
-                    self._disable_codex = True
-                    logger.warning("Codex CLI auth check failed; disabling for this run")
-                else:
-                    self.llm = client
-                    self._log_llm_use(self.llm, "hybrid_executor")
-                    return self.llm
+                # Client creation succeeded - use it (don't gate on auth check)
+                self.llm = client
+                self._log_llm_use(self.llm, "hybrid_executor")
+                return self.llm
             except Exception as e:
                 logger.debug(f"Codex not available: {e}")
 

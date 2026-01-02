@@ -1866,7 +1866,12 @@ def _wait_for_continue(message: str, *, seconds: int) -> str:
 def _prompt_user_guidance(message: str) -> str:
     """Ask for a direct instruction to recover UI automation."""
     print(f"\n[USER GUIDANCE] {message}")
-    answer = input("> ").strip()
+    try:
+        answer = input("> ").strip()
+    except EOFError:
+        # Non-interactive environment (e.g., testing) - return empty to continue
+        print("  (Non-interactive mode - continuing automatically)")
+        return ""
     lower = answer.lower()
     if lower in {"continue", "c", "go", "ok"}:
         return ""
@@ -2197,6 +2202,8 @@ def full_google_setup(ctx, args: FullGoogleSetupArgs):
         enable_skip_until_nav = False  # Skip Enable detection after too many failures
         consecutive_enable_failures = 0
         max_enable_failures = int(os.getenv("TREYS_AGENT_GOOGLE_MAX_ENABLE_FAILURES", "8"))  # Hard limit
+        oauth_consent_configured = False  # Track if OAuth consent screen has been configured
+        credentials_created = False  # Track if credentials have been created
         
         # WRAP ENTIRE LOOP IN TRY/EXCEPT to catch all exceptions
         try:
@@ -2446,6 +2453,102 @@ def full_google_setup(ctx, args: FullGoogleSetupArgs):
                     wait_count = 0
                     consecutive_enable_failures = 0  # Reset on navigation
                     continue
+
+                # AUTOMATIC CREDENTIALS PAGE HANDLING
+                # Detect if we're on the credentials page
+                if _screen_has_any(["credentials", "oauth 2.0 client ids", "create credentials"]) and _screen_has_any(["api keys", "oauth", "service accounts"]):
+                    _debug_log("Detected credentials page")
+                    
+                    # Check if we need to configure OAuth consent screen first
+                    if not oauth_consent_configured and _screen_has_any(["configure consent screen", "remember to configure"]):
+                        _debug_log("OAuth consent screen not configured yet - navigating to consent screen")
+                        _navigate_chrome(f"https://console.cloud.google.com/apis/credentials/consent?project={args.project_name}")
+                        wait_count = 0
+                        consecutive_enable_failures = 0
+                        continue
+                    
+                    # If consent screen is configured (or not needed), click Create Credentials
+                    if not credentials_created and _screen_has_any(["create credentials", "+ create"]):
+                        _debug_log("Clicking Create Credentials button")
+                        if _auto_click_main(["create credentials", "+ create"], attempts=3):
+                            time.sleep(2)
+                            # Check if we're now on the credential type selection
+                            if _screen_has_any(["oauth client id", "application type", "desktop app"]):
+                                _debug_log("Credential creation dialog opened")
+                                # Click OAuth Client ID
+                                if _auto_click_main(["oauth client id"], attempts=2):
+                                    time.sleep(2)
+                                    # Select Desktop app
+                                    if _screen_has_any(["application type", "desktop app", "web application"]):
+                                        if _auto_click_main(["desktop app"], attempts=2):
+                                            time.sleep(1)
+                                            # Fill in name
+                                            _fill_field_by_label(["name"], "Treys Agent Desktop")
+                                            time.sleep(0.5)
+                                            # Click Create
+                                            if _auto_click_main(["create"], attempts=2):
+                                                time.sleep(3)
+                                                # Download JSON
+                                                if _screen_has_any(["download json", "download"]):
+                                                    if _auto_click_main(["download json", "download"], attempts=2):
+                                                        time.sleep(2)
+                                                        # Click OK/Done
+                                                        _auto_click_main(["ok", "done"], attempts=2)
+                                                        credentials_created = True
+                                                        _debug_log("Credentials created and downloaded successfully")
+                                                        continue
+                        # If automatic creation failed, continue to vision executor
+                        _debug_log("Automatic credential creation failed - will use vision executor")
+                
+                # AUTOMATIC OAUTH CONSENT SCREEN HANDLING
+                if _screen_has_any(["oauth consent screen", "consent screen", "publishing status"]) and not oauth_consent_configured:
+                    _debug_log("Detected OAuth consent screen page")
+                    
+                    # Check if already configured (has "Edit App" or "Publishing status")
+                    if _screen_has_any(["edit app", "publishing status", "configured", "in production"]):
+                        _debug_log("OAuth consent screen already configured")
+                        oauth_consent_configured = True
+                        # Navigate to credentials page
+                        _navigate_chrome(f"https://console.cloud.google.com/apis/credentials?project={args.project_name}")
+                        wait_count = 0
+                        consecutive_enable_failures = 0
+                        continue
+                    
+                    # Need to configure - click External
+                    if _screen_has_any(["external", "internal", "user type"]):
+                        _debug_log("Configuring OAuth consent screen - selecting External")
+                        if _auto_click_main(["external"], attempts=2):
+                            time.sleep(1)
+                            # Click Create
+                            if _auto_click_main(["create"], attempts=2):
+                                time.sleep(2)
+                                # Fill app name
+                                if _screen_has_any(["app name", "application name"]):
+                                    email = (creds or {}).get("username") or ""
+                                    _fill_field_by_label(["app name", "application name"], "Treys Agent")
+                                    time.sleep(0.5)
+                                    # Fill user support email
+                                    if _screen_has_any(["user support email", "support email", "email"]):
+                                        _fill_field_by_label(["user support email", "support email"], email)
+                                    time.sleep(0.5)
+                                    # Fill developer contact email
+                                    if _screen_has_any(["developer contact", "developer email"]):
+                                        _fill_field_by_label(["developer contact", "developer email"], email)
+                                    time.sleep(0.5)
+                                    # Save and Continue (might need to click multiple times)
+                                    for _ in range(3):
+                                        if _screen_has_any(["save and continue", "continue", "next"]):
+                                            if _auto_click_main(["save and continue", "continue", "next"], attempts=2):
+                                                time.sleep(2)
+                                        else:
+                                            break
+                                    oauth_consent_configured = True
+                                    _debug_log("OAuth consent screen configured - navigating to credentials")
+                                    # Navigate to credentials page
+                                    _navigate_chrome(f"https://console.cloud.google.com/apis/credentials?project={args.project_name}")
+                                    wait_count = 0
+                                    consecutive_enable_failures = 0
+                                    continue
 
                 if action_type == "done":
                     break

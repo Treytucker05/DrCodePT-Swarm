@@ -105,7 +105,7 @@ def mode_autonomous(task: str, *, unsafe_mode: bool = False) -> None:
     from agent.autonomous.config import AgentConfig, PlannerConfig, RunnerConfig
     from agent.config.profile import resolve_profile
     from agent.autonomous.runner import AgentRunner
-    from agent.llm import CodexCliAuthError, CodexCliClient, CodexCliNotFoundError
+    from agent.llm import CodexCliClient, CodexCliNotFoundError
 
     planner_mode = (os.getenv("AUTO_PLANNER_MODE") or "react").strip().lower()
     auto_selected = False
@@ -151,17 +151,16 @@ def mode_autonomous(task: str, *, unsafe_mode: bool = False) -> None:
     codex_error = None
     try:
         llm = CodexCliClient.from_env(workdir=REPO_ROOT)
-        if hasattr(llm, "check_auth") and not llm.check_auth():
-            raise CodexCliAuthError("Codex CLI auth check failed")
-        print(f"{YELLOW}[LLM]{RESET} provider=codex_cli model=default")
-    except (CodexCliNotFoundError, CodexCliAuthError) as exc:
+        # Don't check auth - let Codex try and fail naturally at runtime if needed
+        print(f"{YELLOW}[LLM]{RESET} provider=codex_cli model=default (USING CODEX)")
+    except CodexCliNotFoundError as exc:
         codex_error = exc
 
     if llm is None and os.getenv("OPENROUTER_API_KEY"):
         try:
             from agent.llm.openrouter_client import OpenRouterClient
             llm = OpenRouterClient.from_env()
-            print(f"{YELLOW}[LLM]{RESET} provider=openrouter model={llm.model}")
+            print(f"{YELLOW}[LLM]{RESET} provider=openrouter model={llm.model} (FALLBACK)")
         except Exception as exc:
             print(f"{YELLOW}[WARN]{RESET} OpenRouter unavailable: {exc}")
 

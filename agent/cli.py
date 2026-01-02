@@ -83,8 +83,13 @@ def _get_llm_client():
     try:
         from agent.llm.codex_cli_client import CodexCliClient
         client = CodexCliClient.from_env()
-        if hasattr(client, "check_auth") and not client.check_auth():
-            raise RuntimeError("Codex CLI auth check failed")
+        # Don't block on auth check - let Codex try at runtime
+        if hasattr(client, "check_auth"):
+            try:
+                if not client.check_auth():
+                    logger.warning("Codex auth check failed, but will attempt to use Codex anyway...")
+            except Exception:
+                logger.warning("Codex auth check error, but will attempt to use Codex anyway...")
         return client
     except Exception as e:
         logger.debug(f"CodexCliClient not available: {e}")

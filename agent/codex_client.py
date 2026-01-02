@@ -151,5 +151,171 @@ class CodexTaskClient:
         )
         return self._call_json(prompt, schema_path=llm_schemas.RESEARCH_SUMMARY, timeout_seconds=timeout_seconds)
 
+    # ============================================================================
+    # GPT-5.2-Codex with xhigh Reasoning (NEW - Jan 2, 2026)
+    # ============================================================================
+
+    def call_with_xhigh(
+        self,
+        prompt: str,
+        *,
+        timeout_seconds: Optional[int] = None,
+    ) -> str:
+        """
+        Call GPT-5.2-Codex with xhigh reasoning effort.
+        Uses 'reason' profile (max reasoning) for extended thinking.
+        Best for complex planning, validation, and analysis tasks.
+        
+        Args:
+            prompt: The task prompt
+            timeout_seconds: Timeout (xhigh defaults to 600s for deep reasoning)
+        
+        Returns:
+            Plain text response from Codex with extended thinking
+        """
+        try:
+            result = self.llm.run(
+                prompt=prompt,
+                workdir=None,
+                run_dir=None,
+                config=RunConfig(
+                    profile="reason",  # Maps to xhigh reasoning in GPT-5.2-Codex
+                    timeout_seconds=timeout_seconds or 600,
+                ),
+            )
+            return str(result.data) if result.data else ""
+        except Exception as e:
+            raise CodexCliExecutionError(f"xhigh reasoning call failed: {str(e)}") from e
+
+    def call_with_medium(
+        self,
+        prompt: str,
+        *,
+        timeout_seconds: Optional[int] = None,
+    ) -> str:
+        """
+        Call GPT-5.2-Codex with medium reasoning effort.
+        Uses 'quick' or balanced profile for faster execution.
+        Best for implementation and iterative tasks.
+        
+        Args:
+            prompt: The task prompt
+            timeout_seconds: Timeout (medium defaults to 300s)
+        
+        Returns:
+            Plain text response from Codex
+        """
+        try:
+            result = self.llm.run(
+                prompt=prompt,
+                workdir=None,
+                run_dir=None,
+                config=RunConfig(
+                    profile="chat",  # Balanced reasoning
+                    timeout_seconds=timeout_seconds or 300,
+                ),
+            )
+            return str(result.data) if result.data else ""
+        except Exception as e:
+            raise CodexCliExecutionError(f"medium reasoning call failed: {str(e)}") from e
+
+    def execute_three_phase_task(
+        self,
+        task: str,
+        *,
+        use_planning: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Execute task with 3-phase approach using GPT-5.2-Codex:
+        
+        Phase 1: Planning (xhigh) - Deep reasoning for strategy
+        Phase 2: Execution (medium) - Efficient implementation
+        Phase 3: Validation (xhigh) - Quality assurance
+        
+        Args:
+            task: The main task description
+            use_planning: If True, use 3-phase; if False, single execution
+        
+        Returns:
+            Dict with 'plan', 'execution', 'validation', 'success'
+        """
+        result = {
+            "success": False,
+            "plan": None,
+            "execution": None,
+            "validation": None,
+            "total_phases": 0,
+        }
+        
+        if not use_planning:
+            # Single-phase execution with medium reasoning
+            try:
+                output = self.call_with_medium(task)
+                result["execution"] = output
+                result["success"] = True
+                result["total_phases"] = 1
+                return result
+            except Exception as e:
+                result["error"] = str(e)
+                return result
+        
+        # PHASE 1: Planning with xhigh
+        try:
+            planning_prompt = f"""Create a detailed step-by-step plan for this task:
+
+{task}
+
+Provide:
+1. Objective breakdown
+2. Step-by-step strategy
+3. Key checkpoints
+4. Potential challenges
+"""
+            plan = self.call_with_xhigh(planning_prompt, timeout_seconds=600)
+            result["plan"] = plan
+        except Exception as e:
+            result["error"] = f"Phase 1 (Planning) failed: {str(e)}"
+            return result
+        
+        # PHASE 2: Execution with medium
+        try:
+            exec_prompt = f"""{result["plan"]}
+
+---
+
+Now execute the plan for this task:
+
+{task}
+
+Provide the output/result."""
+            execution = self.call_with_medium(exec_prompt, timeout_seconds=300)
+            result["execution"] = execution
+        except Exception as e:
+            result["error"] = f"Phase 2 (Execution) failed: {str(e)}"
+            return result
+        
+        # PHASE 3: Validation with xhigh
+        try:
+            validation_prompt = f"""Validate and assess the quality of this execution:
+
+{result["execution"]}
+
+Provide:
+1. Quality assessment
+2. Issues or errors found
+3. Recommendations for improvement
+4. Overall success rating (1-10)"""
+            validation = self.call_with_xhigh(validation_prompt, timeout_seconds=600)
+            result["validation"] = validation
+            result["success"] = True
+            result["total_phases"] = 3
+        except Exception as e:
+            result["error"] = f"Phase 3 (Validation) failed: {str(e)}"
+            result["success"] = False
+            result["total_phases"] = 2
+            return result
+        
+        return result
+
 
 __all__ = ["CodexTaskClient"]

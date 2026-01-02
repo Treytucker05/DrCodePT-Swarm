@@ -28,10 +28,10 @@ logger = logging.getLogger(__name__)
 # Default OpenRouter models (fast + general purpose).
 # Updated Dec 2025.
 DEFAULT_MODELS = {
-    "planner": "x-ai/grok-code-fast-1",
-    "chat": "x-ai/grok-code-fast-1",
-    "summarize": "x-ai/grok-code-fast-1",
-    "reason": "x-ai/grok-code-fast-1",
+    "planner": "iquest/coder-v1",
+    "chat": "iquest/coder-v1",
+    "summarize": "iquest/coder-v1",
+    "reason": "iquest/coder-v1",
 }
 
 # Allow per-task model overrides via environment variables
@@ -42,11 +42,12 @@ for key in list(DEFAULT_MODELS.keys()):
         DEFAULT_MODELS[key] = env_val
 
 # Fallback models if primary ones are rate-limited or unavailable
+# Moonshot Kimi K2 for reasoning tasks, Moonshot Kimi for others
 FALLBACK_MODELS = {
-    "planner": "nvidia/nemotron-nano-9b-v2:free",
-    "chat": "nvidia/nemotron-nano-9b-v2:free",
-    "summarize": "nvidia/nemotron-nano-9b-v2:free",
-    "reason": "allenai/olmo-3.1-32b-think:free",
+    "planner": "moonshot/moonshot-v1-8k",  # Fast 8k context for quick decisions
+    "chat": "moonshot/moonshot-v1-32k",    # 32k context for conversations
+    "summarize": "moonshot/moonshot-v1-32k",  # 32k context for longer summaries
+    "reason": "moonshot/kimi-k2-thinking",  # K2 Thinking for advanced reasoning
 }
 
 for key in list(FALLBACK_MODELS.keys()):
@@ -66,7 +67,7 @@ class OpenRouterClient(LLMClient):
     Uses cheap models by default for planning/routing decisions.
     """
     api_key: str = ""
-    model: str = "x-ai/grok-code-fast-1"
+    model: str = "iquest/coder-v1"
     timeout_seconds: int = 60
     max_tokens: int = 4096
     temperature: float = 0.7

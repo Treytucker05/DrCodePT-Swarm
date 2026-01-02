@@ -534,7 +534,7 @@ class LearningAgent:
             research = {"success": True, "summary": "Using existing knowledge"}
 
         # ============================================================
-        # STEP 4: Create plan and get user approval
+        # STEP 4: Create execution plan
         # ============================================================
         self._status("\n" + "=" * 60)
         self._status("STEP 4: CREATING EXECUTION PLAN")
@@ -563,71 +563,29 @@ class LearningAgent:
         self._status("=" * 60 + "\n")
 
         if plan.plan_type == "SETUP_GUIDE":
-            # For Google Calendar/Tasks setup, automatically attempt setup instead of showing guide
+            # For Google Calendar/Tasks setup, just show the user what they need to do
             if intent.auth_provider == "google" and (intent.service in {"google_calendar", "google_tasks"} or "google" in (intent.service or "").lower()):
-                # Before calling _attempt_google_setup(), determine APIs needed:
-                apis_needed = []
-                # Check intent.service for calendar/tasks keywords
-                if intent.service:
-                    service_lower = intent.service.lower()
-                    if "calendar" in service_lower:
-                        apis_needed.append("calendar")
-                    if "tasks" in service_lower or "task" in service_lower:
-                        apis_needed.append("tasks")
-
-                # Check intent.action for calendar/tasks keywords
-                if intent.action:
-                    action_lower = intent.action.lower()
-                    if "calendar" in action_lower:
-                        if "calendar" not in apis_needed:
-                            apis_needed.append("calendar")
-                    if "task" in action_lower:
-                        if "tasks" not in apis_needed:
-                            apis_needed.append("tasks")
-
-                # Default to calendar if nothing found (most common case)
-                if not apis_needed:
-                    apis_needed = ["calendar"]
-
-                self._status(f"  [INFO] Will set up APIs: {', '.join(apis_needed)}")
-                
                 self._status("\n" + "=" * 60)
-                self._status("🚀 AUTO-EXECUTING SETUP")
+                self._status("📋 GOOGLE CALENDAR SETUP REQUIRED")
                 self._status("=" * 60)
-                self._status("Google setup detected. The plan above will be executed automatically...")
+                self._status("""
+To use Google Calendar, you need to:
+
+1. Go to: https://console.cloud.google.com/
+2. Create a new project called "treys-agent"
+3. Enable the Google Calendar API
+4. Create OAuth 2.0 credentials (Desktop app)
+5. Download credentials.json to: C:\\Users\\treyt\\.drcodept_swarm\\google_calendar\\credentials.json
+6. Come back and ask me again
+
+Once you've completed these steps, I can access your calendar!
+""")
                 self._status("=" * 60 + "\n")
-                setup_result = self._attempt_google_setup(apis_needed=apis_needed)
-                
-                if setup_result and setup_result.success:
-                    self._status("  [OK] Google setup completed successfully!")
-                    # Verify credentials now exist
-                    if self._check_credentials("google"):
-                        # Retry the original calendar request if that's what we were trying to do
-                        if intent.action in {"calendar.list_events", "get_calendar_events"}:
-                            calendar_result = self._handle_calendar_request(intent)
-                            if calendar_result:
-                                return calendar_result
-                        
-                        return TaskResult(
-                            success=True,
-                            summary="Google Calendar and Tasks setup completed successfully! You can now ask me to check your calendar or manage tasks.",
-                            steps_taken=1,
-                        )
-                    else:
-                        return TaskResult(
-                            success=False,
-                            summary="Setup completed but credentials verification failed. Please try checking your calendar again.",
-                            steps_taken=1,
-                            error="Setup verification failed",
-                        )
-                else:
-                    error_msg = (setup_result.error if setup_result else "Setup failed") if setup_result else "Setup unavailable"
-                    return TaskResult(
-                        success=False,
-                        summary=f"Automatic Google setup failed: {error_msg}\n\nPlease complete the setup manually using the steps above, then re-run your request.",
-                        steps_taken=0,
-                        error="Google setup failed",
-                    )
+                return TaskResult(
+                    success=False,
+                    summary="Google Calendar setup required. Please follow the steps above and try again.",
+                    error="Setup needed - follow the instructions provided",
+                )
             
             # For other SETUP_GUIDE cases, return the guide
             return TaskResult(
@@ -636,24 +594,16 @@ class LearningAgent:
                 steps_taken=0,
             )
 
-        approval = self._ask_user("Do you want me to execute this plan? (yes/no)")
-        if approval.lower() not in ("yes", "y"):
-            return TaskResult(
-                success=False,
-                summary="User declined to execute plan",
-                error="User cancelled",
-            )
-
+        # ============================================================
+        # STEP 5: Execute the plan (autonomous - no approval needed)
+        # ============================================================
+        self._status("  [AUTONOMOUS MODE] Executing plan automatically...")
         plan.approved = True
-
-        # ============================================================
-        # STEP 5: Execute the plan
-        # ============================================================
         self._status("Step 5: Executing plan...")
         result = self._execute_plan(plan)
 
         # ============================================================
-        # STEP 6: Save and learn
+        # STEP 6: Save and learn from execution
         # ============================================================
         if result.success:
             self._status("Step 6: Saving successful procedure as skill...")
@@ -673,44 +623,27 @@ class LearningAgent:
 
     def _get_llm(self):
         """Get or create an LLM client for reasoning."""
-        if self.llm and not self._disable_codex:
+        if self.llm:
             provider = getattr(self.llm, 'provider', 'unknown')
             if 'codex' in provider.lower():
                 return self.llm
         
-        if not self._disable_codex:
-            try:
-                from agent.llm.codex_cli_client import CodexCliClient
-                client = CodexCliClient.from_env()
-                # Don't fail on auth check - let Codex try and fail naturally
-                if hasattr(client, "check_auth"):
-                    try:
-                        auth_ok = client.check_auth()
-                        if not auth_ok:
-                            self._status("[WARN] Codex auth check failed, but will attempt to use Codex anyway...")
-                    except Exception as auth_exc:
-                        self._status(f"[WARN] Codex auth check error: {auth_exc}, but will attempt to use Codex anyway...")
-                
-                self.llm = client
-                self._status("[LLM] provider=codex_cli model=default (PREFERRED)")
-                return self.llm
-            except Exception as e:
-                error_str = str(e).lower()
-                # Only disable if it's a clear authentication/availability issue
-                if "not authenticated" in error_str or "auth" in error_str or "not found" in error_str:
-                    self._status(f"[ERROR] Codex unavailable: {e}")
-                    self._disable_codex = True
-                else:
-                    # Don't disable on other errors - might be temporary
-                    self._status(f"[WARN] Codex error (non-fatal): {e}, will retry")
-                logger.warning(f"Codex CLI error: {e}")
+        try:
+            from agent.llm.codex_cli_client import CodexCliClient
+            client = CodexCliClient.from_env()
+            # Don't check auth - let Codex try and fail naturally at runtime if needed
+            self.llm = client
+            self._status("[LLM] provider=codex_cli model=default (USING CODEX)")
+            return self.llm
+        except Exception as e:
+            logger.warning(f"Codex CLI error: {e}")
         
-        # Only fall back to OpenRouter if Codex is explicitly disabled
-        if self._disable_codex and os.getenv("OPENROUTER_API_KEY"):
+        # Only fall back to OpenRouter if Codex completely unavailable
+        if os.getenv("OPENROUTER_API_KEY"):
             try:
                 from agent.llm.openrouter_client import OpenRouterClient        
                 self.llm = OpenRouterClient.from_env()
-                self._status(f"[LLM] provider=openrouter model={self.llm.model} (FALLBACK - Codex disabled)")
+                self._status(f"[LLM] provider=openrouter model={self.llm.model} (FALLBACK)")
                 return self.llm
             except Exception as e:
                 logger.warning(f"OpenRouter not available: {e}")
@@ -1183,7 +1116,11 @@ class LearningAgent:
             raw = _call(llm, prompt)
         except Exception as e:
             error_str = str(e).lower()
-            if "not authenticated" in error_str or "codex" in error_str:
+            # Only disable Codex on clear authentication/availability issues, not any error containing "codex"
+            should_disable = ("not authenticated" in error_str or 
+                            ("auth" in error_str and ("fail" in error_str or "error" in error_str)) or
+                            "not found" in error_str)
+            if should_disable:
                 self._disable_codex = True
                 try:
                     from agent.llm.openrouter_client import OpenRouterClient
@@ -1196,7 +1133,8 @@ class LearningAgent:
                     logger.error(f"OpenRouter fallback also failed: {fallback_e}")
                     raw = None
             else:
-                logger.error(f"LLM call failed: {e}")
+                # Don't disable Codex on temporary errors - just log and fail this call
+                logger.warning(f"LLM call failed (non-fatal): {e}")
                 raw = None
 
         if raw is None:
@@ -1252,8 +1190,12 @@ class LearningAgent:
                     return llm.chat(prompt)
             return None
         except Exception as e:
-            # Try OpenRouter fallback
-            if "not authenticated" in str(e).lower() or "codex" in str(e).lower():
+            # Only disable Codex on clear authentication/availability issues
+            error_str = str(e).lower()
+            should_disable = ("not authenticated" in error_str or 
+                            ("auth" in error_str and ("fail" in error_str or "error" in error_str)) or
+                            "not found" in error_str)
+            if should_disable:
                 self._disable_codex = True
                 try:
                     from agent.llm.openrouter_client import OpenRouterClient
@@ -1262,7 +1204,8 @@ class LearningAgent:
                     return fallback_llm.chat(prompt)
                 except Exception:
                     pass
-            logger.error(f"LLM chat failed: {e}")
+            # Don't disable Codex on temporary errors - just log and fail this call
+            logger.warning(f"LLM chat failed (non-fatal): {e}")
             return None
 
     def _parse_intent(self, request: str) -> ParsedIntent:
@@ -1436,69 +1379,6 @@ Return a JSON object matching the schema."""
             return False
         return False
 
-    def _attempt_google_setup(self, apis_needed: Optional[List[str]] = None) -> Optional[Any]:
-        """Attempt to automatically set up Google Cloud APIs.
-        
-        Args:
-            apis_needed: List of APIs to enable: ['calendar'], ['tasks'], or ['calendar', 'tasks']
-        """
-        try:
-            from agent.tools.google_cloud_setup import full_google_setup, FullGoogleSetupArgs
-            from agent.autonomous.config import RunContext
-            from agent.autonomous.models import ToolResult
-            import tempfile
-            
-            # Create a temporary run directory for setup
-            setup_dir = Path(tempfile.mkdtemp(prefix="google_setup_"))
-            ctx = RunContext(
-                run_id="google_setup",
-                run_dir=setup_dir,
-                workspace_dir=setup_dir,
-                profile=None,
-                usage=None,
-            )
-            
-            # Default to calendar if not specified (most common case)
-            if apis_needed is None:
-                apis_needed = ["calendar"]
-            
-            args = FullGoogleSetupArgs(
-                skip_if_configured=True,
-                apis_needed=apis_needed
-            )
-            result = full_google_setup(ctx, args)
-            return result
-        except Exception as exc:
-            logger.error(f"Failed to attempt Google setup: {exc}")
-            # Return a failed ToolResult-like object
-            from agent.autonomous.models import ToolResult
-            return ToolResult(
-                success=False,
-                error=f"Setup tool unavailable: {exc}",
-                retryable=True,
-            )
-
-    def _store_setup_lesson(self, user_guidance: str, error_msg: str) -> None:
-        """Store user guidance about setup in memory for learning."""
-        try:
-            if not self.memory_store:
-                return
-            
-            lesson = (
-                f"User guidance for Google Calendar setup: {user_guidance}\n"
-                f"Context: Setup failed with error: {error_msg}\n"
-                f"User provided specific instructions that should be remembered for future setup attempts."
-            )
-            
-            self.memory_store.upsert(
-                kind="experience",
-                content=lesson,
-                key=f"google_setup_lesson_{int(time.time())}",
-            )
-            logger.debug("Stored setup lesson in memory")
-        except Exception as exc:
-            logger.debug(f"Could not store setup lesson: {exc}")
-
     def _handle_calendar_request(self, intent: ParsedIntent) -> Optional[TaskResult]:
         """Handle Google Calendar list requests directly via the skill."""
         if intent.action not in {"calendar.list_events", "get_calendar_events"}:
@@ -1519,78 +1399,25 @@ Return a JSON object matching the schema."""
         skill = GoogleCalendarSkill()
         status = skill.auth_status()
         if status == AuthStatus.NOT_CONFIGURED:
-            # Automatically attempt Google Cloud setup instead of just showing guide
-            # Determine which APIs are needed based on intent
-            apis_needed = ["calendar"]  # Default for calendar requests
-            self._status("  [AUTO] Google Calendar not configured. Attempting automatic setup...")
-            self._status(f"  [INFO] Will set up APIs: {', '.join(apis_needed)}")
-            setup_result = self._attempt_google_setup(apis_needed=apis_needed)
-            
-            if setup_result and setup_result.success:
-                self._status("  [OK] Google Calendar setup completed successfully!")
-                # Retry calendar request after setup
-                skill = GoogleCalendarSkill()  # Recreate to pick up new config
-                status = skill.auth_status()
-                if status == AuthStatus.NOT_CONFIGURED:
-                    # Setup didn't complete fully, ask for help
-                    guide = skill.setup_guide()
-                    return TaskResult(
-                        success=False,
-                        summary=f"Setup started but not fully complete. {guide}\n\nYou can guide me through the remaining steps, or set it up manually and ask me to check your calendar again.",
-                        error="Google Calendar setup incomplete",
-                    )
-                # Setup successful, continue with calendar request (fall through to code below)
-            else:
-                # Setup failed or needs user help
-                error_msg = setup_result.error if setup_result else "Setup failed"
-                guide = skill.setup_guide()
-                user_guidance = self._ask_user(
-                    f"Automatic setup failed: {error_msg}\n\n"
-                    f"{guide}\n\n"
-                    "What would you like me to do?\n"
-                    "1. Try setup again\n"
-                    "2. You'll set it up manually (just say 'manual')\n"
-                    "3. Guide me through specific steps (tell me what to do next)"
-                )
-                
-                # Store the guidance in memory for learning
-                if user_guidance and user_guidance.lower() not in {"manual", "2"}:
-                    self._store_setup_lesson(user_guidance, error_msg)
-                    if "try again" in user_guidance.lower() or "1" in user_guidance:
-                        # Retry setup (use calendar as default for calendar requests)
-                        apis_needed = ["calendar"]
-                        setup_result = self._attempt_google_setup(apis_needed=apis_needed)
-                        if setup_result and setup_result.success:
-                            skill = GoogleCalendarSkill()
-                            status = skill.auth_status()
-                            if status != AuthStatus.NOT_CONFIGURED:
-                                # Setup successful, continue with calendar request
-                                pass  # Fall through
-                            else:
-                                return TaskResult(
-                                    success=False,
-                                    summary="Setup still incomplete after retry. Please check the steps above.",
-                                    error="Google Calendar setup incomplete",
-                                )
-                        else:
-                            return TaskResult(
-                                success=False,
-                                summary=f"Setup failed again: {setup_result.error if setup_result else 'unknown error'}. {guide}",
-                                error="Google Calendar setup failed",
-                            )
-                    else:
-                        # User will guide or do manually
-                        return TaskResult(
-                            success=False,
-                            summary=f"Noted. {guide}\n\nAfter you complete setup, ask me to check your calendar again.",
-                            error="Google Calendar setup deferred",
-                        )
-                else:
-                    return TaskResult(
-                        success=False,
-                        summary=f"Understood. {guide}\n\nAfter setup, ask me to check your calendar again.",
-                        error="Google Calendar setup deferred",
-                    )
+            # Just tell user what to do
+            self._status("  [INFO] Google Calendar not configured")
+            self._status("""
+To use Google Calendar, you need to:
+
+1. Go to: https://console.cloud.google.com/
+2. Create a new project called "treys-agent"  
+3. Enable the Google Calendar API
+4. Create OAuth 2.0 credentials (Desktop app)
+5. Download credentials.json to: C:\\Users\\treyt\\.drcodept_swarm\\google_calendar\\credentials.json
+6. Come back and ask me again
+
+Once you've completed these steps, I can access your calendar!
+""")
+            return TaskResult(
+                success=False,
+                summary="Google Calendar setup required. Please follow the steps above and try again.",
+                error="Setup needed",
+            )
 
         time_range = intent.parameters.get("time_range", "tomorrow")
         now = datetime.now().astimezone()
@@ -2689,25 +2516,8 @@ Return a JSON object with the plan."""
         except Exception:
             pass
 
-        # Write reflexion entry if available
-        try:
-            from agent.autonomous.memory.reflexion import ReflexionEntry, write_reflexion
-            entry = ReflexionEntry(
-                id=f"verify_{uuid4().hex[:8]}",
-                timestamp=datetime.now(timezone.utc).isoformat(),
-                objective=request,
-                context_fingerprint=f"verify_{getattr(skill, 'name', 'unknown')}",
-                phase="verification",
-                tool_calls=[{"skill": getattr(skill, "name", "unknown")}],
-                errors=[error],
-                reflection=f"Verification failed for skill {getattr(skill, 'name', 'unknown')}: {error}",
-                fix="Retry deterministic Notepad flow or fall back to UI automation if OCR fails.",
-                outcome="failure",
-                tags=list(set([getattr(skill, 'name', 'unknown'), 'verification'])),
-            )
-            write_reflexion(entry)
-        except Exception:
-            pass
+        # Note: This method only records warnings, not failures.
+        # Failures would be recorded elsewhere with proper error context.
 
 
 # Singleton instance

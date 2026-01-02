@@ -117,27 +117,33 @@ class ModelRouter:
         self._codex_reason_effort = (
             os.getenv("CODEX_REASONING_EFFORT_REASON")
             or os.getenv("CODEX_REASONING_EFFORT")
-            or "high"
+            or "xhigh"
         ).strip()
 
     def _check_backends(self) -> None:
         """Check which backends are configured and available."""
-        # Check OpenRouter
-        if os.getenv("OPENROUTER_API_KEY"):
-            self.openrouter_available = True
-            logger.debug("OpenRouter backend available")
-
-        # Check Codex CLI
+        # Check Codex CLI - primary backend
         try:
             from agent.llm.codex_cli_client import CodexCliClient
             client = CodexCliClient.from_env()
-            self.codex_available = client.check_auth()
-            if self.codex_available:
-                logger.debug("Codex CLI backend available")
-            else:
-                logger.debug("Codex CLI auth check failed")
+            # Just check if binary exists on PATH
+            try:
+                bin_path = client._resolve_bin()
+                if bin_path:
+                    self.codex_available = True
+                    logger.debug(f"Codex CLI backend available at {bin_path}")
+            except Exception:
+                # Assume available if env vars are set
+                if os.getenv("CODEX_MODEL") or os.getenv("CODEX_MODEL_FAST"):
+                    self.codex_available = True
+                    logger.debug("Codex CLI configured (primary backend)")
         except Exception as e:
             logger.debug(f"Codex CLI not available: {e}")
+
+        # Check OpenRouter - SECONDARY backend (fallback)
+        if os.getenv("OPENROUTER_API_KEY"):
+            self.openrouter_available = True
+            logger.debug("OpenRouter available (secondary backend)")
 
         # Check Claude (Anthropic API)
         if os.getenv("ANTHROPIC_API_KEY"):
