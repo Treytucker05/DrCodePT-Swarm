@@ -26,12 +26,12 @@ from .base import LLMClient
 logger = logging.getLogger(__name__)
 
 # Default OpenRouter models (fast + general purpose).
-# Updated Jan 2026 - iQuest Coder v1 primary.
+# Updated Jan 2026 - using free models available on OpenRouter.
 DEFAULT_MODELS = {
-    "planner": "iquest/coder-v1",
-    "chat": "iquest/coder-v1",
-    "summarize": "iquest/coder-v1",
-    "reason": "iquest/coder-v1",
+    "planner": "qwen/qwen3-coder:free",
+    "chat": "qwen/qwen3-coder:free",
+    "summarize": "qwen/qwen3-coder:free",
+    "reason": "deepseek/deepseek-r1-0528:free",
 }
 
 # Allow per-task model overrides via environment variables
@@ -67,7 +67,7 @@ class OpenRouterClient(LLMClient):
     Uses cheap models by default for planning/routing decisions.
     """
     api_key: str = ""
-    model: str = "iquest/coder-v1"
+    model: str = "qwen/qwen3-coder:free"
     timeout_seconds: int = 60
     max_tokens: int = 4096
     temperature: float = 0.7
@@ -85,10 +85,10 @@ class OpenRouterClient(LLMClient):
                 "OPENROUTER_API_KEY not set. Get one at https://openrouter.ai/keys"
             )
 
-        # Default to iquest/coder-v1 unless explicitly overridden
+        # Default to qwen3-coder unless explicitly overridden
         default_model = os.getenv("OPENROUTER_MODEL", "").strip()
         if not default_model:
-            default_model = "iquest/coder-v1"  # Use iQuest Coder v1 as default
+            default_model = "qwen/qwen3-coder:free"  # Use Qwen3 Coder free as default
         
         return OpenRouterClient(
             api_key=api_key,
@@ -267,12 +267,12 @@ class OpenRouterClient(LLMClient):
         # Load schema
         schema = json.loads(schema_path.read_text())
 
-        # Use iquest/coder-v1 for JSON tasks
+        # Use deepseek-r1 for JSON tasks (free reasoning model)
         # This ensures consistent behavior regardless of env var overrides
         return self.generate_json(
             prompt,
             schema=schema,
-            model="iquest/coder-v1",
+            model="deepseek/deepseek-r1-0528:free",
         )
 
     def reason_json(
@@ -290,12 +290,12 @@ class OpenRouterClient(LLMClient):
         """
         schema = json.loads(schema_path.read_text())
 
-        # Use iquest/coder-v1 for reasoning tasks
+        # Use deepseek-r1 for reasoning tasks (free reasoning model)
         # This ensures consistent behavior regardless of env var overrides
         return self.generate_json(
             prompt,
             schema=schema,
-            model="iquest/coder-v1",
+            model="deepseek/deepseek-r1-0528:free",
         )
 
     def plan_next_action(
