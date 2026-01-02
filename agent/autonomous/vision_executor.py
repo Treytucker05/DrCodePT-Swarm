@@ -127,6 +127,10 @@ class VisionExecutor:
         self.max_steps = 50
         self.step_delay = 0.5  # seconds between actions
 
+        # Multi-tier model strategy for speed
+        self.consecutive_failures = 0  # Track when to escalate to reasoning
+        self.use_reasoning = False  # Whether to use deep reasoning model
+
     def initialize(self) -> Tuple[bool, str]:
         """Initialize the executor."""
         pyautogui, err = _import_pyautogui()
@@ -312,7 +316,7 @@ NAVIGATION EXAMPLES:
             return None
 
     def _call_codex_vision(self, prompt: str, state: ScreenState) -> str:
-        """Call Codex CLI with an image."""
+        """Call Codex CLI with an image using fast or reasoning model."""
         # Find codex binary
         codex_paths = [
             shutil.which("codex"),
@@ -323,22 +327,35 @@ NAVIGATION EXAMPLES:
         if not codex_bin:
             raise RuntimeError("Codex CLI not found")
 
+        # Choose model based on whether we need reasoning
+        # Fast: gpt-5.1-codex-mini (default, quick decisions)
+        # Reasoning: gpt-5.2-codex (only when stuck or complex)
+        model = os.getenv("CODEX_MODEL_REASON" if self.use_reasoning else "CODEX_MODEL_FAST", "gpt-5.1-codex-mini")
+        reasoning_effort = os.getenv("CODEX_REASONING_EFFORT_REASON" if self.use_reasoning else "CODEX_REASONING_EFFORT_FAST", "low")
+
+        logger.info(f"Vision using {'REASONING' if self.use_reasoning else 'FAST'} model: {model}")
+
         # Note: -i goes with exec subcommand, not before it
         cmd = [
             codex_bin,
             "--dangerously-bypass-approvals-and-sandbox",
             "exec",
             "--skip-git-repo-check",
+            "--model", model,
+            "--reasoning-effort", reasoning_effort,
             "-i", str(state.screenshot_path),  # Image input (after exec)
             "-",  # Read prompt from stdin
         ]
+
+        # Fast model gets shorter timeout
+        timeout = 120 if self.use_reasoning else 30
 
         result = subprocess.run(
             cmd,
             input=prompt,
             capture_output=True,
             text=True,
-            timeout=90,  # Vision takes longer
+            timeout=timeout,
             encoding="utf-8",
             errors="ignore",
         )
@@ -581,9 +598,18 @@ NAVIGATION EXAMPLES:
 
             # Handle user input needed
             if action_type == "ask_user":
+                # Escalate to reasoning if not already using it
+                self.consecutive_failures += 1
+                if self.consecutive_failures >= 2 and not self.use_reasoning:
+                    logger.info("ask_user detected - escalating to reasoning model")
+                    self.use_reasoning = True
+                    # Try again with reasoning model instead of asking user
+                    continue
+
                 if on_user_input:
                     answer = on_user_input(analysis.get("value", "Need input"))
                     context = f"{context}\nUser said: {answer}"
+                    self.consecutive_failures = 0  # Reset after getting help
                     continue
                 else:
                     return {
@@ -596,6 +622,15 @@ NAVIGATION EXAMPLES:
 
             # Handle error
             if action_type == "error":
+                # Escalate to reasoning if not already using it
+                self.consecutive_failures += 1
+                if self.consecutive_failures >= 2 and not self.use_reasoning:
+                    logger.info("error detected - escalating to reasoning model")
+                    self.use_reasoning = True
+                    # Try again with reasoning model
+                    context = f"{context}\nPrevious attempt returned error: {analysis.get('value')}"
+                    continue
+
                 return {
                     "success": False,
                     "summary": analysis.get("value", "Error occurred"),
@@ -611,6 +646,18 @@ NAVIGATION EXAMPLES:
                 # Add error to context and retry
                 context = f"{context}\nPrevious action failed: {message}"
                 logger.warning(f"Action failed: {message}")
+
+                # Escalate to reasoning model after 2 consecutive failures
+                self.consecutive_failures += 1
+                if self.consecutive_failures >= 2 and not self.use_reasoning:
+                    logger.info("Escalating to reasoning model after repeated failures")
+                    self.use_reasoning = True
+            else:
+                # Success! Reset failure counter and go back to fast mode
+                self.consecutive_failures = 0
+                if self.use_reasoning:
+                    logger.info("Action succeeded - returning to fast model")
+                    self.use_reasoning = False
 
             # Delay before next step
             time.sleep(self.step_delay)
