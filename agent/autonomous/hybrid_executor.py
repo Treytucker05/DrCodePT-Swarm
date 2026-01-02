@@ -591,14 +591,18 @@ RULES:
         """
         action_type = action.get("action", "").lower()
         target_name = action.get("target_name") or action.get("target", {}).get("text")
+        target_coords = action.get("target", {})
 
-        # For click/type actions, verify the window is active and element might exist
+        # For click/type actions, verify we have either a target name OR pixel coordinates
         if action_type in ("click", "type"):
-            if not target_name:
-                return False, f"No target specified for {action_type}"
+            # Allow vision-guided actions with pixel coordinates (no target_name needed)
+            has_pixel_coords = isinstance(target_coords, dict) and "x" in target_coords and "y" in target_coords
 
-            # Check if we have any active window
-            if self.ui_controller:
+            if not target_name and not has_pixel_coords:
+                return False, f"No target specified for {action_type} (need target_name or x,y coordinates)"
+
+            # Only check for active window if using UI automation (target_name)
+            if target_name and self.ui_controller:
                 try:
                     window = self.ui_controller.get_active_window()
                     if not window:
