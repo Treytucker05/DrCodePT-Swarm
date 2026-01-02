@@ -26,7 +26,7 @@ from .base import LLMClient
 logger = logging.getLogger(__name__)
 
 # Default OpenRouter models (fast + general purpose).
-# Updated Dec 2025.
+# Updated Jan 2026 - iQuest Coder v1 primary.
 DEFAULT_MODELS = {
     "planner": "iquest/coder-v1",
     "chat": "iquest/coder-v1",
@@ -42,7 +42,7 @@ for key in list(DEFAULT_MODELS.keys()):
         DEFAULT_MODELS[key] = env_val
 
 # Fallback models if primary ones are rate-limited or unavailable
-# Moonshot Kimi K2 for reasoning tasks, Moonshot Kimi for others
+# Moonshot Kimi variants for fallback
 FALLBACK_MODELS = {
     "planner": "moonshot/moonshot-v1-8k",  # Fast 8k context for quick decisions
     "chat": "moonshot/moonshot-v1-32k",    # 32k context for conversations
@@ -85,9 +85,14 @@ class OpenRouterClient(LLMClient):
                 "OPENROUTER_API_KEY not set. Get one at https://openrouter.ai/keys"
             )
 
+        # Default to iquest/coder-v1 unless explicitly overridden
+        default_model = os.getenv("OPENROUTER_MODEL", "").strip()
+        if not default_model:
+            default_model = "iquest/coder-v1"  # Use iQuest Coder v1 as default
+        
         return OpenRouterClient(
             api_key=api_key,
-            model=os.getenv("OPENROUTER_MODEL", DEFAULT_MODELS["planner"]).strip(),
+            model=default_model,
             timeout_seconds=int(os.getenv("OPENROUTER_TIMEOUT", "60").strip()),
             max_tokens=int(os.getenv("OPENROUTER_MAX_TOKENS", "4096").strip()),
             temperature=float(os.getenv("OPENROUTER_TEMPERATURE", "0.7").strip()),
@@ -111,6 +116,10 @@ class OpenRouterClient(LLMClient):
         }
 
         requested_model = model or self.model
+        
+        # Log the actual model being used (for debugging)
+        if model and model != self.model:
+            logger.debug(f"Using model override: {model} (instance default: {self.model})")
 
         payload: Dict[str, Any] = {
             "model": requested_model,
@@ -135,14 +144,19 @@ class OpenRouterClient(LLMClient):
         except requests.exceptions.HTTPError as e:
             # Try fallback model on 429 (rate limit), 500 (server error), 404 (model not found)
             if retry_with_fallback and e.response.status_code in (429, 500, 404):
-                # Find a fallback model
+                # Determine which fallback to use based on requested model
                 fallback = None
-                for task, fallback_model in FALLBACK_MODELS.items():
-                    if fallback_model != requested_model:
-                        fallback = fallback_model
+                # Check if requested model matches any default model, use corresponding fallback
+                for task_type, default_model in DEFAULT_MODELS.items():
+                    if requested_model == default_model:
+                        fallback = FALLBACK_MODELS.get(task_type)
                         break
+                
+                # If no match found, use reason fallback for JSON/reasoning tasks
+                if not fallback:
+                    fallback = FALLBACK_MODELS.get("reason", FALLBACK_MODELS.get("planner"))
 
-                if fallback:
+                if fallback and fallback != requested_model:
                     logger.warning(f"Model {requested_model} failed ({e.response.status_code}), trying fallback: {fallback}")
                     payload["model"] = fallback
                     try:
@@ -248,11 +262,18 @@ class OpenRouterClient(LLMClient):
         LLMClient interface: Generate JSON matching schema.
 
         This is the standard interface used by the agent.
+        Uses the reason model for JSON tasks (structured reasoning).
         """
         # Load schema
         schema = json.loads(schema_path.read_text())
 
-        return self.generate_json(prompt, schema=schema)
+        # Use iquest/coder-v1 for JSON tasks
+        # This ensures consistent behavior regardless of env var overrides
+        return self.generate_json(
+            prompt,
+            schema=schema,
+            model="iquest/coder-v1",
+        )
 
     def reason_json(
         self,
@@ -269,11 +290,12 @@ class OpenRouterClient(LLMClient):
         """
         schema = json.loads(schema_path.read_text())
 
-        # Use the reasoning model for complex tasks
+        # Use iquest/coder-v1 for reasoning tasks
+        # This ensures consistent behavior regardless of env var overrides
         return self.generate_json(
             prompt,
             schema=schema,
-            model=DEFAULT_MODELS.get("reason", self.model),
+            model="iquest/coder-v1",
         )
 
     def plan_next_action(

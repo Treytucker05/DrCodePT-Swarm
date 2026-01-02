@@ -1807,6 +1807,25 @@ Be specific and actionable.""",
         creds_exist: bool,
     ) -> Optional[ExecutionPlan]:
         """Use LLM to generate a detailed execution plan."""
+        # Check if auto-approve is enabled
+        auto_approve = os.getenv("AGENT_AUTO_APPROVE", "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+        automation_instructions = ""
+        if auto_approve:
+            automation_instructions = """
+AUTOMATION MODE ENABLED:
+- Use plan_type="EXECUTE" for all tasks (automated vision-guided setup)
+- For setup steps, use action="vision_guided" to automate browser interactions
+- The agent will use computer vision and desktop automation to complete setup tasks
+"""
+        else:
+            automation_instructions = """
+MANUAL MODE:
+- If credentials don't exist and auth is needed, set plan_type="SETUP_GUIDE"
+- SETUP_GUIDE plans must contain manual setup steps only (action="manual")
+- User will manually complete setup steps
+"""
+
         prompt = f"""You are a task planner. Create a detailed execution plan for this request.
 
 USER REQUEST: "{request}"
@@ -1830,15 +1849,16 @@ SUCCESS CHECKS:
 RESEARCH CAVEATS:
 {json.dumps(research.get('caveats', []))}
 
-  CURRENT STATE:
+CURRENT STATE:
 - Credentials exist: {creds_exist}
 - Needs authentication: {intent.needs_auth}
 
+{automation_instructions}
+
 IMPORTANT RULES:
-1. If credentials don't exist and auth is needed, set plan_type="SETUP_GUIDE"
-2. SETUP_GUIDE plans must contain manual setup steps only (no open_browser or vision_guided)
-3. Use "api_call" only when credentials exist
-4. Each step should be specific and actionable
+1. Use "api_call" only when credentials exist
+2. Each step should be specific and actionable
+3. Vision-guided steps should describe the goal, not exact mouse movements
 
 Create a plan with these phases:
 - SETUP: Authentication and credential setup (if needed)
@@ -1905,14 +1925,29 @@ Return a JSON object with the plan."""
 
         # If we need to set up credentials
         if not creds_exist and intent.needs_auth:
-            plan_type = "SETUP_GUIDE"
-            setup_steps = research.get("setup_steps") or self._get_setup_steps(intent)
-            for step_desc in setup_steps:
-                steps.append({
-                    "phase": "SETUP",
-                    "description": step_desc,
-                    "action": "manual",
-                })
+            # Check if auto-approve is enabled for automated setup
+            auto_approve = os.getenv("AGENT_AUTO_APPROVE", "").strip().lower() in {"1", "true", "yes", "y", "on"}
+
+            if auto_approve:
+                # Use vision-guided automation for setup
+                plan_type = "EXECUTE"
+                setup_steps = research.get("setup_steps") or self._get_setup_steps(intent)
+                for step_desc in setup_steps:
+                    steps.append({
+                        "phase": "SETUP",
+                        "description": step_desc,
+                        "action": "vision_guided",
+                    })
+            else:
+                # Fallback to manual setup guide
+                plan_type = "SETUP_GUIDE"
+                setup_steps = research.get("setup_steps") or self._get_setup_steps(intent)
+                for step_desc in setup_steps:
+                    steps.append({
+                        "phase": "SETUP",
+                        "description": step_desc,
+                        "action": "manual",
+                    })
 
         # Add execution steps
         for step_desc in research.get("execution_steps", []):
