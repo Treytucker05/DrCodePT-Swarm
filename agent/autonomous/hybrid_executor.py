@@ -459,6 +459,9 @@ RULES:
             elif action_type == "press":
                 return self._execute_press(value or "enter")
 
+            elif action_type == "goto":
+                return self._execute_goto(value or target_name)
+
             elif action_type == "wait":
                 seconds = float(value or 2)
                 time.sleep(seconds)
@@ -543,6 +546,42 @@ RULES:
 
         except Exception as e:
             return False, f"Failed to launch {app_name}: {e}"
+
+    def _execute_goto(self, url: str) -> Tuple[bool, str]:
+        """Open a URL in the browser."""
+        import subprocess
+        import shutil
+        import os
+        import webbrowser
+
+        if not url:
+            return False, "No URL provided"
+
+        # Ensure URL has protocol
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+
+        try:
+            # Find Chrome
+            chrome_paths = [
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                shutil.which("chrome"),
+            ]
+            chrome = next((p for p in chrome_paths if p and os.path.exists(p)), None)
+
+            if chrome:
+                subprocess.Popen([chrome, url])
+                time.sleep(2)  # Wait for browser
+                return True, f"Opened {url} in Chrome"
+            else:
+                # Try webbrowser module
+                webbrowser.open(url)
+                time.sleep(2)
+                return True, f"Opened {url} in default browser"
+
+        except Exception as e:
+            return False, f"Failed to open URL: {e}"
 
     def _check_precondition(self, action: Dict[str, Any]) -> Tuple[bool, str]:
         """
