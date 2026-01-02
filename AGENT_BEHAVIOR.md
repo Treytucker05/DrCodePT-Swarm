@@ -54,10 +54,14 @@ files. Update this file first, then align prompts/configs/code to it.
 - Use OpenRouter only when Codex is unavailable or for special cases.
 - Use multi-agent help for large tasks, but bound costs/parallelism.
 - Stop on errors; do not blindly continue.
-- **UI Automation Rule:** For complex desktop/web UI tasks (e.g., OAuth setup), use a *reasoned UI loop*:
-  Observe (screenshot/DOM) -> Think -> Act -> Verify -> Recover. Do **not** rely on fixed click scripts.
-  If the UI deviates (wrong page, dialog, download blocked), the agent must reason about the new state,
-  choose corrective actions (navigate, retry, dismiss dialogs), and continue.
+- **UI Automation Rule:** For complex desktop/web UI tasks (e.g., OAuth setup), use the hybrid executor with a *reasoned UI loop*:
+  - **Desktop apps**: Use UI Automation (element-based clicking by name/type)
+  - **Web browsers**: Use vision executor (screenshot → LLM analysis → pixel coordinates)
+  - **Vision loop**: Observe (screenshot) -> Estimate coordinates -> Act (click/type) -> Verify -> Recover
+  - **Model tiering**: Start with fast Codex Mini (5-10s), escalate to reasoning Codex after 2 failures
+  - **Navigation**: Use `goto` action when on wrong page; don't ask user or report errors prematurely
+  Do **not** rely on fixed click scripts. If the UI deviates (wrong page, dialog, download blocked),
+  the agent must reason about the new state, choose corrective actions (navigate, retry, dismiss dialogs), and continue.
 - **Human Correction Channel:** When confidence is low or progress stalls,
   pause and ask the user for a direct instruction (e.g., "click X", "type Y",
   "open URL"). Store the correction as a UI lesson for reuse.
