@@ -268,11 +268,11 @@ Actions:
 - type: Type text (first click on target, then type)
 - scroll: Scroll up/down (value: "up" or "down")
 - press: Press a key (value: key name like "enter", "tab", "escape")
-- goto: Open URL in browser (value: the URL)
+- goto: Open URL in browser (value: the URL - use this when you need to navigate to a different page)
 - wait: Wait for something to load (value: seconds as string)
 - done: Task is complete (value: summary of what was accomplished)
-- ask_user: Need user input (value: question to ask)
-- error: Something went wrong (value: error description)
+- ask_user: ONLY use if truly stuck after multiple attempts (value: question to ask)
+- error: ONLY use for unexpected failures (value: error description)
 
 CRITICAL RULES:
 1. For click actions, you MUST provide exact x,y pixel coordinates - NOT text descriptions
@@ -280,17 +280,23 @@ CRITICAL RULES:
 3. The origin (0,0) is the top-left corner of the screen
 4. Look carefully at the screenshot to identify where to click
 5. For buttons/links, aim for the CENTER of the element
-6. Common locations on Google Cloud Console:
-   - Left sidebar navigation: x is typically 100-200
-   - Main content area: x is typically 400-800
-   - Top navigation: y is typically 50-100
-7. If the objective is complete or you see what you need, use "done" action
-8. If you truly cannot determine coordinates, use "ask_user" to get help
+6. If you're on the wrong page, use "goto" action to navigate to the correct URL
+7. For Google Cloud Console tasks:
+   - APIs & Services: https://console.cloud.google.com/apis/library
+   - OAuth consent: https://console.cloud.google.com/apis/credentials/consent
+   - Credentials: https://console.cloud.google.com/apis/credentials
+8. NEVER use "ask_user" or "error" unless you've tried multiple approaches
+9. If the objective is complete or you see what you need, use "done" action
 
-EXAMPLES:
-- To click a menu item on the left sidebar: {{"x": 150, "y": 300}}
-- To click a button in the main area: {{"x": 600, "y": 400}}
-- To click the search bar at top: {{"x": 500, "y": 60}}
+EXAMPLES OF COORDINATES:
+- Left sidebar menu item: {{"x": 150, "y": 300}}
+- Main area button: {{"x": 600, "y": 400}}
+- Top search bar: {{"x": 500, "y": 60}}
+- Hamburger menu (top left): {{"x": 20, "y": 100}}
+
+NAVIGATION EXAMPLES:
+- Wrong page? Use goto: {{"action": "goto", "value": "https://console.cloud.google.com/apis/library", ...}}
+- Need to click address bar? Provide coordinates: {{"action": "click", "target": {{"x": 360, "y": 35}}, ...}}
 """
 
     def _call_vision_llm(self, prompt: str, state: ScreenState) -> Optional[str]:
