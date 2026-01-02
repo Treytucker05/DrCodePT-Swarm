@@ -304,6 +304,14 @@ class HybridExecutor:
             return self._decide_with_vision(objective, context)
 
         if self._is_browser_window(ui_state):
+            # ALWAYS use vision for browser windows - web UIs are too complex for UI automation
+            logger.info("Browser window detected - using vision executor")
+            return self._decide_with_vision(objective, context)
+
+        # Also check if the window has very few UI elements (likely a web page)
+        elements = ui_state.get("elements", [])
+        if len(elements) < 5:
+            logger.info("Few UI elements detected - likely web content, using vision executor")
             return self._decide_with_vision(objective, context)
 
         # Format UI state for LLM
@@ -439,6 +447,7 @@ RULES:
         action_type = action.get("action", "").lower()
         target_name = action.get("target_name") or action.get("target", {}).get("text")
         target_type = action.get("target_type")
+        target_coords = action.get("target", {})
         value = action.get("value")
 
         try:
@@ -446,7 +455,13 @@ RULES:
                 return self._execute_launch(value or target_name)
 
             elif action_type == "click":
-                return self._execute_click(target_name, target_type)
+                # Check if we have pixel coordinates from vision
+                if isinstance(target_coords, dict) and "x" in target_coords and "y" in target_coords:
+                    # Vision-guided click with pixel coordinates
+                    return self._execute_click_at_coords(target_coords["x"], target_coords["y"])
+                else:
+                    # UI automation click by element name
+                    return self._execute_click(target_name, target_type)
 
             elif action_type == "type":
                 if not value:
@@ -677,6 +692,16 @@ RULES:
             return True, "Waited for element to appear", False
 
         return False, "Exploration exhausted", False
+
+    def _execute_click_at_coords(self, x: float, y: float) -> Tuple[bool, str]:
+        """Execute click at specific pixel coordinates (from vision executor)."""
+        try:
+            import pyautogui
+            pyautogui.click(x, y)
+            time.sleep(0.5)  # Brief pause after click
+            return True, f"Clicked at coordinates ({int(x)}, {int(y)})"
+        except Exception as e:
+            return False, f"Failed to click at ({int(x)}, {int(y)}): {e}"
 
     def _execute_click(self, target_name: str, target_type: str = None) -> Tuple[bool, str]:
         """Execute click using UI automation, fall back to vision if needed."""
