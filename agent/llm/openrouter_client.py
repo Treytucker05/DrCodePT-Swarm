@@ -26,12 +26,12 @@ from .base import LLMClient
 logger = logging.getLogger(__name__)
 
 # Default OpenRouter models (fast + general purpose).
-# Updated Jan 2026 - using free models available on OpenRouter.
+# Updated Jan 2026 - Moonshot Kimi K2 primary.
 DEFAULT_MODELS = {
-    "planner": "qwen/qwen3-coder:free",
-    "chat": "qwen/qwen3-coder:free",
-    "summarize": "qwen/qwen3-coder:free",
-    "reason": "deepseek/deepseek-r1-0528:free",
+    "planner": "moonshot/kimi-k2-thinking",
+    "chat": "moonshot/moonshot-v1-32k",
+    "summarize": "moonshot/moonshot-v1-32k",
+    "reason": "moonshot/kimi-k2-thinking",
 }
 
 # Allow per-task model overrides via environment variables
@@ -42,12 +42,12 @@ for key in list(DEFAULT_MODELS.keys()):
         DEFAULT_MODELS[key] = env_val
 
 # Fallback models if primary ones are rate-limited or unavailable
-# Moonshot Kimi variants for fallback
+# Free models for fallback
 FALLBACK_MODELS = {
-    "planner": "moonshot/moonshot-v1-8k",  # Fast 8k context for quick decisions
-    "chat": "moonshot/moonshot-v1-32k",    # 32k context for conversations
-    "summarize": "moonshot/moonshot-v1-32k",  # 32k context for longer summaries
-    "reason": "moonshot/kimi-k2-thinking",  # K2 Thinking for advanced reasoning
+    "planner": "qwen/qwen3-coder:free",  # Fast code-focused model
+    "chat": "qwen/qwen3-coder:free",     # Code-focused for chat
+    "summarize": "qwen/qwen3-coder:free",  # Fast for summaries
+    "reason": "deepseek/deepseek-r1-0528:free",  # Advanced reasoning model
 }
 
 for key in list(FALLBACK_MODELS.keys()):
@@ -67,7 +67,7 @@ class OpenRouterClient(LLMClient):
     Uses cheap models by default for planning/routing decisions.
     """
     api_key: str = ""
-    model: str = "qwen/qwen3-coder:free"
+    model: str = "moonshot/kimi-k2-thinking"
     timeout_seconds: int = 60
     max_tokens: int = 4096
     temperature: float = 0.7
@@ -85,10 +85,10 @@ class OpenRouterClient(LLMClient):
                 "OPENROUTER_API_KEY not set. Get one at https://openrouter.ai/keys"
             )
 
-        # Default to qwen3-coder unless explicitly overridden
+        # Default to Moonshot Kimi K2 unless explicitly overridden
         default_model = os.getenv("OPENROUTER_MODEL", "").strip()
         if not default_model:
-            default_model = "qwen/qwen3-coder:free"  # Use Qwen3 Coder free as default
+            default_model = "moonshot/kimi-k2-thinking"  # Use Kimi K2 Thinking as default
         
         return OpenRouterClient(
             api_key=api_key,
@@ -267,12 +267,12 @@ class OpenRouterClient(LLMClient):
         # Load schema
         schema = json.loads(schema_path.read_text())
 
-        # Use deepseek-r1 for JSON tasks (free reasoning model)
+        # Use Kimi K2 Thinking for JSON tasks (strong reasoning)
         # This ensures consistent behavior regardless of env var overrides
         return self.generate_json(
             prompt,
             schema=schema,
-            model="deepseek/deepseek-r1-0528:free",
+            model="moonshot/kimi-k2-thinking",
         )
 
     def reason_json(
@@ -290,12 +290,12 @@ class OpenRouterClient(LLMClient):
         """
         schema = json.loads(schema_path.read_text())
 
-        # Use deepseek-r1 for reasoning tasks (free reasoning model)
+        # Use Kimi K2 Thinking for reasoning tasks (strong reasoning)
         # This ensures consistent behavior regardless of env var overrides
         return self.generate_json(
             prompt,
             schema=schema,
-            model="deepseek/deepseek-r1-0528:free",
+            model="moonshot/kimi-k2-thinking",
         )
 
     def plan_next_action(
