@@ -431,6 +431,14 @@ class LearningAgent:
         self._status(f"  -> Action: {intent.action}")
         self._status(f"  -> Service: {intent.service or 'unknown'}")
         self._status(f"  -> Needs auth: {intent.needs_auth}")
+        request_lower = user_request.lower()
+        if intent.action == "unknown":
+            if any(k in request_lower for k in ("google calendar", "check my calendar", "calendar events", "my calendar")):
+                intent.action = "calendar.list_events"
+                intent.service = "google_calendar"
+                intent.auth_provider = "google"
+                intent.needs_auth = True
+                self._status("[RECOVERY] Forced intent route: calendar.list_events")
 
         # Ask clarifying questions if needed
         if intent.clarifying_questions:
@@ -467,7 +475,49 @@ class LearningAgent:
             and not creds_exist
         )
         if needs_google_setup:
-            self._status("  [INFO] Google Calendar setup needed - will proceed to research and planning first")
+            self._status("  [INFO] Google Calendar setup needed - attempting automated setup")
+            setup_attempted = False
+            try:
+                from agent.autonomous.google_console_flow import create_oauth_credentials
+
+                dest = Path.home() / ".drcodept_swarm" / "google_calendar" / "credentials.json"
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                setup_attempted = True
+                ok, msg = create_oauth_credentials(dest)
+                if not ok:
+                    return TaskResult(success=False, summary=msg, error=msg)
+                creds_exist = self._check_credentials(intent.auth_provider)
+            except Exception:
+                setup_attempted = False
+
+            if not setup_attempted:
+                try:
+                    if hasattr(self.executor, "_execute_open_url"):
+                        self.executor._execute_open_url("https://console.cloud.google.com/apis/credentials")
+                    elif hasattr(self.executor, "execute_action"):
+                        self.executor.execute_action({
+                            "action": "open_url",
+                            "value": "https://console.cloud.google.com/apis/credentials",
+                        })
+                    else:
+                        self._open_browser("https://console.cloud.google.com/apis/credentials")
+                    time.sleep(2)
+                    setup_attempted = True
+                except Exception:
+                    setup_attempted = False
+
+            if not setup_attempted:
+                return TaskResult(
+                    success=False,
+                    summary="Google Calendar setup required. Automated setup unavailable.",
+                    error="setup_unavailable",
+                )
+            if not creds_exist:
+                return TaskResult(
+                    success=False,
+                    summary="Google Calendar setup required. Automated setup did not complete.",
+                    error="setup_incomplete",
+                )
 
         # Check skill library
         matching_skills = self.skill_library.search(user_request, k=3)
@@ -541,6 +591,31 @@ class LearningAgent:
         self._status("=" * 60)
         self._status("Analyzing research findings and building step-by-step plan...")
         plan = self._build_plan(user_request, intent, research, creds_exist)
+        if "calendar" in request_lower:
+            plan_text = f"{plan.research_summary or ''} " + " ".join(step.get("description", "") for step in plan.steps)
+            if not any(k in plan_text.lower() for k in ("calendar", "oauth", "google cloud", "credentials", "token.json", "events.list")):
+                strict_prompt = (
+                    "Plan must be for Google Calendar OAuth setup + listing events. No unrelated tooling.\n"
+                    f"USER REQUEST: {user_request}\n"
+                    f"SERVICE: {intent.service}\n"
+                    f"AUTH PROVIDER: {intent.auth_provider}\n"
+                    "Return a JSON object with the plan."
+                )
+                regen = self._call_llm_json(strict_prompt, PLAN_SCHEMA, timeout=45, model_cls=PlanPayload)
+                if regen and "error" not in regen:
+                    plan = self._plan_from_payload(
+                        request=user_request,
+                        intent=intent,
+                        payload=regen,
+                        default_summary=plan.research_summary,
+                    ) or plan
+                plan_text = f"{plan.research_summary or ''} " + " ".join(step.get("description", "") for step in plan.steps)
+                if not any(k in plan_text.lower() for k in ("calendar", "oauth", "google cloud", "credentials", "token.json", "events.list")):
+                    return TaskResult(
+                        success=False,
+                        summary="Plan regeneration failed: unrelated to Google Calendar setup/events.",
+                        error="plan_guardrail_failed",
+                    )
 
         self._status("\n" + "=" * 60)
         self._status("📋 TO-DO LIST (EXECUTION PLAN)")
