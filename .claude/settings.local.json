@@ -22,7 +22,8 @@
       "Bash(dir:*)",
       "Bash(python -c \"from agent.autonomous.google_console_flow import GoogleConsoleStateMachine; from agent.autonomous.computer_use import get_computer_use_router; router = get_computer_use_router(); sm = GoogleConsoleStateMachine(router); print(''GoogleConsoleStateMachine initialized successfully''); print(f''Has precondition check: {hasattr(sm, \"\"_check_precondition\"\")}''); print(f''Has state verification: {hasattr(sm, \"\"_verify_state_changed\"\")}''); print(f''Has reflection: {hasattr(sm, \"\"_reflect_on_action_failure\"\")}'')\")",
       "Bash(python -c \"from agent.autonomous.hybrid_executor import HybridExecutor; exec = HybridExecutor(); print(''HybridExecutor initialized successfully''); print(f''Has Reflector: {exec.reflector is not None}''); print(f''Reflector type: {type(exec.reflector).__name__ if exec.reflector else \"\"None\"\"}'')\")",
-      "Bash(timeout 30 python:*)"
+      "Bash(timeout 30 python:*)",
+      "Bash(python test_google_apis.py:*)"
     ]
   }
 }

@@ -1,0 +1,52 @@
+site: blackboard
+start_url: https://utmb.blackboard.com/
+login_flow:
+  - selector: "input[name='username'], input#username, input[type='text']"
+    action: fill
+    field_type: text
+    note: "UTMB username field"
+  - selector: "input[name='password'], input#password, input[type='password']"
+    action: fill
+    field_type: password
+    note: "Password field"
+  - selector: "button[type='submit'], input[type='submit'], button:has-text('Login'), button:has-text('Sign In')"
+    action: click
+    timeout_ms: 10000
+    note: "Click login button (red button on UTMB login page)"
+  - text: "Duo"
+    action: pause_if_visible
+    timeout_ms: 60000
+    note: "If Duo/2FA prompt appears, approve it to proceed"
+  - text: "verify"
+    action: pause_if_visible
+    timeout_ms: 30000
+    note: "If verification prompt appears, complete it and press Enter"
+known_urls:
+  - https://utmb.blackboard.com/
+  - https://idp.utmb.edu/
+  - https://utmb.blackboard.com/webapps/portal/execute/tabs/tabAction?tab_tab_group_id=_1_1
+working_selectors:
+  courses: "a[href*='course'], button:has-text('Courses'), nav a:has-text('Courses')"
+  calendar: "a[href*='calendar'], button:has-text('Calendar'), nav a:has-text('Calendar')"
+  assignments: "a[href*='assignment'], button:has-text('Assignments'), nav a:has-text('Assignments')"
+  course_content: "a[href*='content'], button:has-text('Content'), nav a:has-text('Content')"
+known_quirks:
+  - "Login redirects to UTMB Web Login Service (idp.utmb.edu)"
+  - "Duo/2FA prompt may appear after password entry"
+  - "Session typically lasts ~12 hours"
+  - "Use course search bar or left sidebar to open specific courses"
+notes: |
+  Blackboard login playbook for UTMB (https://utmb.blackboard.com/)
+  
+  Login flow:
+  1. Opens https://utmb.blackboard.com/
+  2. Redirects to UTMB Web Login Service (idp.utmb.edu)
+  3. Enter UTMB username and password
+  4. Click red Login button
+  5. Approve Duo/2FA if prompted
+  6. Lands on Blackboard Courses page
+  
+  To use:
+  1. Save credentials: Cred: blackboard (username/password)
+  2. The agent will use this playbook when accessing Blackboard
+

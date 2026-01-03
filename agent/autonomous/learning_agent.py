@@ -1595,15 +1595,20 @@ Return a JSON object matching the schema."""
             return False
 
         if provider == "google":
+            # Check for token.json (new OAuth flow)
+            token_path = Path.home() / ".drcodept_swarm" / "google_calendar" / "token.json"
+            if token_path.exists():
+                return True
+
+            # Fallback: Check old skill-based system
             try:
                 from agent.skills.google_calendar import GoogleCalendarSkill
                 from agent.skills.base import AuthStatus
+                skill = GoogleCalendarSkill()
+                status = skill.auth_status()
+                return status in {AuthStatus.AUTHENTICATED, AuthStatus.AUTH_EXPIRED}
             except Exception:
                 return False
-
-            skill = GoogleCalendarSkill()
-            status = skill.auth_status()
-            return status in {AuthStatus.AUTHENTICATED, AuthStatus.AUTH_EXPIRED}
         elif provider == "microsoft":
             # TODO: Check Microsoft credentials
             return False

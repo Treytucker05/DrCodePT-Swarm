@@ -1,0 +1,45 @@
+site: coachrx
+start_url: https://dashboard.coachrx.app/
+login_flow:
+  - selector: "input[type='email'], input[name='email'], input#email"
+    action: fill
+    field_type: text
+    note: "Email/username field"
+  - selector: "input[type='password'], input[name='password'], input#password"
+    action: fill
+    field_type: password
+    note: "Password field"
+  - selector: "button[type='submit'], button:has-text('Sign In'), button:has-text('Log In'), input[type='submit']"
+    action: click
+    timeout_ms: 10000
+    note: "Submit login form"
+  - text: "2FA"
+    action: pause_if_visible
+    timeout_ms: 30000
+    note: "If 2FA/MFA code is required, complete it and press Enter"
+  - text: "verification"
+    action: pause_if_visible
+    timeout_ms: 30000
+    note: "If verification code screen appears, complete it and press Enter"
+known_urls:
+  - https://dashboard.coachrx.app/
+  - https://dashboard.coachrx.app/login
+working_selectors:
+  dashboard: "div.dashboard, section.dashboard, main.dashboard"
+  clients: "a[href*='client'], button:has-text('Clients'), nav a:has-text('Clients')"
+  workouts: "a[href*='workout'], button:has-text('Workouts'), nav a:has-text('Workouts')"
+  schedule: "a[href*='schedule'], button:has-text('Schedule'), nav a:has-text('Schedule')"
+known_quirks:
+  - "Login page structure may vary - selectors are generic to handle common patterns"
+  - "May require 2FA/MFA authentication"
+  - "Session timeout may require re-authentication"
+notes: |
+  CoachRX login playbook for https://dashboard.coachrx.app/
+  
+  This playbook uses generic selectors that should work with common login form patterns.
+  If the login flow differs, the playbook can be updated after recording a session.
+  
+  To use:
+  1. Save credentials: Cred: coachrx (username/password)
+  2. The agent will use this playbook when accessing CoachRX
+
