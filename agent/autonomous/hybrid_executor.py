@@ -459,6 +459,8 @@ RULES:
 
         # Take screenshot and analyze
         if self._browser_action and self.ui_controller:
+            self._focus_chrome_window()
+            time.sleep(0.2)
             try:
                 bounds = self.ui_controller.get_chrome_window_bounds()
                 self.state.active_window = {"app": "chrome", **bounds}
@@ -500,6 +502,9 @@ RULES:
         Execute an action using UI automation (or vision fallback).
         """
         action_type = action.get("action", "").lower()
+        if action_type in {"open_url", "type", "press"} and self._browser_action:
+            self._focus_chrome_window()
+            time.sleep(0.2)
         if action_type in {"click", "type", "scroll", "press"} and self._browser_action and self.ui_controller:
             try:
                 bounds = self.ui_controller.get_chrome_window_bounds()
@@ -651,6 +656,8 @@ RULES:
             url = "https://" + url
 
         try:
+            self._focus_chrome_window()
+            time.sleep(0.2)
             # Check for configured Chrome path
             chrome_path = os.getenv("TREYS_AGENT_CHROME_PATH")
             if chrome_path and os.path.exists(chrome_path):
@@ -818,6 +825,9 @@ RULES:
         """Execute click at specific pixel coordinates (from vision executor)."""
         try:
             import pyautogui
+            if self._browser_action:
+                self._focus_chrome_window()
+                time.sleep(0.2)
             click_x, click_y = x, y
             if self.state.active_window and self.state.active_window.get("app") == "chrome":
                 click_x = self.state.active_window["left"] + x
@@ -918,10 +928,61 @@ RULES:
         """Press a keyboard key."""
         try:
             import pyautogui
+            if self._browser_action:
+                self._focus_chrome_window()
+                time.sleep(0.2)
             pyautogui.press(key.lower())
             return True, f"Pressed {key}"
         except Exception as e:
             return False, f"Key press failed: {e}"
+
+    def _focus_chrome_window(self) -> bool:
+        """Bring Chrome to the foreground; launch if missing."""
+        if not self.ui_controller:
+            return False
+        try:
+            bounds = self.ui_controller.get_chrome_window_bounds()
+            title = ""
+            try:
+                window = self.ui_controller.get_active_window()
+                title = window.title if window else ""
+            except Exception:
+                title = ""
+            logger.info(f"[FOCUS] Chrome focused: title={title}, rect=({bounds['left']},{bounds['top']},{bounds['width']},{bounds['height']})")
+            return True
+        except Exception:
+            pass
+
+        # Launch Chrome if not found, then retry focus once
+        try:
+            import subprocess
+            import shutil
+            import os
+
+            chrome_path = os.getenv("TREYS_AGENT_CHROME_PATH")
+            if chrome_path and os.path.exists(chrome_path):
+                subprocess.Popen([chrome_path, "about:blank"])
+            else:
+                chrome_paths = [
+                    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                    shutil.which("chrome"),
+                ]
+                chrome = next((p for p in chrome_paths if p and os.path.exists(p)), None)
+                if chrome:
+                    subprocess.Popen([chrome, "about:blank"])
+            time.sleep(1)
+            bounds = self.ui_controller.get_chrome_window_bounds()
+            title = ""
+            try:
+                window = self.ui_controller.get_active_window()
+                title = window.title if window else ""
+            except Exception:
+                title = ""
+            logger.info(f"[FOCUS] Chrome focused: title={title}, rect=({bounds['left']},{bounds['top']},{bounds['width']},{bounds['height']})")
+            return True
+        except Exception:
+            return False
 
     def _update_agent_state(self, action: Dict[str, Any], success: bool, message: str) -> None:
         """Update the unified agent state for ThrashGuard tracking."""
