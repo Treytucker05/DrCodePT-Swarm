@@ -318,7 +318,7 @@ class HybridExecutor:
 
         return action
 
-    def decide_next_action(self, objective: str, context: str = "") -> Dict[str, Any]:
+    def decide_next_action(self, objective: str, context: str = "", screenshot_path: Optional[str] = None) -> Dict[str, Any]:
         """
         Use LLM to decide the next action based on UI STATE (text), not vision.
 
@@ -373,6 +373,7 @@ class HybridExecutor:
 OBJECTIVE: {objective}
 
 {f"CONTEXT: {context}" if context else ""}
+{f"SCREENSHOT: {screenshot_path}" if screenshot_path else ""}
 
 CURRENT WINDOW: {ui_state.get('window_title', 'Unknown')}
 
@@ -1050,7 +1051,20 @@ RULES:
                 }
 
             # Decide next action (uses UI state text, not vision)
-            action = self.decide_next_action(objective, context)
+            screenshot_path = None
+            if self.vision_executor:
+                try:
+                    state = self.vision_executor.take_screenshot("ui_state")
+                    screenshot_path = str(state.screenshot_path)
+                    logger.info(f"Captured UI screenshot: {screenshot_path}")
+                except Exception as e:
+                    return {
+                        "success": False,
+                        "summary": f"Failed to take UI screenshot: {e}",
+                        "steps_taken": steps_taken,
+                        "actions": self.action_history,
+                    }
+            action = self.decide_next_action(objective, context, screenshot_path=screenshot_path)
 
             # Log
             self.action_history.append({
