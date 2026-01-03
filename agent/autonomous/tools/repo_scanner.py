@@ -44,6 +44,8 @@ class RepoScanner:
         return "other"
     
     def _is_key_file(self, path: Path) -> Tuple[bool, Optional[str]]:
+        if not path.is_absolute():
+            path = self.repo_root / path
         rel_path = path.relative_to(self.repo_root)
         for pattern, reason in self.KEY_FILE_PATTERNS.items():
             if str(rel_path) == pattern or path.name == pattern:

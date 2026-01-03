@@ -118,18 +118,35 @@ class GetTaskDetailsArgs(BaseModel):
 
 
 class CalendarTasksTools:
-    """Tool implementations for calendar and tasks operations."""
+    """Tool implementations for calendar and tasks operations.
+
+    Provides two APIs:
+    1) Methods used by the agent tool registry that accept a RunContext and typed args (ToolResult).
+    2) Async convenience methods used in tests and higher-level code which accept simple kwargs and return dicts.
+    """
 
     def __init__(self, calendar_helper: CalendarHelper, tasks_helper: TasksHelper):
         self.calendar = calendar_helper
         self.tasks = tasks_helper
 
+    # --- Registry-style methods (existing) ---
     def get_free_time(self, ctx: RunContext, args: GetFreeTimeArgs) -> ToolResult:
         try:
             slots = _run_async(self.calendar.get_free_slots(args.duration_minutes, args.days_ahead))
             return ToolResult(success=True, output={"free_slots": slots, "count": len(slots)})
         except Exception as exc:
             return ToolResult(success=False, error=str(exc))
+
+    # --- Async convenience wrappers for direct use / tests ---
+    async def get_free_time_async(self, duration_minutes: int = 60, days_ahead: int = 7) -> Dict[str, Any]:
+        try:
+            slots = _run_async(self.calendar.get_free_slots(duration_minutes, days_ahead))
+            return {"success": True, "output": {"free_slots": slots, "count": len(slots)}}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    # Backwards-compatible alias used by tests
+    get_free_time = get_free_time_async
 
     def check_calendar_conflicts(self, ctx: RunContext, args: CheckConflictsArgs) -> ToolResult:
         try:
@@ -146,6 +163,13 @@ class CalendarTasksTools:
         except Exception as exc:
             return ToolResult(success=False, error=str(exc))
 
+    async def check_calendar_conflicts(self, event_title: str, start_time: str, end_time: str) -> Dict[str, Any]:
+        try:
+            conflicts = _run_async(self.calendar.check_conflicts(event_title, start_time, end_time))
+            return {"success": True, "output": {"has_conflicts": bool(conflicts.get("has_conflicts")), "conflicting_events": conflicts.get("conflicts", [])}}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
     def create_calendar_event(self, ctx: RunContext, args: CreateCalendarEventArgs) -> ToolResult:
         try:
             event = _run_async(
@@ -161,6 +185,13 @@ class CalendarTasksTools:
         except Exception as exc:
             return ToolResult(success=False, error=str(exc))
 
+    async def create_calendar_event(self, title: str, start_time: str, end_time: str, description: Optional[str] = None, location: Optional[str] = None) -> Dict[str, Any]:
+        try:
+            event = _run_async(self.calendar.create_event(title, start_time, end_time, description, location))
+            return {"success": True, "output": {"event": event, "event_id": event.get("id")}}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
     def list_calendar_events(self, ctx: RunContext, args: ListCalendarEventsArgs) -> ToolResult:
         try:
             events = _run_async(
@@ -170,6 +201,12 @@ class CalendarTasksTools:
         except Exception as exc:
             return ToolResult(success=False, error=str(exc))
 
+    async def list_calendar_events(self, time_min: str, time_max: str, calendar_id: str = "primary") -> Dict[str, Any]:
+        try:
+            events = _run_async(self.calendar.list_events(time_min, time_max, calendar_id))
+            return {"success": True, "output": {"events": events, "count": len(events)}}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
     def update_calendar_event(self, ctx: RunContext, args: UpdateCalendarEventArgs) -> ToolResult:
         try:
             event = _run_async(
@@ -201,6 +238,12 @@ class CalendarTasksTools:
         except Exception as exc:
             return ToolResult(success=False, error=str(exc))
 
+    async def list_all_tasks(self) -> Dict[str, Any]:
+        try:
+            tasks = _run_async(self.tasks.list_all_tasks())
+            return {"success": True, "output": {"tasks": tasks, "count": len(tasks)}}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
     def create_task(self, ctx: RunContext, args: CreateTaskArgs) -> ToolResult:
         try:
             task = _run_async(
@@ -209,6 +252,13 @@ class CalendarTasksTools:
             return ToolResult(success=True, output={"task": task, "task_id": task.get("id")})
         except Exception as exc:
             return ToolResult(success=False, error=str(exc))
+
+    async def create_task(self, title: str, notes: Optional[str] = None, due_date: Optional[str] = None) -> Dict[str, Any]:
+        try:
+            task = _run_async(self.tasks.create_task(title=title, due_date=due_date, notes=notes))
+            return {"success": True, "output": {"task": task, "task_id": task.get("id")}}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
 
     def complete_task(self, ctx: RunContext, args: CompleteTaskArgs) -> ToolResult:
         try:
@@ -224,6 +274,12 @@ class CalendarTasksTools:
         except Exception as exc:
             return ToolResult(success=False, error=str(exc))
 
+    async def search_tasks(self, query: str) -> Dict[str, Any]:
+        try:
+            tasks = _run_async(self.tasks.search_tasks(query))
+            return {"success": True, "output": {"tasks": tasks, "count": len(tasks)}}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
     def update_task(self, ctx: RunContext, args: UpdateTaskArgs) -> ToolResult:
         try:
             task = _run_async(

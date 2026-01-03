@@ -1,5 +1,6 @@
 import logging
 from typing import Dict, Any
+import ast
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +27,47 @@ class QAAgent:
             self.checks_passed += 1
         else:
             report["checks"].append(f"✗ Invalid status")
+            report["issues"].append(f"Invalid status: {result.get('status')}")
             report["valid"] = False
             self.checks_failed += 1
         total_checks = self.checks_passed + self.checks_failed
         if total_checks > 0:
             report["score"] = (self.checks_passed / total_checks) * 100
+        return report
+    
+    def validate_code(self, code: str) -> Dict[str, Any]:
+        report = {"valid": True, "checks": [], "issues": []}
+        # Check syntax
+        try:
+            ast.parse(code)
+            report["checks"].append("✓ Valid syntax")
+        except SyntaxError as e:
+            report["checks"].append("✗ Syntax error")
+            report["issues"].append(f"Syntax error: {e}")
+            report["valid"] = False
+        # Check for dangerous patterns
+        dangerous_patterns = ["eval(", "exec(", "__import__("]
+        for pattern in dangerous_patterns:
+            if pattern in code:
+                report["checks"].append(f"✗ Dangerous pattern: {pattern}")
+                report["issues"].append(f"Dangerous pattern detected: {pattern}")
+                report["valid"] = False
+        return report
+    
+    def validate_research(self, research: Dict[str, Any]) -> Dict[str, Any]:
+        report = {"valid": True, "checks": [], "issues": []}
+        if "summary" in research and research["summary"]:
+            report["checks"].append("✓ Has summary")
+        else:
+            report["checks"].append("✗ Missing or empty summary")
+            report["issues"].append("Missing or empty summary")
+            report["valid"] = False
+        if "sources" in research and isinstance(research["sources"], list) and len(research["sources"]) > 0:
+            report["checks"].append("✓ Has sources")
+        else:
+            report["checks"].append("✗ Missing or empty sources")
+            report["issues"].append("Missing or empty sources")
+            report["valid"] = False
         return report
     
     def get_summary(self) -> Dict[str, Any]:

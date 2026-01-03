@@ -89,3 +89,22 @@ class LoopDetector:
     def get_history(self) -> Dict[str, List[str]]:
         """Get execution history."""
         return self.history.copy()
+
+    def update(self, tool_name: str, args_hash: str, output_hash: str) -> bool:
+        """Update detector with pre-hashed args and output values. Returns True if loop detected.
+
+        This is a convenient adapter for callers that already hash args/output. It behaves like `check`
+        but expects pre-computed hashes and returns a boolean.
+        """
+        key = f"{tool_name}:{args_hash}"
+        if key not in self.history:
+            self.history[key] = []
+        self.history[key].append(output_hash)
+        # If we don't have enough samples yet, not a loop
+        if len(self.history[key]) < self.max_repeats:
+            return False
+        recent = self.history[key][-self.max_repeats:]
+        if len(set(recent)) == 1:
+            logger.error(f"Loop detected via update: {tool_name} args_hash={args_hash}")
+            return True
+        return False

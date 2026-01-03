@@ -17,7 +17,7 @@ class WorktreeIsolation:
         worktree_path = self.worktrees_dir / worktree_name
         branch_name = f"task/{self.run_id}/{task_id}"
         try:
-            subprocess.run(["git", "checkout", "-b", branch_name], cwd=self.repo_root, check=True, capture_output=True)
+            subprocess.run(["git", "branch", branch_name], cwd=self.repo_root, check=True, capture_output=True)
             subprocess.run(["git", "worktree", "add", str(worktree_path), branch_name], cwd=self.repo_root, check=True, capture_output=True)
             self.created_worktrees.append((task_id, worktree_path, branch_name))
             return worktree_path

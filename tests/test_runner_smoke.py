@@ -22,18 +22,7 @@ def test_agent_runner_smoke(tmp_path) -> None:
                 ],
             },
             {"status": "success", "explanation_short": "python_exec ran", "next_hint": ""},
-            {
-                "goal": "smoke",
-                "steps": [
-                    {
-                        "goal": "finish",
-                        "tool_name": "finish",
-                        "tool_args": [{"key": "summary", "value": "done"}],
-                        "success_criteria": ["run complete"],
-                    }
-                ],
-            },
-            {"status": "success", "explanation_short": "finished", "next_hint": ""},
+            {"goal": "Task completed", "steps": []},
         ]
     )
 

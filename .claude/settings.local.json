@@ -14,7 +14,10 @@
       "Bash(git commit:*)",
       "Bash(dir \"C:\\Users\\treyt\\OneDrive\\Desktop\\DrCodePT-Swarm\\screenshots\")",
       "Bash(dir \"C:\\Users\\treyt\\OneDrive\\Desktop\\DrCodePT-Swarm\\agent\\screenshots\")",
-      "Bash(dir \"C:\\Users\\treyt\\OneDrive\\Desktop\\DrCodePT-Swarm\\agent\\screenshots\" /O-D)"
+      "Bash(dir \"C:\\Users\\treyt\\OneDrive\\Desktop\\DrCodePT-Swarm\\agent\\screenshots\" /O-D)",
+      "Bash(ls:*)",
+      "Bash(python -m pip show:*)",
+      "Bash(powershell:*)"
     ]
   }
 }

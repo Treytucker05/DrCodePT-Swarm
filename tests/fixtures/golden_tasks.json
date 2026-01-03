@@ -5,7 +5,8 @@
       "description": "Analyze repository structure",
       "task": "Analyze this repository and provide an overview",
       "expected_status": "success",
-      "timeout": 300
+      "timeout": 300,
+      "required_artifacts": ["repo_map.json"]
     },
     {
       "id": "code_review",
@@ -13,6 +14,31 @@
       "task": "Review the code in this repository",
       "expected_status": "success",
       "timeout": 600
+    },
+    {
+      "id": "no_interactive_prompts",
+      "description": "Test no interactive prompts",
+      "task": "Run a task without interactive prompts",
+      "expected_status": "success",
+      "timeout": 300,
+      "mode": "swarm",
+      "expected_no_prompts": true
+    },
+    {
+      "id": "partial_failure_handling",
+      "description": "Test partial failure handling",
+      "task": "Handle partial failures",
+      "expected_status": ["success", "partial_failure"],
+      "timeout": 300,
+      "mode": "swarm"
+    },
+    {
+      "id": "loop_detection",
+      "description": "Test loop detection",
+      "task": "Detect loops",
+      "expected_status": "success",
+      "timeout": 300,
+      "expected_no_false_loops": true
     }
   ]
 }

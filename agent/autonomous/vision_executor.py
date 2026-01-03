@@ -63,11 +63,26 @@ class TextTarget(BaseModel):
             extra = "forbid"
 
 
+class BoundingBox(BaseModel):
+    left: float
+    top: float
+    right: float
+    bottom: float
+    confidence: Optional[float] = None
+
+    if ConfigDict is not None:
+        model_config = ConfigDict(extra="forbid")
+    else:
+        class Config:
+            extra = "forbid"
+
+
 class VisionActionModel(BaseModel):
     observation: str
     reasoning: str
     action: Literal["click", "type", "scroll", "press", "goto", "wait", "done", "ask_user", "error"]
     target: Optional[Union[PixelTarget, TextTarget]] = None
+    bbox: Optional[BoundingBox] = None
     value: Optional[str] = None
     confidence: float = Field(ge=0.0, le=1.0)
 
@@ -129,6 +144,24 @@ class VisionExecutor:
         self.step_delay = 0.5  # seconds between actions
         self._ocr_cache: Optional[Dict[str, Any]] = None  # Cache OCR results per screenshot
         self.successful_patterns: List[Dict[str, Any]] = []  # Store successful coordinate patterns
+
+        # Retry and offset configuration (can be tuned or overridden in tests)
+        # Offsets tried in pixels (ordered by priority)
+        self.retry_offsets: List[Tuple[int, int]] = [
+            (0, -5), (0, 5), (-5, 0), (5, 0),  # up, down, left, right
+            (-3, -3), (3, 3), (-3, 3), (3, -3),  # diagonals
+            (0, -10), (0, 10), (-10, 0), (10, 0),  # further offsets
+        ]
+        # Maximum number of nearby attempts (not counting the initial click)
+        self.retry_budget: int = int(os.getenv("TREYS_AGENT_UI_CLICK_RETRY_BUDGET", "8"))
+
+        # Pattern persistence path (can be overridden for tests)
+        self.patterns_path: Path = EVIDENCE_DIR / "successful_patterns.json"
+        # Load persisted patterns
+        try:
+            self._load_successful_patterns()
+        except Exception as e:
+            logger.debug(f"Failed to load patterns at init: {e}")
 
         # Multi-tier model strategy for speed
         self.consecutive_failures = 0  # Track when to escalate to reasoning
@@ -255,6 +288,20 @@ class VisionExecutor:
         screen_width = self.current_state.width if self.current_state else 1920
         screen_height = self.current_state.height if self.current_state else 1080
 
+        schema_text = (
+            "Respond ONLY with a JSON object matching this schema (example):\n"
+            "{\n"
+            "  \"observation\": \"string\",\n"
+            "  \"reasoning\": \"string\",\n"
+            "  \"action\": \"click|type|scroll|press|goto|wait|done|ask_user|error\",\n"
+            "  \"target\": {\"x\": <number>, \"y\": <number>} (or null),\n"
+            "  \"bbox\": { \"left\": <number>, \"top\": <number>, \"right\": <number>, \"bottom\": <number> } (optional),\n"
+            "  \"value\": <string|null>,\n"
+            "  \"confidence\": <0.0-1.0>\n"
+            "}\n\n"
+            "If you are uncertain, include the optional 'bbox' object and show calculation steps."
+        )
+
         return f"""You are a desktop automation agent. Analyze this screenshot and decide the next action.
 
 OBJECTIVE: {objective}
@@ -264,6 +311,8 @@ OBJECTIVE: {objective}
 {history_text}
 
 Screen size: {screen_width}x{screen_height}
+
+{schema_text}
 
 STEP 1: OBSERVE
 Look at the screenshot carefully. Identify:
@@ -285,6 +334,12 @@ To find precise coordinates, use this systematic approach:
    - First, estimate the element's bounding box: [left, top, right, bottom]
    - Visualize where the element starts and ends
    - Calculate CENTER: x = (left + right) / 2, y = (top + bottom) / 2
+   - When possible, include the bounding box in your "reasoning" field in this exact format: [left, top, right, bottom]
+   - Show your calculation steps (e.g., left=100, right=200 -> x=(100+200)/2 = 150)
+   - If you are unsure (confidence < 0.6), emphasize the bounding box in your reasoning and explicitly note you are uncertain; the system may use the bounding box to compute the click center instead of your point estimate
+   - If uncertain, ALSO include a small JSON object in your response (either in reasoning or at the end) with the bounding box and confidence so the executor can use it directly. Example (literal JSON shown):
+     {{"bbox": {{"left": 100, "top": 50, "right": 200, "bottom": 80}}, "center": {{"x": 150, "y": 65}}, "confidence": 0.65}}
+   - Allowed formats: either top-level keys {{"left", "top", "right", "bottom"}} or nested under "bbox" as shown above; the executor will parse either form.
    - This is more accurate than guessing a single point
 
 3. REFERENCE POINTS:
@@ -375,34 +430,66 @@ NAVIGATION EXAMPLES:
 - Need to click address bar? Estimate: {{"action": "click", "target": {{"x": {screen_width//2}, "y": 35}}, "confidence": 0.8}}
 """
 
+    # Preferred model hints to improve behavior on different providers
+    MODEL_PREFERRED = {
+        "openai": ["gpt-4-vision-preview", "gpt-4o", "gpt-4o-mini"],
+        "openrouter": ["anthropic/claude-3.5-sonnet", "openai/gpt-4o"],
+    }
+
+    # Small prompt adjustments per provider/model
+    MODEL_PROMPT_HINTS = {
+        "openai": "Be concise and return JSON bounding boxes when uncertain; include calculation steps.",
+        "openrouter": "Prefer brief JSON responses with bounding box details when unsure.",
+    }
+
+    def _select_vision_model(self) -> Optional[str]:
+        """Select the best vision-capable model for the configured LLM provider.
+
+        Priority order per provider is defined in MODEL_PREFERRED. An environment override
+        `TREYS_AGENT_VISION_MODEL` can force a particular model.
+        """
+        env_override = os.getenv("TREYS_AGENT_VISION_MODEL")
+        if env_override:
+            return env_override
+
+        if not self.llm or not hasattr(self.llm, "provider_name"):
+            return None
+
+        provider = self.llm.provider_name
+        prefs = self.MODEL_PREFERRED.get(provider, [])
+        # Return first available preference
+        return prefs[0] if prefs else None
+
     def _call_vision_llm(self, prompt: str, state: ScreenState) -> Optional[str]:
         """Call the LLM with the screenshot for analysis.
-        
-        Optimizes model selection for vision tasks:
-        - Prefers vision-capable models (GPT-4 Vision, Claude 3.5 Sonnet)
-        - Uses lower temperature for coordinate accuracy
-        - Adjusts timeout for vision tasks
+
+        Behavior:
+        - Prefer vision-capable models using `_select_vision_model`
+        - Use lower temperature for coordinate tasks (0.1-0.2) and slightly higher for reasoning
+        - Add small, provider-specific prompt hints to improve JSON/bbox output
         """
         if self.llm and hasattr(self.llm, "chat_with_image"):
             self._log_llm_use(self.llm, "vision_action")
-            
+
             # Use lower temperature for better coordinate accuracy
-            # Vision models work better with lower temperature (0.1-0.3)
-            temperature = 0.2 if not self.use_reasoning else 0.3
-            
-            # Try to use vision-optimized model if available
-            model = None
-            if hasattr(self.llm, "provider_name"):
+            temperature = 0.15 if not self.use_reasoning else 0.25
+
+            # Select preferred model if available
+            model = self._select_vision_model()
+
+            # Apply provider-specific prompt hints (non-intrusive)
+            hint = None
+            try:
                 provider = self.llm.provider_name
-                if provider == "openrouter":
-                    # Prefer Claude 3.5 Sonnet or GPT-4o for vision
-                    model = "anthropic/claude-3.5-sonnet" if not self.use_reasoning else "openai/gpt-4o"
-                elif provider == "openai":
-                    model = "gpt-4o" if not self.use_reasoning else "gpt-4o"
-            
+                hint = self.MODEL_PROMPT_HINTS.get(provider)
+            except Exception:
+                hint = None
+
+            prompt_with_hint = f"{prompt}\n\n{hint}" if hint else prompt
+
             try:
                 return self.llm.chat_with_image(
-                    prompt,
+                    prompt_with_hint,
                     state.screenshot_path,
                     temperature=temperature,
                     timeout=90,  # Vision tasks take longer
@@ -412,7 +499,7 @@ NAVIGATION EXAMPLES:
                 logger.warning(f"Vision API call failed, trying without model override: {e}")
                 # Fallback: try without model specification
                 return self.llm.chat_with_image(
-                    prompt,
+                    prompt_with_hint,
                     state.screenshot_path,
                     temperature=temperature,
                     timeout=90,
@@ -472,6 +559,24 @@ NAVIGATION EXAMPLES:
             max_retries=2,
         )
         if data:
+            # If the model returned a bounding box but not a target point, compute the center
+            try:
+                if isinstance(data, dict) and "bbox" in data and not data.get("target"):
+                    bb = data.get("bbox") or {}
+                    left = float(bb.get("left"))
+                    top = float(bb.get("top"))
+                    right = float(bb.get("right"))
+                    bottom = float(bb.get("bottom"))
+                    cx = (left + right) / 2.0
+                    cy = (top + bottom) / 2.0
+                    data["target"] = {"x": cx, "y": cy}
+                    # Promote bbox confidence if present
+                    bb_conf = bb.get("confidence")
+                    if bb_conf is not None and (data.get("confidence") is None or float(data.get("confidence")) < float(bb_conf)):
+                        data["confidence"] = float(bb_conf)
+            except Exception as e:
+                logger.debug(f"Failed to convert bbox to target: {e}")
+
             validated, validation_error = self._validate_action_data(data)
             if validated:
                 return validated
@@ -578,20 +683,80 @@ NAVIGATION EXAMPLES:
         
         return True, None
 
+    def _request_bounding_box(self, x: float, y: float, confidence: float) -> Optional[Dict[str, Any]]:
+        """Ask the vision LLM for a bounding box around an element near (x,y).
+
+        Returns:
+            dict with keys 'left','top','right','bottom','confidence' or None on failure
+        """
+        if not self.llm or not hasattr(self.llm, "chat_with_image") or not self.current_state:
+            return None
+
+        prompt = (
+            f"You previously suggested clicking near ({x},{y}) with confidence {confidence:.2f}.\n"
+            "Please analyze the screenshot and return a JSON object with a bounding box."
+            " Prefer format: {\"bbox\": {\"left\": <int>, \"top\": <int>, \"right\": <int>, \"bottom\": <int>}, \"confidence\": <0.0-1.0>}"
+            " You may also return the bounding box as top-level keys {\"left\", \"top\", \"right\", \"bottom\"}."
+            " Return ONLY the JSON object."
+        )
+
+        try:
+            resp = self._call_vision_llm(prompt, self.current_state)
+            if not resp:
+                return None
+            import re, json
+            m = re.search(r"\{[\s\S]*\}", resp)
+            if not m:
+                return None
+            obj = json.loads(m.group())
+
+            # Support nested 'bbox' or top-level bbox keys
+            if "bbox" in obj and isinstance(obj["bbox"], dict):
+                bb = obj["bbox"]
+                if all(k in bb for k in ("left", "top", "right", "bottom")):
+                    return {
+                        "left": float(bb["left"]),
+                        "top": float(bb["top"]),
+                        "right": float(bb["right"]),
+                        "bottom": float(bb["bottom"]),
+                        "confidence": float(obj.get("confidence") or bb.get("confidence") or 0.0),
+                    }
+
+            if all(k in obj for k in ("left", "top", "right", "bottom")):
+                return {
+                    "left": float(obj["left"]),
+                    "top": float(obj["top"]),
+                    "right": float(obj["right"]),
+                    "bottom": float(obj["bottom"]),
+                    "confidence": float(obj.get("confidence") or 0.0),
+                }
+        except Exception as e:
+            logger.debug(f"Bounding box request failed: {e}")
+        return None
     def _refine_coordinates(self, x: float, y: float, confidence: float) -> Tuple[float, float]:
         """Refine coordinates based on confidence and screen state.
-        
-        For low confidence, we might want to adjust slightly or request bounding box.
-        Currently returns coordinates as-is, but can be extended.
+
+        If confidence is low, try to request a bounding box from the vision LLM and use its center.
         """
-        # Round to integers (pixel coordinates are discrete)
+        # If confidence is low, try to ask LLM for a bounding box
+        if confidence < 0.6:
+            bbox = self._request_bounding_box(x, y, confidence)
+            if bbox:
+                try:
+                    left = float(bbox["left"])
+                    top = float(bbox["top"])
+                    right = float(bbox["right"])
+                    bottom = float(bbox["bottom"])
+                    cx = round((left + right) / 2)
+                    cy = round((top + bottom) / 2)
+                    logger.info(f"Refined coordinates using bounding box: ({cx},{cy}) from bbox {bbox}")
+                    return float(cx), float(cy)
+                except Exception:
+                    logger.debug("Failed to parse bounding box from vision LLM")
+
+        # Default behavior: round to integers
         x = round(x)
         y = round(y)
-        
-        # If confidence is very low, we might want to add small random offset
-        # to avoid systematic errors, but for now we'll trust the model
-        # This can be enhanced later with learning from failures
-        
         return float(x), float(y)
 
     def _do_click(self, target: Any, confidence: float = 1.0, expected_text: Optional[str] = None) -> Tuple[bool, str]:
@@ -635,6 +800,12 @@ NAVIGATION EXAMPLES:
                 
                 try:
                     self.pyautogui.click(x_int, y_int)
+                    # Save a debug screenshot highlighting click point (best-effort)
+                    try:
+                        self._save_debug_click_image(x_int, y_int)
+                    except Exception:
+                        pass
+
                     # Success - reset failure counter and store pattern
                     if self.consecutive_failures > 0:
                         self.consecutive_failures = 0
@@ -664,13 +835,8 @@ NAVIGATION EXAMPLES:
 
     def _find_text_with_ocr(self, text_query: str, screenshot_path: Optional[Path] = None) -> Optional[Tuple[int, int]]:
         """Find text on screen using OCR and return its center coordinates.
-        
-        Args:
-            text_query: Text to search for (can be partial, case-insensitive)
-            screenshot_path: Path to screenshot (uses current_state if None)
-            
-        Returns:
-            (x, y) coordinates of text center, or None if not found
+
+        This version caches OCR results per screenshot to avoid repeated processing.
         """
         try:
             import pytesseract
@@ -678,49 +844,67 @@ NAVIGATION EXAMPLES:
         except ImportError:
             logger.debug("pytesseract or PIL not available for OCR")
             return None
-        
+
         # Use provided screenshot or current state
         img_path = screenshot_path or (self.current_state.screenshot_path if self.current_state else None)
         if not img_path or not img_path.exists():
             return None
-        
-        try:
-            # Load image
-            img = Image.open(img_path)
-            
-            # Run OCR with bounding boxes
-            data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
-            
-            # Search for text
-            text_query_lower = text_query.lower().strip()
-            best_match = None
-            best_confidence = 0.0
-            
-            n_boxes = len(data['text'])
-            for i in range(n_boxes):
-                text = data['text'][i].strip().lower()
-                conf = float(data['conf'][i]) if data['conf'][i] != -1 else 0.0
-                
-                # Check if text matches (exact or contains)
-                if text_query_lower in text or text in text_query_lower:
-                    # Calculate center of bounding box
-                    x = (data['left'][i] + data['width'][i] / 2)
-                    y = (data['top'][i] + data['height'][i] / 2)
-                    
-                    # Prefer higher confidence matches
-                    if conf > best_confidence:
-                        best_match = (int(x), int(y))
-                        best_confidence = conf
-            
-            if best_match:
-                logger.info(f"OCR found '{text_query}' at {best_match} (confidence: {best_confidence:.1f}%)")
-                return best_match
-            
-            return None
-            
-        except Exception as e:
-            logger.debug(f"OCR search failed: {e}")
-            return None
+
+        cache_key = str(img_path)
+        if self._ocr_cache is None:
+            self._ocr_cache = {}
+
+        # If we haven't run OCR on this screenshot yet, do it and cache results
+        if cache_key not in self._ocr_cache:
+            mapping: Dict[str, Tuple[Tuple[int, int], float]] = {}
+            try:
+                img = Image.open(img_path)
+                data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+                n_boxes = len(data.get('text', []))
+                for i in range(n_boxes):
+                    raw_text = data['text'][i].strip()
+                    if not raw_text:
+                        continue
+                    key = raw_text.lower()
+                    conf_raw = data['conf'][i]
+                    try:
+                        conf = float(conf_raw) if conf_raw != -1 else 0.0
+                    except Exception:
+                        conf = 0.0
+                    x = int((data['left'][i] + data['width'][i] / 2))
+                    y = int((data['top'][i] + data['height'][i] / 2))
+                    existing = mapping.get(key)
+                    if not existing or conf > existing[1]:
+                        mapping[key] = ((x, y), conf)
+            except Exception as e:
+                logger.debug(f"OCR run failed: {e}")
+                mapping = {}
+
+            self._ocr_cache[cache_key] = mapping
+
+        mapping = self._ocr_cache.get(cache_key, {})
+        text_query_lower = text_query.lower().strip()
+
+        # Direct exact match
+        if text_query_lower in mapping:
+            coords, conf = mapping[text_query_lower]
+            logger.info(f"OCR found '{text_query}' at {coords} (confidence: {conf:.1f})")
+            return coords
+
+        # Partial/substring match
+        best = None
+        best_conf = 0.0
+        for key, (coords, conf) in mapping.items():
+            if text_query_lower in key or key in text_query_lower:
+                if conf > best_conf:
+                    best = coords
+                    best_conf = conf
+
+        if best:
+            logger.info(f"OCR fuzzy matched '{text_query}' to '{key}' at {best} (confidence: {best_conf:.1f})")
+            return best
+
+        return None
 
     def _verify_coordinates_with_ocr(self, x: float, y: float, expected_text: Optional[str] = None) -> Tuple[bool, Optional[str]]:
         """Verify that coordinates point to expected text using OCR.
@@ -768,36 +952,71 @@ NAVIGATION EXAMPLES:
             logger.debug(f"OCR verification failed: {e}")
             return True, None  # Don't fail on OCR errors
 
-    def _try_nearby_coordinates(self, x: int, y: int, expected_text: Optional[str], error: str) -> Tuple[bool, str]:
-        """Try clicking at nearby coordinates if initial click failed.
-        
-        This implements a visual feedback loop: if a click fails, try small offsets.
+    def _post_click_verify(self, x: int, y: int, expected_text: str) -> Tuple[bool, Optional[str]]:
+        """After clicking, update the screenshot and verify that the expected text appears near coordinates.
+
+        Returns (verified, message)
         """
-        # Try nearby coordinates in a pattern
-        offsets = [
-            (0, -5), (0, 5), (-5, 0), (5, 0),  # Up, down, left, right
-            (-3, -3), (3, 3), (-3, 3), (3, -3),  # Diagonals
-            (0, -10), (0, 10), (-10, 0), (10, 0),  # Further offsets
-        ]
-        
+        try:
+            # Take a fresh screenshot to capture UI changes
+            self.take_screenshot("post_click_verify")
+            return self._verify_coordinates_with_ocr(x, y, expected_text)
+        except Exception as e:
+            logger.debug(f"Post-click verification failed: {e}")
+            return True, None
+
+    def _try_nearby_coordinates(self, x: int, y: int, expected_text: Optional[str], error: str) -> Tuple[bool, str]:
+        """Try clicking at nearby coordinates if initial click failed or verification failed.
+
+        Uses configured offsets and a retry budget. Performs post-click verification when expected_text
+        is provided and persists successful patterns.
+        """
+        offsets = list(self.retry_offsets)
+        attempts = 0
+
         for offset_x, offset_y in offsets:
+            if attempts >= self.retry_budget:
+                break
             new_x = x + offset_x
             new_y = y + offset_y
-            
+            attempts += 1
+
             # Validate new coordinates
             is_valid, _ = self._validate_coordinates(new_x, new_y)
             if not is_valid:
                 continue
-            
+
             try:
                 logger.info(f"Trying nearby coordinates ({new_x}, {new_y}) after failed click at ({x}, {y})")
                 self.pyautogui.click(new_x, new_y)
+                # Post-click verification if expected text provided
+                if expected_text:
+                    verified, msg = self._post_click_verify(new_x, new_y, expected_text)
+                    if not verified:
+                        logger.warning(f"Verification failed at nearby coords ({new_x},{new_y}): {msg}")
+                        continue
+
                 # Success with nearby coordinates
                 self.consecutive_failures = 0
+                # Persist success pattern
+                if expected_text:
+                    self.successful_patterns.append({
+                        "text": expected_text,
+                        "coords": (new_x, new_y),
+                        "confidence": 0.8,
+                        "timestamp": datetime.now().isoformat(),
+                    })
+                    if len(self.successful_patterns) > 20:
+                        self.successful_patterns.pop(0)
+                    try:
+                        self._save_successful_patterns()
+                    except Exception:
+                        pass
+
                 return True, f"Clicked at nearby coordinates ({new_x}, {new_y}) after initial failure"
             except Exception:
                 continue
-        
+
         # If OCR is available and we have expected text, try OCR-based click
         if expected_text:
             ocr_coords = self._find_text_with_ocr(expected_text)
@@ -809,13 +1028,66 @@ NAVIGATION EXAMPLES:
                         logger.info(f"Trying OCR coordinates ({ocr_x}, {ocr_y}) after coordinate click failed")
                         self.pyautogui.click(ocr_x, ocr_y)
                         self.consecutive_failures = 0
+                        # Persist OCR success
+                        self.successful_patterns.append({
+                            "text": expected_text,
+                            "coords": (ocr_x, ocr_y),
+                            "confidence": 0.9,
+                            "timestamp": datetime.now().isoformat(),
+                        })
+                        try:
+                            self._save_successful_patterns()
+                        except Exception:
+                            pass
                         return True, f"Clicked using OCR coordinates ({ocr_x}, {ocr_y}) after coordinate click failed"
                     except Exception:
                         pass
-        
-        # All retries failed
+
+        # All retries exhausted
         return False, f"Click failed at ({x}, {y}) and nearby coordinates: {error}"
 
+    def _save_debug_click_image(self, x: int, y: int, radius: int = 30) -> Optional[str]:
+        """Save a debug screenshot highlighting clicked area."""
+        if not self.current_state:
+            return None
+        try:
+            from PIL import Image, ImageDraw
+            img = Image.open(self.current_state.screenshot_path).convert("RGBA")
+            draw = ImageDraw.Draw(img)
+            left = max(0, x - radius)
+            top = max(0, y - radius)
+            right = min(img.width, x + radius)
+            bottom = min(img.height, y + radius)
+            draw.rectangle([left, top, right, bottom], outline="red", width=3)
+            fname = EVIDENCE_DIR / f"click_debug_{self.current_state.timestamp}_{x}_{y}.png"
+            img.save(fname)
+            logger.debug(f"Saved debug click image {fname}")
+            return str(fname)
+        except Exception as e:
+            logger.debug(f"Failed to save debug click image: {e}")
+            return None
+
+    def _load_successful_patterns(self) -> None:
+        """Load persisted successful patterns from disk if available."""
+        try:
+            if self.patterns_path.exists():
+                import json
+                with open(self.patterns_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, list):
+                        self.successful_patterns = data
+        except Exception as e:
+            logger.debug(f"Failed to load successful patterns: {e}")
+
+    def _save_successful_patterns(self) -> None:
+        """Persist successful patterns to disk (best-effort)."""
+        try:
+            self.patterns_path.parent.mkdir(parents=True, exist_ok=True)
+            import json
+            with open(self.patterns_path, "w", encoding="utf-8") as f:
+                json.dump(self.successful_patterns[-100:], f)
+        except Exception as e:
+            logger.debug(f"Failed to save successful patterns: {e}")
     def _click_text(self, text: str) -> Tuple[bool, str]:
         """Try to click on text found on screen using OCR."""
         coords = self._find_text_with_ocr(text)
