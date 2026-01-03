@@ -290,6 +290,31 @@ class HybridExecutor:
             "tool_result": tool_payload,
         }
 
+    def _normalize_action(self, action: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        NORMALIZE LLM ACTIONS AFTER PARSING (Requirement #3).
+
+        LLMs sometimes return {"action":"click","target":null}.
+        This normalizes such cases to prevent crashes.
+
+        Returns normalized action dict.
+        """
+        if not isinstance(action, dict):
+            logger.warning(f"Action normalization received non-dict: {type(action)}")
+            return action
+
+        # Remove None target
+        if action.get("target") is None:
+            action.pop("target", None)
+            logger.debug("Normalized: Removed null target")
+
+        # Ensure target is a dict if present
+        if "target" in action and not isinstance(action["target"], dict):
+            logger.debug(f"Normalized: Converting non-dict target {type(action['target'])} to empty dict")
+            action["target"] = {}
+
+        return action
+
     def decide_next_action(self, objective: str, context: str = "") -> Dict[str, Any]:
         """
         Use LLM to decide the next action based on UI STATE (text), not vision.
@@ -384,7 +409,8 @@ RULES:
                     data = llm.reason_json(prompt, schema_path=schema_path, timeout_seconds=20)
                     validated, error = self._validate_action_data(data if isinstance(data, dict) else {})
                     if validated:
-                        return validated
+                        # NORMALIZE: Apply normalization before returning
+                        return self._normalize_action(validated)
                     prompt = build_repair_prompt(schema, previous=json.dumps(data))
                 return self._action_error(
                     "Invalid JSON from model after repair attempts",
@@ -403,7 +429,9 @@ RULES:
         if not response:
             return self._action_error("No response from LLM for UI action selection")
 
-        return self._parse_action_response(response, llm_client=llm)
+        # NORMALIZE: Apply normalization after parsing
+        action = self._parse_action_response(response, llm_client=llm)
+        return self._normalize_action(action)
 
     def _decide_with_vision(self, objective: str, context: str) -> Dict[str, Any]:
         """Fallback: Use vision to decide action when UI tree fails."""
@@ -416,7 +444,9 @@ RULES:
 
         # Take screenshot and analyze
         self.vision_executor.take_screenshot("hybrid_fallback")
-        return self.vision_executor.analyze_screen(objective, context)
+        action = self.vision_executor.analyze_screen(objective, context)
+        # NORMALIZE: Apply normalization to vision-decided actions too
+        return self._normalize_action(action)
 
     def _parse_action_response(
         self,
@@ -432,7 +462,8 @@ RULES:
             max_retries=2,
         )
         if data:
-            return data
+            # NORMALIZE: Apply normalization after successful parse
+            return self._normalize_action(data)
         logger.warning(f"Failed to parse action response after repair: {error}")
         return self._action_error(
             "Invalid JSON from model after repair attempts",
@@ -445,12 +476,22 @@ RULES:
         Execute an action using UI automation (or vision fallback).
         """
         action_type = action.get("action", "").lower()
-        target_name = action.get("target_name") or action.get("target", {}).get("text")
+
+        # NULL-SAFE: Handle target being None or non-dict
+        target_obj = action.get("target") or {}
+        if not isinstance(target_obj, dict):
+            target_obj = {}
+
+        target_name = action.get("target_name") or target_obj.get("text")
         target_type = action.get("target_type")
-        target_coords = action.get("target", {})
+        target_coords = target_obj
         value = action.get("value")
 
         try:
+            # DETERMINISTIC: open_url bypasses all UI/vision logic
+            if action_type == "open_url":
+                return self._execute_open_url(value)
+
             if action_type == "launch":
                 return self._execute_launch(value or target_name)
 
@@ -562,22 +603,33 @@ RULES:
         except Exception as e:
             return False, f"Failed to launch {app_name}: {e}"
 
-    def _execute_goto(self, url: str) -> Tuple[bool, str]:
-        """Open a URL in the browser."""
+    def _execute_open_url(self, url: str) -> Tuple[bool, str]:
+        """
+        DETERMINISTIC URL opener - bypasses all UI/vision logic.
+
+        Opens URL in browser via subprocess. Never uses clicking/automation.
+        """
         import subprocess
         import shutil
         import os
-        import webbrowser
 
         if not url:
-            return False, "No URL provided"
+            return False, "No URL provided for open_url"
 
         # Ensure URL has protocol
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
 
         try:
-            # Find Chrome
+            # Check for configured Chrome path
+            chrome_path = os.getenv("TREYS_AGENT_CHROME_PATH")
+            if chrome_path and os.path.exists(chrome_path):
+                subprocess.Popen([chrome_path, url])
+                time.sleep(2)
+                logger.info(f"Opened {url} via configured Chrome: {chrome_path}")
+                return True, f"Opened {url}"
+
+            # Find Chrome in standard locations
             chrome_paths = [
                 r"C:\Program Files\Google\Chrome\Application\chrome.exe",
                 r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
@@ -586,17 +638,41 @@ RULES:
             chrome = next((p for p in chrome_paths if p and os.path.exists(p)), None)
 
             if chrome:
-                subprocess.Popen([chrome, url])
-                time.sleep(2)  # Wait for browser
-                return True, f"Opened {url} in Chrome"
+                # Respect profile if configured
+                user_data_dir = os.getenv("TREYS_AGENT_CHROME_USER_DATA_DIR")
+                profile = os.getenv("TREYS_AGENT_CHROME_PROFILE")
+
+                cmd = [chrome]
+                if user_data_dir:
+                    cmd.extend([f"--user-data-dir={user_data_dir}"])
+                if profile:
+                    cmd.extend([f"--profile-directory={profile}"])
+                cmd.append(url)
+
+                subprocess.Popen(cmd)
+                time.sleep(2)
+                logger.info(f"Opened {url} in Chrome")
+                return True, f"Opened {url}"
             else:
-                # Try webbrowser module
+                # Fallback: system default browser
+                import webbrowser
                 webbrowser.open(url)
                 time.sleep(2)
-                return True, f"Opened {url} in default browser"
+                logger.info(f"Opened {url} in default browser")
+                return True, f"Opened {url}"
 
         except Exception as e:
+            logger.error(f"Failed to open URL {url}: {e}")
             return False, f"Failed to open URL: {e}"
+
+    def _execute_goto(self, url: str) -> Tuple[bool, str]:
+        """
+        DEPRECATED: Use open_url action instead.
+
+        This is kept for backward compatibility but delegates to _execute_open_url.
+        """
+        logger.warning("goto action is deprecated - use open_url instead")
+        return self._execute_open_url(url)
 
     def _check_precondition(self, action: Dict[str, Any]) -> Tuple[bool, str]:
         """
@@ -604,9 +680,25 @@ RULES:
 
         This prevents actions that are doomed to fail.
         """
+        # NULL-SAFE: Validate action is a dict
+        if not isinstance(action, dict):
+            return False, "Invalid action (not a dict)"
+
         action_type = action.get("action", "").lower()
-        target_name = action.get("target_name") or action.get("target", {}).get("text")
-        target_coords = action.get("target", {})
+
+        # NULL-SAFE: Handle target being None or non-dict
+        target_obj = action.get("target") or {}
+        if not isinstance(target_obj, dict):
+            target_obj = {}
+
+        target_name = action.get("target_name") or target_obj.get("text")
+        target_coords = target_obj
+
+        # open_url requires no target - it's deterministic
+        if action_type == "open_url":
+            if not action.get("value"):
+                return False, "No URL specified for open_url action"
+            return True, "Preconditions met"
 
         # For click/type actions, verify we have either a target name OR pixel coordinates
         if action_type in ("click", "type"):
