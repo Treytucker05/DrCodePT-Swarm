@@ -545,7 +545,7 @@ RULES:
                 return self._execute_press(value or "enter")
 
             elif action_type == "goto":
-                return self._execute_goto(value or target_name)
+                return self._execute_open_url(value or target_name)
 
             elif action_type == "wait":
                 seconds = float(value or 2)
@@ -700,7 +700,6 @@ RULES:
 
         This is kept for backward compatibility but delegates to _execute_open_url.
         """
-        logger.warning("goto action is deprecated - use open_url instead")
         return self._execute_open_url(url)
 
     def _check_precondition(self, action: Dict[str, Any]) -> Tuple[bool, str]:

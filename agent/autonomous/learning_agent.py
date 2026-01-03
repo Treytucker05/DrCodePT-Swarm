@@ -1989,6 +1989,38 @@ Return a JSON object with the plan."""
                     steps_completed += 1
 
             elif action == "vision_guided":
+                force_console = False
+                if plan.intent.service == "google_calendar":
+                    force_console = True
+                else:
+                    text = f"{plan.request} {step.get('description', '')}".lower()
+                    if any(token in text for token in ("google cloud", "console", "api library", "credentials")):
+                        force_console = True
+
+                if force_console:
+                    url = "https://console.cloud.google.com/apis/credentials"
+                    try:
+                        if hasattr(self.executor, "_execute_open_url"):
+                            self.executor._execute_open_url(url)
+                        elif hasattr(self.executor, "execute_action"):
+                            self.executor.execute_action({"action": "open_url", "value": url})
+                        else:
+                            self._open_browser(url)
+                    except Exception:
+                        self._open_browser(url)
+                    time.sleep(2)
+                    try:
+                        bounds = None
+                        if hasattr(self.executor, "ui_controller") and self.executor.ui_controller:
+                            bounds = self.executor.ui_controller.get_chrome_window_bounds()
+                        if bounds and hasattr(self.executor, "vision_executor") and self.executor.vision_executor:
+                            region = (bounds["left"], bounds["top"], bounds["width"], bounds["height"])
+                            self.executor.vision_executor.take_screenshot_region("pre_console", region)
+                        elif hasattr(self.executor, "vision_executor") and self.executor.vision_executor:
+                            self.executor.vision_executor.take_screenshot("pre_console")
+                    except Exception:
+                        pass
+
                 last_ui: Dict[str, Any] = {"screenshot": None, "analysis": None}
 
                 def _on_step(s: Dict[str, Any]) -> None:
