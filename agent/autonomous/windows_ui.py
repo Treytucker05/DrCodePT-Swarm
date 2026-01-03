@@ -532,6 +532,77 @@ class WindowsUIController:
             logger.error(f"Failed to focus window: {e}")
         return False
 
+    def get_chrome_window_bounds(self) -> Dict[str, int]:
+        """
+        Locate the active Chrome window and return its bounds.
+
+        Returns dict with keys: left, top, width, height.
+        """
+        if not _HAS_PYWINAUTO and not _HAS_UIAUTOMATION:
+            raise RuntimeError("No UI automation library available to locate Chrome window")
+
+        # Try UIAutomation first (fast path)
+        if _HAS_UIAUTOMATION:
+            try:
+                win = auto.WindowControl(searchDepth=1, SubName="Chrome")
+                if win.Exists(maxSearchSeconds=2):
+                    try:
+                        if hasattr(win, "IsMinimized") and win.IsMinimized:
+                            try:
+                                win.Restore()
+                            except Exception:
+                                pass
+                        if hasattr(win, "SetFocus"):
+                            win.SetFocus()
+                    except Exception:
+                        pass
+                    rect = win.BoundingRectangle
+                    width = rect.right - rect.left
+                    height = rect.bottom - rect.top
+                    if width <= 0 or height <= 0:
+                        raise RuntimeError("Chrome window bounds invalid")
+                    return {
+                        "left": rect.left,
+                        "top": rect.top,
+                        "width": width,
+                        "height": height,
+                    }
+            except Exception as e:
+                logger.debug(f"UIAutomation Chrome lookup failed: {e}")
+
+        # Fallback to pywinauto
+        if _HAS_PYWINAUTO:
+            try:
+                desktop = Desktop(backend="uia")
+                for win in desktop.windows():
+                    title = win.window_text() or ""
+                    if "chrome" in title.lower():
+                        try:
+                            if hasattr(win, "is_minimized") and win.is_minimized():
+                                try:
+                                    win.restore()
+                                except Exception:
+                                    pass
+                            if hasattr(win, "set_focus"):
+                                win.set_focus()
+                        except Exception:
+                            pass
+                        rect = win.rectangle()
+                        width = rect.right - rect.left
+                        height = rect.bottom - rect.top
+                        if width <= 0 or height <= 0:
+                            raise RuntimeError("Chrome window bounds invalid")
+                        return {
+                            "left": rect.left,
+                            "top": rect.top,
+                            "width": width,
+                            "height": height,
+                        }
+            except Exception as e:
+                logger.debug(f"pywinauto Chrome lookup failed: {e}")
+
+        raise RuntimeError("Chrome window not found")
+
 
 # Singleton instance
 _controller: Optional[WindowsUIController] = None

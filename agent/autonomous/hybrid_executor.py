@@ -27,6 +27,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Literal
 from uuid import uuid4
+from types import SimpleNamespace
 
 from pydantic import BaseModel, Field
 
@@ -93,6 +94,8 @@ class HybridExecutor:
         self.max_steps = 50
         self._initialized = False
         self._disable_codex = False
+        self.state = SimpleNamespace(active_window=None)
+        self._browser_action = False
 
         # Stuck loop detection (Gap #9)
         self._thrash_guard = None
@@ -324,13 +327,24 @@ class HybridExecutor:
         """
         ui_state = self.get_current_ui_state()
 
+        self._browser_action = False
         if "error" in ui_state:
             # Fall back to vision if we can't read UI state
+            if self.ui_controller:
+                try:
+                    window = self.ui_controller.get_active_window()
+                    title = (window.title or "").lower() if window else ""
+                    class_name = (window.class_name or "").lower() if window else ""
+                    if "chrome" in title or "chrome" in class_name:
+                        self._browser_action = True
+                except Exception:
+                    pass
             return self._decide_with_vision(objective, context)
 
         if self._is_browser_window(ui_state):
             # ALWAYS use vision for browser windows - web UIs are too complex for UI automation
             logger.info("Browser window detected - using vision executor")
+            self._browser_action = True
             return self._decide_with_vision(objective, context)
 
         # Also check if the window has very few UI elements (likely a web page)
@@ -443,7 +457,16 @@ RULES:
             }
 
         # Take screenshot and analyze
-        self.vision_executor.take_screenshot("hybrid_fallback")
+        if self._browser_action and self.ui_controller:
+            try:
+                bounds = self.ui_controller.get_chrome_window_bounds()
+                self.state.active_window = {"app": "chrome", **bounds}
+                region = (bounds["left"], bounds["top"], bounds["width"], bounds["height"])
+                self.vision_executor.take_screenshot_region("hybrid_fallback", region)
+            except Exception as e:
+                return self._action_error(f"Chrome window not available: {e}")
+        else:
+            self.vision_executor.take_screenshot("hybrid_fallback")
         action = self.vision_executor.analyze_screen(objective, context)
         # NORMALIZE: Apply normalization to vision-decided actions too
         return self._normalize_action(action)
@@ -476,6 +499,12 @@ RULES:
         Execute an action using UI automation (or vision fallback).
         """
         action_type = action.get("action", "").lower()
+        if action_type in {"click", "type", "scroll", "press"} and self._browser_action and self.ui_controller:
+            try:
+                bounds = self.ui_controller.get_chrome_window_bounds()
+                self.state.active_window = {"app": "chrome", **bounds}
+            except Exception as e:
+                return False, f"Chrome window not available: {e}"
 
         # NULL-SAFE: Handle target being None or non-dict
         target_obj = action.get("target") or {}
@@ -789,7 +818,11 @@ RULES:
         """Execute click at specific pixel coordinates (from vision executor)."""
         try:
             import pyautogui
-            pyautogui.click(x, y)
+            click_x, click_y = x, y
+            if self.state.active_window and self.state.active_window.get("app") == "chrome":
+                click_x = self.state.active_window["left"] + x
+                click_y = self.state.active_window["top"] + y
+            pyautogui.click(click_x, click_y)
             time.sleep(0.5)  # Brief pause after click
             return True, f"Clicked at coordinates ({int(x)}, {int(y)})"
         except Exception as e:
@@ -828,7 +861,12 @@ RULES:
 
         # Fall back to vision
         if self.vision_executor:
-            self.vision_executor.take_screenshot("click_fallback")
+            if self._browser_action and self.state.active_window:
+                bounds = self.state.active_window
+                region = (bounds["left"], bounds["top"], bounds["width"], bounds["height"])
+                self.vision_executor.take_screenshot_region("click_fallback", region)
+            else:
+                self.vision_executor.take_screenshot("click_fallback")
             analysis = self.vision_executor.analyze_screen(
                 f"Click on '{target_name}'",
                 f"Find and click the element named '{target_name}'"

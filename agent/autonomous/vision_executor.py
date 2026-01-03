@@ -166,6 +166,7 @@ class VisionExecutor:
         # Multi-tier model strategy for speed
         self.consecutive_failures = 0  # Track when to escalate to reasoning
         self.use_reasoning = False  # Whether to use deep reasoning model
+        self._coordinate_origin: Tuple[int, int] = (0, 0)
 
     def initialize(self) -> Tuple[bool, str]:
         """Initialize the executor."""
@@ -242,9 +243,35 @@ class VisionExecutor:
         img.save(path)
 
         self.current_state = ScreenState(path, ts)
+        self._coordinate_origin = (0, 0)
         # Clear OCR cache when screenshot changes
         self._ocr_cache = None
         return self.current_state
+
+    def take_screenshot_region(
+        self,
+        name: str,
+        region: Tuple[int, int, int, int],
+    ) -> ScreenState:
+        """Take a screenshot of a specific region (left, top, width, height)."""
+        if not self.pyautogui:
+            self.initialize()
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        path = SCREENSHOTS_DIR / f"{name}_{ts}.png"
+
+        img = self.pyautogui.screenshot(region=region)
+        img.save(path)
+
+        self.current_state = ScreenState(path, ts)
+        self._coordinate_origin = (region[0], region[1])
+        # Clear OCR cache when screenshot changes
+        self._ocr_cache = None
+        return self.current_state
+
+    def _to_screen_coords(self, x: float, y: float) -> Tuple[int, int]:
+        origin_x, origin_y = self._coordinate_origin
+        return int(x + origin_x), int(y + origin_y)
 
     def analyze_screen(self, objective: str, context: str = "") -> Dict[str, Any]:
         """
@@ -794,12 +821,13 @@ NAVIGATION EXAMPLES:
                 
                 # Convert to integers for clicking
                 x_int, y_int = int(x), int(y)
+                screen_x, screen_y = self._to_screen_coords(x_int, y_int)
                 
                 # Log the click for debugging
                 logger.info(f"Clicking at ({x_int}, {y_int}) with confidence {confidence:.2f}")
                 
                 try:
-                    self.pyautogui.click(x_int, y_int)
+                    self.pyautogui.click(screen_x, screen_y)
                     # Save a debug screenshot highlighting click point (best-effort)
                     try:
                         self._save_debug_click_image(x_int, y_int)
@@ -988,7 +1016,8 @@ NAVIGATION EXAMPLES:
 
             try:
                 logger.info(f"Trying nearby coordinates ({new_x}, {new_y}) after failed click at ({x}, {y})")
-                self.pyautogui.click(new_x, new_y)
+                screen_x, screen_y = self._to_screen_coords(new_x, new_y)
+                self.pyautogui.click(screen_x, screen_y)
                 # Post-click verification if expected text provided
                 if expected_text:
                     verified, msg = self._post_click_verify(new_x, new_y, expected_text)
@@ -1026,7 +1055,8 @@ NAVIGATION EXAMPLES:
                 if distance > 20:  # Significant difference
                     try:
                         logger.info(f"Trying OCR coordinates ({ocr_x}, {ocr_y}) after coordinate click failed")
-                        self.pyautogui.click(ocr_x, ocr_y)
+                        screen_x, screen_y = self._to_screen_coords(ocr_x, ocr_y)
+                        self.pyautogui.click(screen_x, screen_y)
                         self.consecutive_failures = 0
                         # Persist OCR success
                         self.successful_patterns.append({
@@ -1094,7 +1124,8 @@ NAVIGATION EXAMPLES:
         if coords:
             x, y = coords
             try:
-                self.pyautogui.click(x, y)
+                screen_x, screen_y = self._to_screen_coords(x, y)
+                self.pyautogui.click(screen_x, screen_y)
                 self.consecutive_failures = 0
                 return True, f"Clicked on '{text}' at ({x}, {y}) using OCR"
             except Exception as e:
