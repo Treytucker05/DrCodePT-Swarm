@@ -17,7 +17,9 @@
       "Bash(dir \"C:\\Users\\treyt\\OneDrive\\Desktop\\DrCodePT-Swarm\\agent\\screenshots\" /O-D)",
       "Bash(ls:*)",
       "Bash(python -m pip show:*)",
-      "Bash(powershell:*)"
+      "Bash(powershell:*)",
+      "Bash(sqlite3:*)",
+      "Bash(dir:*)"
     ]
   }
 }

@@ -97,6 +97,15 @@ class HybridExecutor:
         self.state = SimpleNamespace(active_window=None)
         self._browser_action = False
 
+        # Reflection system (integrated)
+        self.reflector = None
+        try:
+            from agent.autonomous.reflection import Reflector
+            self.reflector = Reflector(llm=llm, pre_mortem_enabled=True)
+            logger.debug("Reflector initialized with pre-mortem enabled")
+        except Exception as e:
+            logger.debug(f"Could not initialize Reflector: {e}")
+
         # Stuck loop detection (Gap #9)
         self._thrash_guard = None
         self._agent_state = None
@@ -459,7 +468,8 @@ RULES:
 
         # Take screenshot and analyze
         if self._browser_action and self.ui_controller:
-            self._focus_chrome_window()
+            if not self._focus_chrome_window():
+                return self._action_error("Could not focus Chrome window - ensure Chrome is running")
             time.sleep(0.2)
             try:
                 bounds = self.ui_controller.get_chrome_window_bounds()
@@ -503,7 +513,8 @@ RULES:
         """
         action_type = action.get("action", "").lower()
         if action_type in {"open_url", "type", "press"} and self._browser_action:
-            self._focus_chrome_window()
+            if not self._focus_chrome_window():
+                return False, "Could not focus Chrome window - ensure Chrome is running"
             time.sleep(0.2)
         if action_type in {"click", "type", "scroll", "press"} and self._browser_action and self.ui_controller:
             try:
@@ -642,18 +653,12 @@ RULES:
         """
         DETERMINISTIC URL opener - bypasses all UI/vision logic.
 
-        Opens URL in browser via subprocess. Never uses clicking/automation.
+        Opens Chrome browser only (does NOT navigate). Navigation should be done
+        via prepare_and_navigate_chrome() to guarantee correctness.
         """
         import subprocess
         import shutil
         import os
-
-        if not url:
-            return False, "No URL provided for open_url"
-
-        # Ensure URL has protocol
-        if not url.startswith(("http://", "https://")):
-            url = "https://" + url
 
         try:
             self._focus_chrome_window()
@@ -661,10 +666,19 @@ RULES:
             # Check for configured Chrome path
             chrome_path = os.getenv("TREYS_AGENT_CHROME_PATH")
             if chrome_path and os.path.exists(chrome_path):
-                subprocess.Popen([chrome_path, url])
+                # Launch Chrome without URL - navigation will be done separately
+                # Check if profile args are present (agent-controlled instance)
+                user_data_dir = os.getenv("TREYS_AGENT_CHROME_USER_DATA_DIR")
+                profile = os.getenv("TREYS_AGENT_CHROME_PROFILE")
+                cmd = [chrome_path]
+                if user_data_dir or profile:
+                    cmd.append("--force-renderer-accessibility")
+                    logger.info("[CHROME] Launched with forced accessibility")
+                cmd.append("about:blank")
+                subprocess.Popen(cmd)
                 time.sleep(2)
-                logger.info(f"Opened {url} via configured Chrome: {chrome_path}")
-                return True, f"Opened {url}"
+                logger.info(f"Launched Chrome via configured path: {chrome_path}")
+                return True, "Chrome launched"
 
             # Find Chrome in standard locations
             chrome_paths = [
@@ -684,23 +698,28 @@ RULES:
                     cmd.extend([f"--user-data-dir={user_data_dir}"])
                 if profile:
                     cmd.extend([f"--profile-directory={profile}"])
-                cmd.append(url)
+                # Add accessibility flag for agent-controlled Chrome instances
+                if user_data_dir or profile:
+                    cmd.append("--force-renderer-accessibility")
+                    logger.info("[CHROME] Launched with forced accessibility")
+                # Launch Chrome without URL - navigation will be done separately
+                cmd.append("about:blank")
 
                 subprocess.Popen(cmd)
                 time.sleep(2)
-                logger.info(f"Opened {url} in Chrome")
-                return True, f"Opened {url}"
+                logger.info("Launched Chrome")
+                return True, "Chrome launched"
             else:
                 # Fallback: system default browser
                 import webbrowser
-                webbrowser.open(url)
+                webbrowser.open("about:blank")
                 time.sleep(2)
-                logger.info(f"Opened {url} in default browser")
-                return True, f"Opened {url}"
+                logger.info("Launched default browser")
+                return True, "Browser launched"
 
         except Exception as e:
-            logger.error(f"Failed to open URL {url}: {e}")
-            return False, f"Failed to open URL: {e}"
+            logger.error(f"Failed to launch Chrome: {e}")
+            return False, f"Failed to launch Chrome: {e}"
 
     def _execute_goto(self, url: str) -> Tuple[bool, str]:
         """
@@ -826,7 +845,8 @@ RULES:
         try:
             import pyautogui
             if self._browser_action:
-                self._focus_chrome_window()
+                if not self._focus_chrome_window():
+                    return False, "Could not focus Chrome window - ensure Chrome is running"
                 time.sleep(0.2)
             click_x, click_y = x, y
             if self.state.active_window and self.state.active_window.get("app") == "chrome":
@@ -892,6 +912,11 @@ RULES:
 
     def _execute_type(self, target_name: str, target_type: str, text: str) -> Tuple[bool, str]:
         """Type text into an element."""
+        if self._browser_action:
+            if not self._focus_chrome_window():
+                return False, "Could not focus Chrome window - ensure Chrome is running"
+            time.sleep(0.2)
+        
         if self.ui_controller:
             success, msg = self.ui_controller.type_into_element(
                 text=text,
@@ -929,7 +954,8 @@ RULES:
         try:
             import pyautogui
             if self._browser_action:
-                self._focus_chrome_window()
+                if not self._focus_chrome_window():
+                    return False, "Could not focus Chrome window - ensure Chrome is running"
                 time.sleep(0.2)
             pyautogui.press(key.lower())
             return True, f"Pressed {key}"
@@ -940,6 +966,43 @@ RULES:
         """Bring Chrome to the foreground; launch if missing."""
         if not self.ui_controller:
             return False
+        
+        # Try to find Chrome window by title containing "Chrome"
+        try:
+            window = self.ui_controller.find_window(title_contains="Chrome")
+            if window:
+                # Restore if minimized, bring to foreground, set focus
+                try:
+                    if window._raw:
+                        if hasattr(window._raw, "IsMinimized") and window._raw.IsMinimized:
+                            if hasattr(window._raw, "Restore"):
+                                window._raw.Restore()
+                        if hasattr(window._raw, "SetFocus"):
+                            window._raw.SetFocus()
+                except Exception:
+                    pass
+                
+                # Use focus_window method if available
+                self.ui_controller.focus_window(window)
+                
+                # Get bounds for logging
+                try:
+                    bounds = self.ui_controller.get_chrome_window_bounds()
+                    title = window.title or ""
+                    logger.info(f"[FOCUS] Chrome focused: title={title}, rect=({bounds['left']},{bounds['top']},{bounds['width']},{bounds['height']})")
+                    return True
+                except Exception:
+                    # Fallback: use window bounding box
+                    left, top, right, bottom = window.bounding_box
+                    width = right - left
+                    height = bottom - top
+                    title = window.title or ""
+                    logger.info(f"[FOCUS] Chrome focused: title={title}, rect=({left},{top},{width},{height})")
+                    return True
+        except Exception:
+            pass
+
+        # Try get_chrome_window_bounds (which also handles restore/focus)
         try:
             bounds = self.ui_controller.get_chrome_window_bounds()
             title = ""
@@ -971,18 +1034,125 @@ RULES:
                 chrome = next((p for p in chrome_paths if p and os.path.exists(p)), None)
                 if chrome:
                     subprocess.Popen([chrome, "about:blank"])
-            time.sleep(1)
-            bounds = self.ui_controller.get_chrome_window_bounds()
-            title = ""
+                else:
+                    return False
+            
+            # Wait for Chrome to launch, then retry focus
+            time.sleep(2)
+            
+            # Retry finding Chrome window
             try:
-                window = self.ui_controller.get_active_window()
-                title = window.title if window else ""
+                window = self.ui_controller.find_window(title_contains="Chrome")
+                if window:
+                    try:
+                        if window._raw:
+                            if hasattr(window._raw, "IsMinimized") and window._raw.IsMinimized:
+                                if hasattr(window._raw, "Restore"):
+                                    window._raw.Restore()
+                            if hasattr(window._raw, "SetFocus"):
+                                window._raw.SetFocus()
+                    except Exception:
+                        pass
+                    self.ui_controller.focus_window(window)
+                    bounds = self.ui_controller.get_chrome_window_bounds()
+                    title = window.title or ""
+                    logger.info(f"[FOCUS] Chrome focused: title={title}, rect=({bounds['left']},{bounds['top']},{bounds['width']},{bounds['height']})")
+                    return True
             except Exception:
+                pass
+            
+            # Fallback: try get_chrome_window_bounds after launch
+            try:
+                bounds = self.ui_controller.get_chrome_window_bounds()
                 title = ""
-            logger.info(f"[FOCUS] Chrome focused: title={title}, rect=({bounds['left']},{bounds['top']},{bounds['width']},{bounds['height']})")
-            return True
+                try:
+                    window = self.ui_controller.get_active_window()
+                    title = window.title if window else ""
+                except Exception:
+                    title = ""
+                logger.info(f"[FOCUS] Chrome focused: title={title}, rect=({bounds['left']},{bounds['top']},{bounds['width']},{bounds['height']})")
+                return True
+            except Exception:
+                pass
+        except Exception as e:
+            logger.debug(f"Failed to launch/focus Chrome: {e}")
+        
+        return False
+
+    def prepare_and_navigate_chrome(self, url: str) -> Tuple[bool, str]:
+        """
+        Prepare Chrome for navigation and navigate to URL.
+        
+        Exact order:
+        1) Focus Chrome window
+        2) Maximize Chrome window
+        3) Send Ctrl+L to focus address bar
+        4) Copy URL to clipboard and paste (Ctrl+V)
+        5) Append a single space to defeat autocomplete
+        6) Press Enter
+        7) Sleep 2.0s
+        """
+        import pyautogui
+        
+        # Step 1: Focus Chrome window
+        if not self._focus_chrome_window():
+            return False, "Could not focus Chrome window - ensure Chrome is running"
+        
+        # Step 2: Maximize Chrome window
+        try:
+            if self.ui_controller:
+                window = self.ui_controller.find_window(title_contains="Chrome")
+                if window and window._raw:
+                    try:
+                        if hasattr(window._raw, "Maximize"):
+                            window._raw.Maximize()
+                        elif hasattr(window._raw, "maximize"):
+                            window._raw.maximize()
+                    except Exception:
+                        # Fallback: Win+Up hotkey
+                        pyautogui.hotkey("win", "up")
+                else:
+                    # Fallback: Win+Up hotkey
+                    pyautogui.hotkey("win", "up")
+            else:
+                # Fallback: Win+Up hotkey
+                pyautogui.hotkey("win", "up")
         except Exception:
-            return False
+            # Fallback: Win+Up hotkey
+            try:
+                pyautogui.hotkey("win", "up")
+            except Exception:
+                pass
+        time.sleep(0.2)
+        
+        # Step 3: Send Ctrl+L to focus address bar
+        logger.info(f"[NAV] Navigating Chrome to: {url}")
+        pyautogui.hotkey("ctrl", "l")
+        time.sleep(0.1)
+        
+        # Step 4: Copy URL to clipboard and paste
+        try:
+            import pyperclip
+            pyperclip.copy(url)
+        except ImportError:
+            # Fallback: if pyperclip not available, type the URL
+            pyautogui.write(url, interval=0.05)
+        else:
+            pyautogui.hotkey("ctrl", "v")
+            time.sleep(0.1)
+        
+        # Step 5: Append a single space to defeat autocomplete
+        pyautogui.write(" ", interval=0.01)
+        time.sleep(0.1)
+        
+        # Step 6: Press Enter
+        pyautogui.press("enter")
+        
+        # Step 7: Sleep 2.0s
+        time.sleep(2.0)
+        
+        logger.info("[NAV] Address bar paste complete; submitted")
+        return True, f"Navigated to: {url}"
 
     def _update_agent_state(self, action: Dict[str, Any], success: bool, message: str) -> None:
         """Update the unified agent state for ThrashGuard tracking."""
@@ -1313,11 +1483,62 @@ RULES:
         context: str,
     ) -> str:
         """
-        THINK step: Analyze why an action failed.
+        THINK step: Analyze why an action failed using Reflector.
 
         This is crucial for learning - we need to understand the failure
         to avoid repeating it and to inform the replan.
         """
+        # Use Reflector if available
+        if self.reflector:
+            try:
+                from agent.autonomous.models import Step, ToolResult, Observation
+
+                # Create Step from action
+                step = Step(
+                    action=action.get('action', 'unknown'),
+                    action_input=action,
+                    reasoning=action.get('reasoning', ''),
+                    tool_name=action.get('action', 'unknown'),
+                    tool_args=[]
+                )
+
+                # Create ToolResult for failure
+                tool_result = ToolResult(
+                    success=False,
+                    error=error,
+                    metadata={"context": context[:500]}
+                )
+
+                # Create Observation
+                observation = Observation(
+                    raw=error,
+                    source="hybrid_executor",
+                    errors=[error],
+                    success=False
+                )
+
+                # Use Reflector to analyze
+                reflection = self.reflector.reflect(
+                    task=objective,
+                    step=step,
+                    tool_result=tool_result,
+                    observation=observation
+                )
+
+                # Build response from reflection
+                response = f"Status: {reflection.status}\n"
+                response += f"Explanation: {reflection.explanation_short}\n"
+                if reflection.next_hint:
+                    response += f"Next Hint: {reflection.next_hint}\n"
+                if reflection.lesson:
+                    response += f"Lesson: {reflection.lesson}\n"
+
+                return response
+
+            except Exception as e:
+                logger.debug(f"Reflector failed, falling back to manual reflection: {e}")
+
+        # Fallback: Manual reflection if Reflector unavailable
         prompt = f"""An action failed during task execution. Analyze WHY it failed.
 
 OBJECTIVE: {objective}

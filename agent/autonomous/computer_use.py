@@ -30,9 +30,16 @@ class GoogleConsoleState(Enum):
     """States in Google Console OAuth setup flow."""
     UNKNOWN = "unknown"
     CREDENTIALS_PAGE = "credentials_page"
+    CREATE_CREDENTIALS_MENU = "create_credentials_menu"
     CONSENT_SCREEN = "consent_screen"
     OAUTH_CLIENT_FORM = "oauth_client_form"
+    OAUTH_TYPE_FORM = "oauth_type_form"
+    OAUTH_TYPE_DROPDOWN_OPEN = "oauth_type_dropdown_open"
+    OAUTH_NAME_FORM = "oauth_name_form"
+    OAUTH_CREATED_MODAL = "oauth_created_modal"
     CLIENT_CREATED_MODAL = "client_created_modal"
+    DOWNLOAD_INITIATED = "download_initiated"
+    DOWNLOAD_COMPLETE = "download_complete"
     DONE = "done"
     ERROR = "error"
 
@@ -211,6 +218,8 @@ class ComputerUseRouter:
         self.download_watcher = DownloadWatcher()
         self._pyautogui = None
         self._initialized = False
+        # Track whether a real click happened
+        self._last_interaction = {"clicked": False, "via": None, "target": None}
 
     def initialize(self) -> Tuple[bool, str]:
         """Initialize all components."""
@@ -271,6 +280,9 @@ class ComputerUseRouter:
             screenshot_path: Current screenshot for vision analysis
             step_id: Unique step identifier for retry tracking
         """
+        # Reset interaction tracker at START of every click call
+        self._last_interaction = {"clicked": False, "via": None, "target": None}
+        
         if not self._initialized:
             ok, msg = self.initialize()
             if not ok:
@@ -283,33 +295,119 @@ class ComputerUseRouter:
 
         # If coordinates provided, use them directly
         if x is not None and y is not None:
-            return self._click_coordinates(x, y, ActionStrategy.VISION)
+            # Focus Chrome before click
+            if self.ui_controller:
+                try:
+                    window = self.ui_controller.find_window(title_contains="Chrome")
+                    if window:
+                        self.ui_controller.focus_window(window)
+                        time.sleep(0.2)
+                except Exception:
+                    pass
+            
+            result = self._click_coordinates(x, y, ActionStrategy.VISION)
+            # Enforce click required before returning
+            if target or (x is not None and y is not None):
+                if not self._last_interaction["clicked"]:
+                    return ActionResult(False, result.strategy, f"{result.message} [ASSERT] Mouse/UIA click required for success")
+            return result
 
         # Try UIA first if target label provided
         if target and self.ui_controller:
+            # Focus Chrome before click
+            try:
+                window = self.ui_controller.find_window(title_contains="Chrome")
+                if window:
+                    self.ui_controller.focus_window(window)
+                    time.sleep(0.2)
+            except Exception:
+                pass
+            
             result = self._try_uia_click(target)
             if result.success:
                 self.anti_thrash.reset_retry(step_id)
+                # Enforce click required before returning
+                if not self._last_interaction["clicked"]:
+                    return ActionResult(False, result.strategy, f"{result.message} [ASSERT] Mouse/UIA click required for success")
                 return result
             logger.debug(f"UIA failed: {result.message}")
 
-        # Try keyboard navigation
+        # Try keyboard navigation (Ctrl+F to locate, then mouse click)
         if target:
-            result = self._try_keyboard_click(target)
-            if result.success:
-                self.anti_thrash.reset_retry(step_id)
-                return result
-            logger.debug(f"Keyboard failed: {result.message}")
+            locate_result = self._try_keyboard_click(target)
+            if not locate_result.success and "Text located" in locate_result.message:
+                # Ctrl+F located text, now perform real mouse click
+                # Focus Chrome before click
+                if self.ui_controller:
+                    try:
+                        window = self.ui_controller.find_window(title_contains="Chrome")
+                        if window:
+                            self.ui_controller.focus_window(window)
+                            time.sleep(0.2)
+                    except Exception:
+                        pass
+                
+                screenshot_path = self.take_screenshot(f"ctrl_f_located_{target.replace(' ', '_')}")
+                if screenshot_path:
+                    logger.info(f"[CLICK] Executing real click on target: {target}")
+                    if self.vision_executor:
+                        result = self._try_vision_click(target, screenshot_path)
+                        if result.success:
+                            self.anti_thrash.reset_retry(step_id)
+                            # Enforce click required before returning
+                            if not self._last_interaction["clicked"]:
+                                return ActionResult(False, result.strategy, f"{result.message} [ASSERT] Mouse/UIA click required for success")
+                            return result
+                        else:
+                            # Retry once with fresh screenshot
+                            logger.warning(f"[CLICK] First click attempt failed, retrying once")
+                            time.sleep(0.5)
+                            screenshot_path2 = self.take_screenshot(f"ctrl_f_retry_{target.replace(' ', '_')}")
+                            if screenshot_path2:
+                                result = self._try_vision_click(target, screenshot_path2)
+                                if result.success:
+                                    self.anti_thrash.reset_retry(step_id)
+                                    # Enforce click required before returning
+                                    if not self._last_interaction["clicked"]:
+                                        return ActionResult(False, result.strategy, f"{result.message} [ASSERT] Mouse/UIA click required for success")
+                                    return result
+                    logger.debug(f"Mouse click failed after Ctrl+F location: {target}")
+                else:
+                    logger.debug(f"Failed to take screenshot after Ctrl+F: {target}")
+            logger.debug(f"Keyboard location failed: {locate_result.message}")
 
         # Try vision coordinates
         if screenshot_path and self.vision_executor:
+            # Focus Chrome before click
+            if self.ui_controller:
+                try:
+                    window = self.ui_controller.find_window(title_contains="Chrome")
+                    if window:
+                        self.ui_controller.focus_window(window)
+                        time.sleep(0.2)
+                except Exception:
+                    pass
+            
             result = self._try_vision_click(target or "element", screenshot_path)
             if result.success:
                 self.anti_thrash.reset_retry(step_id)
+                # Enforce click required before returning
+                if not self._last_interaction["clicked"]:
+                    return ActionResult(False, result.strategy, f"{result.message} [ASSERT] Mouse/UIA click required for success")
                 return result
             logger.debug(f"Vision failed: {result.message}")
 
         # All strategies failed
+        # Enforce click required for UI activation
+        if target:  # UI activation intended
+            if not self._last_interaction["clicked"]:
+                self.anti_thrash.increment_retry(step_id)
+                return ActionResult(
+                    False,
+                    ActionStrategy.ASK_USER,
+                    f"All strategies failed for: {target} [ASSERT] Mouse/UIA click required for success"
+                )
+        
         self.anti_thrash.increment_retry(step_id)
         return ActionResult(
             False,
@@ -324,12 +422,18 @@ class ComputerUseRouter:
             element = self.ui_controller.find_element(name=target)
             if element and element.click():
                 time.sleep(0.5)
+                # Track that a real click happened
+                self._last_interaction = {"clicked": True, "via": "uia", "target": target}
+                logger.info(f"[CLICK] Performed click via=uia target={target}")
                 return ActionResult(True, ActionStrategy.UIA, f"Clicked '{target}' via UIA")
 
             # Try by button role
             element = self.ui_controller.find_element(role="button", name=target)
             if element and element.click():
                 time.sleep(0.5)
+                # Track that a real click happened
+                self._last_interaction = {"clicked": True, "via": "uia", "target": target}
+                logger.info(f"[CLICK] Performed click via=uia target={target}")
                 return ActionResult(True, ActionStrategy.UIA, f"Clicked button '{target}' via UIA")
 
             return ActionResult(False, ActionStrategy.UIA, f"Element '{target}' not found")
@@ -337,36 +441,37 @@ class ComputerUseRouter:
             return ActionResult(False, ActionStrategy.UIA, f"UIA error: {e}")
 
     def _try_keyboard_click(self, target: str) -> ActionResult:
-        """Try clicking via keyboard navigation (Ctrl+F search)."""
+        """
+        Use Ctrl+F to LOCATE text.
+        
+        Ctrl+F only highlights text - it does NOT activate buttons/menus.
+        Ctrl+F MUST NEVER return success=True by itself.
+        Mouse click is mandatory for UI state change and must be done separately.
+        """
         if not self._pyautogui:
             return ActionResult(False, ActionStrategy.KEYBOARD, "PyAutoGUI not available")
 
         try:
-            # Ctrl+F to open find dialog
+            # Ctrl+F to open find dialog and locate text
             self._pyautogui.hotkey('ctrl', 'f')
             time.sleep(0.3)
 
-            # Type search term
+            # Type search term to locate element
             self._pyautogui.write(target, interval=0.05)
             time.sleep(0.3)
 
-            # Press Enter to find
-            self._pyautogui.press('enter')
-            time.sleep(0.2)
+            logger.info(f"[LOCATE] Located target via keyboard: {target}")
 
-            # Press Escape to close find dialog
+            # Close find dialog (Escape) - Ctrl+F is ONLY for location
             self._pyautogui.press('escape')
-            time.sleep(0.2)
+            time.sleep(0.3)
 
-            # Press Tab to focus found element, then Space/Enter to activate
-            self._pyautogui.press('tab')
-            time.sleep(0.1)
-            self._pyautogui.press('space')
-            time.sleep(0.5)
+            # Ctrl+F MUST NEVER return success=True by itself
+            # Return success=False to indicate click is required
+            return ActionResult(False, ActionStrategy.KEYBOARD, f"Text located, click required")
 
-            return ActionResult(True, ActionStrategy.KEYBOARD, f"Activated '{target}' via keyboard")
         except Exception as e:
-            return ActionResult(False, ActionStrategy.KEYBOARD, f"Keyboard error: {e}")
+            return ActionResult(False, ActionStrategy.KEYBOARD, f"Ctrl+F location failed: {e}")
 
     def _try_vision_click(self, target: str, screenshot_path: Path) -> ActionResult:
         """Try clicking via vision-guided coordinates."""
@@ -401,6 +506,9 @@ class ComputerUseRouter:
         try:
             self._pyautogui.click(x, y)
             time.sleep(0.5)
+            # Track that a real click happened
+            self._last_interaction = {"clicked": True, "via": "mouse", "target": f"({int(x)}, {int(y)})"}
+            logger.info(f"[CLICK] Performed click via=mouse target=({int(x)}, {int(y)})")
             return ActionResult(True, strategy, f"Clicked at ({int(x)}, {int(y)})")
         except Exception as e:
             return ActionResult(False, strategy, f"Click error: {e}")
@@ -421,23 +529,64 @@ class ComputerUseRouter:
             return ActionResult(False, ActionStrategy.KEYBOARD, f"Type error: {e}")
 
     def navigate_to_url(self, url: str) -> ActionResult:
-        """Navigate to URL via address bar."""
+        """Navigate to URL via address bar using clipboard paste to avoid autocomplete."""
         if not self._pyautogui:
             return ActionResult(False, ActionStrategy.KEYBOARD, "PyAutoGUI not available")
 
         try:
+            logger.info(f"[NAV] Navigating Chrome to: {url}")
+            
+            # Focus Chrome window
+            if self.ui_controller:
+                try:
+                    window = self.ui_controller.find_window(title_contains="Chrome")
+                    if window:
+                        self.ui_controller.focus_window(window)
+                        # Maximize Chrome window
+                        try:
+                            if window._raw:
+                                if hasattr(window._raw, "Maximize"):
+                                    window._raw.Maximize()
+                                elif hasattr(window._raw, "maximize"):
+                                    window._raw.maximize()
+                        except Exception:
+                            # Fallback: Win+Up hotkey
+                            self._pyautogui.hotkey("win", "up")
+                    else:
+                        # Fallback: Win+Up hotkey
+                        self._pyautogui.hotkey("win", "up")
+                except Exception:
+                    # Fallback: Win+Up hotkey
+                    self._pyautogui.hotkey("win", "up")
+            else:
+                # Fallback: Win+Up hotkey
+                self._pyautogui.hotkey("win", "up")
+            time.sleep(0.2)
+            
             # Ctrl+L to focus address bar
             self._pyautogui.hotkey('ctrl', 'l')
-            time.sleep(0.3)
+            time.sleep(0.1)
 
-            # Type URL
-            self._pyautogui.write(url, interval=0.05)
-            time.sleep(0.3)
+            # Copy URL to clipboard and paste (instead of typing)
+            try:
+                import pyperclip
+                pyperclip.copy(url)
+                self._pyautogui.hotkey('ctrl', 'v')
+                time.sleep(0.1)
+            except ImportError:
+                # Fallback: if pyperclip not available, type the URL
+                self._pyautogui.write(url, interval=0.05)
+                time.sleep(0.1)
+            
+            # Append a single space to defeat autocomplete
+            self._pyautogui.write(" ", interval=0.01)
+            time.sleep(0.1)
 
             # Press Enter
             self._pyautogui.press('enter')
             time.sleep(2.0)  # Wait for page load
 
+            logger.info("[NAV] Address bar paste complete; submitted")
             return ActionResult(True, ActionStrategy.KEYBOARD, f"Navigated to: {url}")
         except Exception as e:
             return ActionResult(False, ActionStrategy.KEYBOARD, f"Navigation error: {e}")

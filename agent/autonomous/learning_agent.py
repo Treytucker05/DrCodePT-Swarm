@@ -467,51 +467,157 @@ class LearningAgent:
         else:
             self._status(f"  [X] No {intent.auth_provider} credentials found")
 
+        # Check for learned procedure before planning (skip research/planning if found)
+        procedure_executed = False
+        if intent.service == "google_calendar" and not creds_exist:
+            try:
+                from agent.memory.unified_memory import get_memory
+                memory = get_memory()
+                procedures = memory.retrieve(
+                    query="create_google_calendar_oauth_desktop",
+                    kinds=["procedure"],
+                    limit=1
+                )
+                if procedures and any("create_google_calendar_oauth_desktop" in (p.key or "") for p in procedures):
+                    # Procedure found - execute directly
+                    self._status("  [LEARNED] Found procedure: create_google_calendar_oauth_desktop - executing directly")
+                    try:
+                        from agent.autonomous.google_console_flow import create_oauth_credentials
+                        dest = Path.home() / ".drcodept_swarm" / "google_calendar" / "credentials.json"
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        ok, msg = create_oauth_credentials(dest)
+                        if ok:
+                            # Verify credentials now exist
+                            creds_exist = self._check_credentials(intent.auth_provider)
+                            if creds_exist:
+                                self._status("  [OK] OAuth credentials created successfully")
+                                procedure_executed = True
+                                # Continue with normal flow (credentials now exist, will skip needs_google_setup)
+                            else:
+                                return TaskResult(success=False, summary="Procedure executed but credentials not found", error="credentials_missing")
+                        else:
+                            return TaskResult(success=False, summary=msg, error=msg)
+                    except Exception as e:
+                        logger.error(f"Procedure execution failed: {e}")
+                        return TaskResult(success=False, summary=f"Procedure execution failed: {e}", error="procedure_execution_failed")
+            except Exception as e:
+                logger.debug(f"Could not check for procedure: {e}")
+
         # Check if this is a calendar request that needs setup
-        # But DON'T auto-execute yet - let it go through research and planning first
+        # Skip if procedure was already executed (credentials now exist)
         needs_google_setup = (
             intent.action in {"calendar.list_events", "get_calendar_events"}
             and intent.auth_provider == "google"
             and not creds_exist
+            and not procedure_executed
         )
         if needs_google_setup:
             self._status("  [INFO] Google Calendar setup needed - attempting automated setup")
             setup_attempted = False
+            
+            # BEFORE any state detection: Open Chrome, focus it, take screenshot
+            logger.info("[SETUP] Opening Google Console credentials URL")
+            self._status("[SETUP] Opening Google Console credentials URL")
+            
+            url_opened = False
+            chrome_focused = False
+            screenshot_path = None
+            
             try:
-                from agent.autonomous.google_console_flow import create_oauth_credentials
-
-                dest = Path.home() / ".drcodept_swarm" / "google_calendar" / "credentials.json"
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                setup_attempted = True
-                ok, msg = create_oauth_credentials(dest)
-                if not ok:
-                    return TaskResult(success=False, summary=msg, error=msg)
-                creds_exist = self._check_credentials(intent.auth_provider)
-            except Exception:
-                setup_attempted = False
-
-            if not setup_attempted:
-                try:
-                    if hasattr(self.executor, "_execute_open_url"):
-                        self.executor._execute_open_url("https://console.cloud.google.com/apis/credentials")
-                    elif hasattr(self.executor, "execute_action"):
-                        self.executor.execute_action({
-                            "action": "open_url",
-                            "value": "https://console.cloud.google.com/apis/credentials",
-                        })
-                    else:
-                        self._open_browser("https://console.cloud.google.com/apis/credentials")
+                # Launch Chrome (does not navigate)
+                if hasattr(self.executor, "_execute_open_url"):
+                    success, msg = self.executor._execute_open_url("about:blank")
+                    if not success:
+                        return TaskResult(
+                            success=False,
+                            summary="Could not launch Chrome",
+                            error="chrome_launch_failed",
+                        )
+                elif hasattr(self.executor, "execute_action"):
+                    success, msg = self.executor.execute_action({
+                        "action": "open_url",
+                        "value": "about:blank",
+                    })
+                    if not success:
+                        return TaskResult(
+                            success=False,
+                            summary="Could not launch Chrome",
+                            error="chrome_launch_failed",
+                        )
+                else:
+                    self._open_browser("about:blank")
+                
+                # Navigate to URL using prepare_and_navigate_chrome
+                if hasattr(self.executor, "prepare_and_navigate_chrome"):
+                    success, msg = self.executor.prepare_and_navigate_chrome("https://console.cloud.google.com/apis/credentials")
+                    if not success:
+                        return TaskResult(
+                            success=False,
+                            summary=f"Could not navigate Chrome: {msg}",
+                            error="chrome_navigate_failed",
+                        )
+                    url_opened = True
+                else:
+                    # Fallback: old method if helper not available
+                    if hasattr(self.executor, "_focus_chrome_window"):
+                        if not self.executor._focus_chrome_window():
+                            return TaskResult(
+                                success=False,
+                                summary="Could not focus Chrome window - ensure Chrome is running",
+                                error="chrome_focus_failed",
+                            )
                     time.sleep(2)
-                    setup_attempted = True
-                except Exception:
-                    setup_attempted = False
-
-            if not setup_attempted:
+                    url_opened = True
+                
+                # Capture screenshot of Chrome window
+                if hasattr(self.executor, "vision_executor") and self.executor.vision_executor:
+                    try:
+                        if hasattr(self.executor, "ui_controller") and self.executor.ui_controller:
+                            bounds = self.executor.ui_controller.get_chrome_window_bounds()
+                            region = (bounds["left"], bounds["top"], bounds["width"], bounds["height"])
+                            state = self.executor.vision_executor.take_screenshot_region("setup_chrome", region)
+                            screenshot_path = str(state.screenshot_path) if hasattr(state, "screenshot_path") else None
+                        else:
+                            state = self.executor.vision_executor.take_screenshot("setup_chrome")
+                            screenshot_path = str(state.screenshot_path) if hasattr(state, "screenshot_path") else None
+                    except Exception as e:
+                        logger.warning(f"Failed to capture Chrome screenshot: {e}")
+                        screenshot_path = None
+                
+                if screenshot_path:
+                    logger.info(f"[SETUP] Screenshot captured: {screenshot_path}")
+                    self._status(f"[SETUP] Screenshot captured: {screenshot_path}")
+                else:
+                    logger.warning("[SETUP] Screenshot capture failed, but continuing")
+                
+                setup_attempted = True
+            except Exception as e:
+                logger.error(f"[SETUP] Failed to open/focus Chrome: {e}")
                 return TaskResult(
                     success=False,
-                    summary="Google Calendar setup required. Automated setup unavailable.",
-                    error="setup_unavailable",
+                    summary=f"Could not launch/focus Chrome: {e}",
+                    error="chrome_setup_failed",
                 )
+            
+            # NOW proceed with state detection / OAuth flow
+            if setup_attempted:
+                try:
+                    from agent.autonomous.google_console_flow import create_oauth_credentials
+
+                    dest = Path.home() / ".drcodept_swarm" / "google_calendar" / "credentials.json"
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    ok, msg = create_oauth_credentials(dest)
+                    if not ok:
+                        return TaskResult(success=False, summary=msg, error=msg)
+                    creds_exist = self._check_credentials(intent.auth_provider)
+                except Exception as e:
+                    logger.error(f"[SETUP] OAuth flow failed: {e}")
+                    return TaskResult(
+                        success=False,
+                        summary=f"OAuth credentials creation failed: {e}",
+                        error="oauth_flow_failed",
+                    )
+
             if not creds_exist:
                 return TaskResult(
                     success=False,
