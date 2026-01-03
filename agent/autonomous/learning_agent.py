@@ -439,6 +439,12 @@ class LearningAgent:
                 intent.auth_provider = "google"
                 intent.needs_auth = True
                 self._status("[RECOVERY] Forced intent route: calendar.list_events")
+            elif any(k in request_lower for k in ("google tasks", "my tasks", "task list", "to do")):
+                intent.action = "tasks.list"
+                intent.service = "google_tasks"
+                intent.auth_provider = "google"
+                intent.needs_auth = True
+                self._status("[RECOVERY] Forced intent route: tasks.list")
 
         # Ask clarifying questions if needed
         if intent.clarifying_questions:
@@ -464,6 +470,49 @@ class LearningAgent:
         creds_exist = self._check_credentials(intent.auth_provider)
         if creds_exist:
             self._status(f"  [OK] Found {intent.auth_provider} credentials")
+
+            # FAST PATH: If we have credentials for Google Calendar/Tasks, skip research and execute directly
+            if intent.auth_provider == "google" and intent.action in {"calendar.list_events", "get_calendar_events", "tasks.list"}:
+                self._status("[FAST PATH] Credentials found - executing Google Calendar/Tasks request directly")
+                try:
+                    from agent.integrations.google_apis import list_tasks, list_calendar_events
+
+                    if "task" in user_request.lower() or intent.action == "tasks.list":
+                        # Google Tasks
+                        self._status("  [EXECUTING] Fetching Google Tasks...")
+                        tasks = list_tasks(max_results=20)
+                        if tasks:
+                            self._status(f"  [OK] Found {len(tasks)} tasks")
+                            task_list = "\n".join(f"  - {t.get('title', 'No title')}" for t in tasks[:15])
+                            return TaskResult(
+                                success=True,
+                                summary=f"Your Google Tasks ({len(tasks)} total):\n{task_list}",
+                                data={"tasks": tasks}
+                            )
+                        else:
+                            return TaskResult(success=True, summary="No tasks found in your Google Tasks", data={"tasks": []})
+                    else:
+                        # Google Calendar
+                        self._status("  [EXECUTING] Fetching Google Calendar events...")
+                        events = list_calendar_events(calendar_id='primary', max_results=20)
+                        if events:
+                            self._status(f"  [OK] Found {len(events)} events")
+                            event_list = "\n".join(
+                                f"  - {e.get('summary', 'No title')} ({e.get('start', {}).get('dateTime', e.get('start', {}).get('date', 'No date'))})"
+                                for e in events[:15]
+                            )
+                            return TaskResult(
+                                success=True,
+                                summary=f"Your upcoming calendar events ({len(events)} total):\n{event_list}",
+                                data={"events": events}
+                            )
+                        else:
+                            return TaskResult(success=True, summary="No upcoming calendar events found", data={"events": []})
+                except Exception as e:
+                    self._status(f"  [WARNING] Fast path failed: {e}, falling back to normal flow")
+                    logger.debug(f"Fast path exception: {e}")
+                    import traceback
+                    logger.debug(traceback.format_exc())
         else:
             self._status(f"  [X] No {intent.auth_provider} credentials found")
 
