@@ -29,8 +29,8 @@ def test_connectivity():
     print("Testing completion...")
     res = client.complete_json(
         prompt="Test",
-        schema_path=Path("test_schema.json"), # Dummy path
-        timeout_seconds=5
+        schema_path=(Path(__file__).resolve().parents[1] / "agent" / "llm" / "schemas" / "chat_response.schema.json"),
+        timeout_seconds=30,
     )
     print(f"Completion Result: {res}")
 

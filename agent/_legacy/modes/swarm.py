@@ -2306,7 +2306,7 @@ Your reasoning must stay strictly within your Phase 1 model.
             else:
                 print(f"- {label} | variance=unknown")
 
-logger.info(f"[SWARM DEBUG] Prepared critic inputs for agents: {list(all_agent_results.keys())}")
+    logger.info(f"[SWARM DEBUG] Prepared critic inputs for agents: {list(all_agent_results.keys())}")
     critic_prompt = _build_critic_prompt()
     critic_text = _call_llm("Critic", critic_prompt, effort="high", timeout=timeout_critic, log_name="critic")
     logger.info(f"[SWARM DEBUG] Critic output received, length: {len(critic_text)} chars")

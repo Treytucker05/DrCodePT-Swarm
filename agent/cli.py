@@ -160,6 +160,22 @@ def _build_tool_registry(agent_cfg, run_dir: Path, memory_store=None):
     from agent.autonomous.tools.builtins import build_default_tool_registry
     return build_default_tool_registry(agent_cfg, run_dir, memory_store=memory_store)
 
+def _bool_env(name: str, default: bool = False) -> bool:
+    val = os.getenv(name)
+    if val is None:
+        return default
+    return val.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _parse_fs_policy(repo_root: Path) -> Tuple[bool, Tuple[Path, ...]]:
+    fs_anywhere = _bool_env("AUTO_FS_ANYWHERE") or _bool_env("AGENT_ALLOW_FS_ANYWHERE")
+    raw_roots = os.getenv("AUTO_FS_ALLOWED_ROOTS", "").strip()
+    if raw_roots:
+        roots = tuple(Path(p.strip()) for p in raw_roots.split(";") if p.strip())
+    else:
+        roots = (repo_root,)
+    return fs_anywhere, roots
+
 
 def run_agent(
     task: str,
@@ -200,9 +216,12 @@ def run_agent(
         llm_heartbeat_seconds=5.0 if interactive else None,
     )
 
+    fs_anywhere, allowed_roots = _parse_fs_policy(REPO_ROOT)
     agent_cfg = AgentConfig(
         allow_human_ask=interactive,
         allow_interactive_tools=interactive,
+        allow_fs_anywhere=fs_anywhere,
+        fs_allowed_roots=allowed_roots,
     )
 
     planner_cfg = PlannerConfig(
@@ -655,10 +674,13 @@ def interactive_loop(backend: str = "codex_cli") -> int:
         pass
 
     # Build a reusable tool registry for the session to avoid per-turn setup cost
+    fs_anywhere, allowed_roots = _parse_fs_policy(repo_root)
     session_agent_cfg = AgentConfig(
         allow_human_ask=True,
         allow_interactive_tools=True,
         memory_db_path=Path(memory_store.path) if memory_store else None,
+        allow_fs_anywhere=fs_anywhere,
+        fs_allowed_roots=allowed_roots,
     )
     tool_registry = None
     try:

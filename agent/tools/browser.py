@@ -304,7 +304,7 @@ class BrowserTool(ToolAdapter):
             steps = [{"action": "goto", "url": start_url}]
 
         run_path = inputs.get("run_path")
-        session_state_path = getattr(task, "session_state_path", None)
+        session_state_path = inputs.get("session_state_path") or getattr(task, "session_state_path", None)
         headless_override = inputs.get("headless", getattr(task, "headless", None))
 
         try:

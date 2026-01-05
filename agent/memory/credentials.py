@@ -255,6 +255,8 @@ def build_login_steps(site: str, start_url: Optional[str] = None) -> list[Dict[s
         pass_through = {"action": action}
         if selector:
             pass_through["selector"] = selector
+        if item.get("text"):
+            pass_through["text"] = item["text"]
         if timeout is not None:
             pass_through["timeout_ms"] = timeout
         steps.append(pass_through)
