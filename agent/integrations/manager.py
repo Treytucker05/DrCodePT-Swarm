@@ -66,7 +66,7 @@ _INTEGRATIONS: List[IntegrationSpec] = [
         key="blackboard",
         label="Blackboard",
         kind="education",
-        local_tools=("blackboard_snapshot",),
+        local_tools=("blackboard_snapshot", "blackboard_sync"),
     ),
     IntegrationSpec(
         key="coachrx",

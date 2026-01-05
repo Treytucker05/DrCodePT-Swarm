@@ -2039,6 +2039,21 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
         )
     except Exception as exc:
         logger.warning(f"Self-review tool registration FAILED: {exc}")
+
+    try:
+        from .blackboard_sync import BlackboardSyncArgs, blackboard_sync
+
+        reg.register(
+            ToolSpec(
+                name="blackboard_sync",
+                args_model=BlackboardSyncArgs,
+                fn=blackboard_sync,
+                description="Log in to Blackboard, download new materials, and track changes",
+                dangerous=True,
+            )
+        )
+    except Exception as exc:
+        logger.warning(f"Blackboard sync tool registration FAILED: {exc}")
     reg.register(
         ToolSpec(
             name="mcp_list_tools",

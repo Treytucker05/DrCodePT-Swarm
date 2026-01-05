@@ -8,6 +8,9 @@ cd /d "%~dp0.."
 rem Set Codex home directory to use ChatGPT Pro OAuth session
 set "CODEX_HOME=%USERPROFILE%\.codex"
 
+rem Filesystem allowlist (semicolon-separated). Include repo, Codex skills, and PT School.
+if not defined AUTO_FS_ALLOWED_ROOTS set "AUTO_FS_ALLOWED_ROOTS=%~dp0..;%USERPROFILE%\.codex\skills;%USERPROFILE%\OneDrive\Desktop\PT School"
+
 rem Ensure we run from repo root
 cd /d "%~dp0.."
 
@@ -27,6 +30,7 @@ if not defined TREYS_AGENT_SETUP_VERBOSE set "TREYS_AGENT_SETUP_VERBOSE=0"
 set "AGENT_QUIET=1"
 set "AGENT_VERBOSE=0"
 set "TQDM_DISABLE=1"
+if not defined AGENT_PROGRESS set "AGENT_PROGRESS=1"
 set "AGENT_AUTO_APPROVE=0"
 set "AGENT_AUTO_ANSWER="
 

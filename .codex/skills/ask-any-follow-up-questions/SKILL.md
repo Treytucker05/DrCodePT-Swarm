@@ -1,4 +1,4 @@
-﻿---
+---
 name: ask-any-follow-up-questions
 description: Ask follow-up questions to clarify requirements, constraints, and success criteria. Do not use automatically, only when invoked explicitly.
 ---

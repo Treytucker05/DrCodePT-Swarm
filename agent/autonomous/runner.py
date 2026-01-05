@@ -50,12 +50,36 @@ logger = logging.getLogger(__name__)
 def _is_quiet() -> bool:
     """Check if we should suppress verbose output."""
     return os.environ.get("AGENT_QUIET", "0") == "1"
+def _progress_enabled() -> bool:
+    return os.environ.get("AGENT_PROGRESS", "0").strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def _status_print(*args, **kwargs) -> None:
     """Print status info only if not in quiet mode."""
     if not _is_quiet():
         print(*args, **kwargs)
+def _progress_print(*args, **kwargs) -> None:
+    if _progress_enabled():
+        print(*args, **kwargs)
+def _heartbeat_print(*args, **kwargs) -> None:
+    if _is_quiet():
+        _progress_print(*args, **kwargs)
+    else:
+        print(*args, **kwargs)
+def _progress_bar(current: int, total: int, width: int = 20) -> str:
+    if total <= 0:
+        return "?" * width
+    ratio = max(0.0, min(1.0, current / float(total)))
+    filled = int(width * ratio)
+    bar = "#" * filled + "-" * (width - filled)
+    percent = int(ratio * 100)
+    return f"{bar} {percent:3d}%"
+def _emit_progress(current: int, total: int, elapsed_s: float) -> None:
+    if not _progress_enabled():
+        return
+    bar = _progress_bar(current, total)
+    total_label = total if total > 0 else "?"
+    _progress_print(f"[PROGRESS] Step {current}/{total_label} [{bar}] elapsed={elapsed_s:.1f}s")
 
 def _normalize_effort(value: Optional[str]) -> str:
     effort = (value or "").strip().lower()
@@ -1687,6 +1711,7 @@ class AgentRunner:
                 )
 
                 steps_executed += 1
+                _emit_progress(steps_executed, self.cfg.max_steps, time.monotonic() - start)
                 self._save_checkpoint(
                     run_dir,
                     state=state,
@@ -2545,15 +2570,15 @@ class AgentRunner:
                 done.set()
 
         label_msg = label or "Thinking"
-        _status_print(f"[THINKING] {label_msg}")
+        _heartbeat_print(f"[THINKING] {label_msg}")
         if timeout_seconds:
-            _status_print(f"[THINKING] Time limit: {timeout_seconds}s. If it takes longer, I will switch to a simpler approach.")
+            _heartbeat_print(f"[THINKING] Time limit: {timeout_seconds}s. If it takes longer, I will switch to a simpler approach.")
         thread = threading.Thread(target=_target, daemon=True)
         thread.start()
         start = time.monotonic()
         while not done.wait(timeout=heartbeat_seconds):
             elapsed = time.monotonic() - start
-            _status_print(f"[THINKING] Still working on {label_msg}... elapsed={elapsed:.1f}s")
+            _heartbeat_print(f"[THINKING] Still working on {label_msg}... elapsed={elapsed:.1f}s")
         if error:
             raise error["exc"]
         return result.get("value")
