@@ -57,7 +57,8 @@ def validate_artifacts(run_dir: Path, expected_files: Iterable[str]) -> QaResult
 
 def format_qa_summary(artifact_results: Dict[str, QaResult], test_result: Optional[Dict[str, Any]]) -> List[str]:
     lines: List[str] = []
-    for sub_id, result in artifact_results.items():
+    for sub_id in sorted(artifact_results):
+        result = artifact_results[sub_id]
         status = "ok" if result.ok else "issues"
         detail = ""
         if result.errors:

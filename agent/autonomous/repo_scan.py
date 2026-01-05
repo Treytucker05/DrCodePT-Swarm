@@ -19,6 +19,24 @@ _SKIP_DIRS = {
 }
 
 
+def _iter_files_deterministic(repo_root: Path) -> Iterable[Path]:
+    """Yield repo files in a deterministic order without materializing all paths.
+
+    `Path.rglob()` order can vary across OS/filesystems. Repo analysis should be
+    stable when `max_results` caps selection.
+    """
+
+    import os
+
+    repo_root = repo_root.resolve()
+    for root, dirs, files in os.walk(repo_root):
+        # Prune + sort directories in-place for deterministic traversal.
+        dirs[:] = sorted([d for d in dirs if d not in _SKIP_DIRS])
+        root_path = Path(root)
+        for name in sorted(files):
+            yield root_path / name
+
+
 @dataclass(frozen=True)
 class RepoFile:
     path: str
@@ -91,7 +109,7 @@ def build_repo_index(
     seen: set[str] = set()
     root_entries = []
     try:
-        root_entries = [p.name for p in repo_root.iterdir()]
+        root_entries = sorted([p.name for p in repo_root.iterdir()])
     except Exception:
         root_entries = []
 
@@ -128,7 +146,7 @@ def build_repo_index(
         seen.add(key)
 
     for pattern in patterns:
-        for path in repo_root.glob(pattern):
+        for path in sorted(repo_root.glob(pattern)):
             _add_path(path)
             if len(results) >= max_results:
                 break
@@ -136,7 +154,7 @@ def build_repo_index(
             break
 
     if len(results) < max_results:
-        for path in repo_root.rglob("*"):
+        for path in _iter_files_deterministic(repo_root):
             if len(results) >= max_results:
                 break
             _add_path(path)
@@ -164,7 +182,8 @@ def build_repo_map(
     for entry in files:
         p = Path(entry.path)
         scored.append(RepoFile(path=entry.path, size=entry.size, mtime=entry.mtime, score=_score_path(p)))
-    scored.sort(key=lambda r: (r.score, -r.size), reverse=True)
+    # Deterministic ranking: score desc, size asc, path asc.
+    scored.sort(key=lambda r: (-r.score, r.size, r.path))
 
     max_files = max(1, profile.max_files_to_read)
     remaining_bytes = profile.max_total_bytes_to_read
@@ -242,5 +261,81 @@ def build_repo_map(
 
 def is_repo_review_task(task: str) -> bool:
     text = (task or "").lower()
-    signals = ["repo", "repository", "codebase", "code base", "review", "audit", "scan"]
-    return any(s in text for s in signals)
+    strong_signals = [
+        "repo",
+        "repository",
+        "codebase",
+        "code base",
+        "code review",
+        "pull request",
+        "pr",
+        "audit",
+        "scan",
+        "static analysis",
+        "lint",
+    ]
+    if any(s in text for s in strong_signals):
+        return True
+    if "review" not in text:
+        return False
+    doc_hints = [
+        ".docx",
+        ".doc",
+        ".pdf",
+        ".pptx",
+        ".xlsx",
+        ".csv",
+        ".tsv",
+        ".rtf",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+    ]
+    if any(h in text for h in doc_hints):
+        return False
+    code_hints = [
+        ".py",
+        ".js",
+        ".ts",
+        ".tsx",
+        ".jsx",
+        ".java",
+        ".cs",
+        ".cpp",
+        ".c",
+        ".go",
+        ".rs",
+        ".rb",
+        ".php",
+        ".swift",
+        ".kt",
+        ".sql",
+        ".toml",
+        ".yaml",
+        ".yml",
+        ".json",
+        ".md",
+        ".txt",
+        "package.json",
+        "pyproject.toml",
+        "requirements.txt",
+        "cargo.toml",
+        "pom.xml",
+        "build.gradle",
+    ]
+    if any(h in text for h in code_hints):
+        return True
+    path_hints = [
+        "src/",
+        "lib/",
+        "tests/",
+        "test/",
+        "app/",
+        "server/",
+        "client/",
+        "backend/",
+        "frontend/",
+        "agent/",
+    ]
+    return any(h in text for h in path_hints)
