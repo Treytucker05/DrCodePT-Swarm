@@ -827,13 +827,21 @@ def _tail_lines(text: str, max_lines: int) -> str:
 
 def _extract_import_errors(test_output: str) -> str:
     lines = (test_output or "").splitlines()
-    errors = [l for l in lines if "ImportError" in l or "ModuleNotFoundError" in l]
+    errors = [
+        line
+        for line in lines
+        if "ImportError" in line or "ModuleNotFoundError" in line
+    ]
     return "\n".join(errors[:10])
 
 
 def _summarize_errors(test_output: str) -> str:
     lines = (test_output or "").splitlines()
-    hits = [l for l in lines if any(tok in l for tok in ("ERROR", "FAILED", "Traceback", "Exception"))]
+    hits = [
+        line
+        for line in lines
+        if any(tok in line for tok in ("ERROR", "FAILED", "Traceback", "Exception"))
+    ]
     return "\n".join(hits[-10:])
 
 
@@ -1353,12 +1361,6 @@ Your reasoning must stay strictly within your Phase 1 model.
     )
     _, repo_map = scanner.scan()
 
-    root_entries = []
-    try:
-        root_entries = sorted([p.name for p in repo_root.iterdir()])[:40]
-    except Exception:
-        root_entries = []
-
     changed_files = _git_changed_files(repo_root)
     dependent_files: list[Path] = []
     if changed_files:
@@ -1382,7 +1384,6 @@ Your reasoning must stay strictly within your Phase 1 model.
         max_files=_int_env("SWARM_SIMPLE_AST_MAX_FILES", 60),
         max_items=_int_env("SWARM_SIMPLE_AST_MAX_ITEMS", 10),
     )
-    ast_summary = _summarize_ast(ast_data)
     roles = ["Static", "Dynamic", "Research"]
 
     print("\n[SWARM SIMPLE] Objective:", objective)
