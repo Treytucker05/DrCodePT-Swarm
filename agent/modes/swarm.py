@@ -2431,38 +2431,76 @@ def aggregate_swarm_results(
     """
     results = []
     failures = []
+    completed: set[Any] = set()
 
-    for future in as_completed(futures, timeout=timeout):
-        try:
-            result = future.result(timeout=timeout)
-            results.append(result)
-            logger.info("Worker completed: %s", getattr(result, "task_id", "unknown"))
+    try:
+        for future in as_completed(futures, timeout=timeout):
+            completed.add(future)
+            try:
+                result = future.result()
+                results.append(result)
+                logger.info("Worker completed: %s", getattr(result, "task_id", "unknown"))
 
-        except TimeoutError as exc:
-            logger.error("Worker timed out: %s", exc)
-            failures.append({
+            except TimeoutError as exc:
+                logger.error("Worker timed out: %s", exc)
+                failures.append(
+                    {
+                        "type": "timeout",
+                        "error": str(exc),
+                        "task_id": getattr(future, "task_id", "unknown"),
+                    }
+                )
+
+            except AgentException as exc:
+                logger.error("Agent error in worker: %s", exc)
+                failures.append(
+                    {
+                        "type": "agent_error",
+                        "error": str(exc),
+                        "error_type": type(exc).__name__,
+                        "task_id": getattr(future, "task_id", "unknown"),
+                    }
+                )
+
+            except Exception as exc:
+                logger.error("Worker failed: %s", exc, exc_info=True)
+                failures.append(
+                    {
+                        "type": "exception",
+                        "error": str(exc),
+                        "error_type": type(exc).__name__,
+                        "task_id": getattr(future, "task_id", "unknown"),
+                    }
+                )
+    except TimeoutError as exc:
+        logger.error("Aggregation timed out: %s", exc)
+
+    # Any futures not completed within the wall-clock timeout are explicit timeouts.
+    for future in futures:
+        if future in completed:
+            continue
+        failures.append(
+            {
                 "type": "timeout",
-                "error": str(exc),
+                "error": f"swarm aggregation timeout after {timeout}s",
                 "task_id": getattr(future, "task_id", "unknown"),
-            })
+            }
+        )
 
-        except AgentException as exc:
-            logger.error("Agent error in worker: %s", exc)
-            failures.append({
-                "type": "agent_error",
-                "error": str(exc),
-                "error_type": type(exc).__name__,
-                "task_id": getattr(future, "task_id", "unknown"),
-            })
+    def _task_key(task_id: str) -> tuple[int, str]:
+        tid = (task_id or "").strip()
+        unknown = 1 if not tid or tid.lower() == "unknown" else 0
+        return unknown, tid
 
-        except Exception as exc:
-            logger.error("Worker failed: %s", exc, exc_info=True)
-            failures.append({
-                "type": "exception",
-                "error": str(exc),
-                "error_type": type(exc).__name__,
-                "task_id": getattr(future, "task_id", "unknown"),
-            })
+    results.sort(key=lambda r: _task_key(str(getattr(r, "task_id", "") or getattr(r, "id", ""))))
+    failures.sort(
+        key=lambda f: (
+            _task_key(str(f.get("task_id", ""))),
+            str(f.get("type", "")),
+            str(f.get("error_type", "")),
+            str(f.get("error", "")),
+        )
+    )
 
     # Determine overall status
     if not failures:
@@ -2879,6 +2917,16 @@ def _write_result(run_dir: Path, payload: Dict[str, Any]) -> None:
         pass
 
 
+def _append_trace_event(run_dir: Path, event: Dict[str, Any]) -> None:
+    try:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        path = run_dir / "trace.jsonl"
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 def _run_subagent(
     subtask: Subtask,
     *,
@@ -2900,7 +2948,29 @@ def _run_subagent(
     try:
         llm = CodexCliClient.from_env(workdir=workdir or repo_root, log_dir=run_dir)
     except (CodexCliNotFoundError, CodexCliAuthError) as exc:
-        return subtask, "failed", f"llm_error: {exc}", ""
+        error_payload = {
+            "ok": False,
+            "mode": "swarm_subagent",
+            "agent_id": subtask.id,
+            "run_id": subtask.id,
+            "stop_reason": "llm_error",
+            "error": {
+                "type": "llm_error",
+                "message": str(exc),
+                "data": {"error_type": type(exc).__name__},
+            },
+        }
+        _write_result(run_dir, error_payload)
+        _append_trace_event(
+            run_dir,
+            {
+                "type": "error_report",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "agent_id": subtask.id,
+                "error": error_payload.get("error"),
+            },
+        )
+        return subtask, "failed", f"llm_error: {exc}", run_dir
 
     runner = AgentRunner(
         cfg=runner_cfg,
@@ -2925,18 +2995,55 @@ def mode_swarm(
     cleanup_worktrees: bool | None = None,
 ) -> None:
     _load_dotenv()
+    repo_root = Path(__file__).resolve().parents[2]
+    run_root = _swarm_run_dir()
+    run_root.mkdir(parents=True, exist_ok=True)
     try:
         llm = CodexCliClient.from_env()
     except CodexCliNotFoundError as exc:
         print(f"[ERROR] {exc}")
+        _write_result(
+            run_root,
+            {
+                "ok": False,
+                "mode": "swarm",
+                "run_id": run_root.name,
+                "stop_reason": "llm_error",
+                "error": {"type": "llm_error", "message": str(exc), "data": {"error_type": type(exc).__name__}},
+            },
+        )
+        _append_trace_event(
+            run_root,
+            {
+                "type": "error_report",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "agent_id": "swarm",
+                "error": {"type": "llm_error", "message": str(exc), "data": {"error_type": type(exc).__name__}},
+            },
+        )
         return
     except CodexCliAuthError as exc:
         print(f"[ERROR] {exc}")
+        _write_result(
+            run_root,
+            {
+                "ok": False,
+                "mode": "swarm",
+                "run_id": run_root.name,
+                "stop_reason": "llm_error",
+                "error": {"type": "llm_error", "message": str(exc), "data": {"error_type": type(exc).__name__}},
+            },
+        )
+        _append_trace_event(
+            run_root,
+            {
+                "type": "error_report",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "agent_id": "swarm",
+                "error": {"type": "llm_error", "message": str(exc), "data": {"error_type": type(exc).__name__}},
+            },
+        )
         return
-
-    repo_root = Path(__file__).resolve().parents[2]
-    run_root = _swarm_run_dir()
-    run_root.mkdir(parents=True, exist_ok=True)
 
     max_subtasks = max(1, _int_env("SWARM_MAX_SUBTASKS", 3))
     profile_cfg = resolve_profile(profile, env_keys=("SWARM_PROFILE", "AUTO_PROFILE", "AGENT_PROFILE"))
@@ -3054,6 +3161,7 @@ def mode_swarm(
         ready = [s for s in remaining.values() if all(d in completed for d in s.depends_on)]
         if not ready:
             ready = list(remaining.values())
+        ready = sorted(ready, key=lambda s: s.id)
 
         with ThreadPoolExecutor(max_workers=workers) as executor:
             future_map: Dict[Any, tuple[Subtask, Path]] = {}
@@ -3134,6 +3242,7 @@ def mode_swarm(
                 if cleanup_worktrees and subtask.id in worktrees_by_id:
                     remove_worktree(repo_root, worktrees_by_id[subtask.id])
 
+    results.sort(key=lambda item: item[0].id)
     print("\n[SWARM] Results:")
     for subtask, status, stop_reason, sub_run_dir in results:
         # result.json is the canonical outcome; terminal output is a convenience.
