@@ -25,6 +25,7 @@ class AgentConfig:
     allow_fs_anywhere: bool = False
     fs_allowed_roots: Tuple[Path, ...] = field(default_factory=tuple)
     profile: ProfileConfig = field(default_factory=resolve_profile)
+    llm_backend: str = "codex_cli" # "codex_cli" or "server"
 
 
 @dataclass(frozen=True)

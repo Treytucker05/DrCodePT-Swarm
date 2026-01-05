@@ -1551,6 +1551,9 @@ Return a JSON object matching the schema."""
             elif "email" in request_lower:
                 service = "outlook_email"
         elif "calendar" in request_lower:
+            # Default to Google Calendar (our configured integration)
+            auth_provider = "google"
+            service = "google_calendar"
             needs_auth = True
 
         # Detect action
@@ -1577,7 +1580,8 @@ Return a JSON object matching the schema."""
 
         # Clarifying questions
         questions = []
-        if needs_auth and not auth_provider:
+        # Skip calendar service question - we default to Google Calendar
+        if needs_auth and not auth_provider and "calendar" not in request_lower:
             questions.append("Which calendar service do you use - Google Calendar or Microsoft Outlook?")
 
         return ParsedIntent(

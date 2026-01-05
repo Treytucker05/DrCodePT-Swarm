@@ -22,7 +22,7 @@ if not CREDS_FILE.exists():
     print("See: manual_oauth_setup.py")
     exit(1)
 
-print(f"\n✓ Found credentials.json at: {CREDS_FILE}")
+print(f"\n[OK] Found credentials.json at: {CREDS_FILE}")
 
 # Authorize
 try:
@@ -45,16 +45,16 @@ creds = None
 
 # Check if we already have a token
 if TOKEN_FILE.exists():
-    print(f"✓ Found existing token at: {TOKEN_FILE}")
+    print(f"[OK] Found existing token at: {TOKEN_FILE}")
     creds = Credentials.from_authorized_user_file(str(TOKEN_FILE), SCOPES)
 
 # If there are no (valid) credentials, let the user log in
 if not creds or not creds.valid:
     if creds and creds.expired and creds.refresh_token:
-        print("\n→ Refreshing expired token...")
+        print("\n[INFO] Refreshing expired token...")
         creds.refresh(Request())
     else:
-        print("\n→ Starting OAuth authorization flow...")
+        print("\n[INFO] Starting OAuth authorization flow...")
         print("   A browser window will open for you to authorize access.")
         flow = InstalledAppFlow.from_client_secrets_file(str(CREDS_FILE), SCOPES)
         creds = flow.run_local_server(port=0)
@@ -63,26 +63,26 @@ if not creds or not creds.valid:
     TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(TOKEN_FILE, 'w') as token:
         token.write(creds.to_json())
-    print(f"✓ Token saved to: {TOKEN_FILE}")
+    print(f"[OK] Token saved to: {TOKEN_FILE}")
 
 # Test the connection
-print("\n→ Testing connection to Google Calendar...")
+print("\n[INFO] Testing connection to Google Calendar...")
 try:
     service = build('calendar', 'v3', credentials=creds)
     events_result = service.events().list(calendarId='primary', maxResults=5).execute()
     events = events_result.get('items', [])
-    print(f"✓ Successfully connected! Found {len(events)} upcoming events.")
+    print(f"[OK] Successfully connected! Found {len(events)} upcoming events.")
 except Exception as e:
-    print(f"✗ Error testing connection: {e}")
+    print(f"[ERROR] Error testing connection: {e}")
 
-print("\n→ Testing connection to Google Tasks...")
+print("\n[INFO] Testing connection to Google Tasks...")
 try:
     service = build('tasks', 'v1', credentials=creds)
     results = service.tasks().list(tasklist='@default', maxResults=5).execute()
     tasks = results.get('items', [])
-    print(f"✓ Successfully connected! Found {len(tasks)} tasks.")
+    print(f"[OK] Successfully connected! Found {len(tasks)} tasks.")
 except Exception as e:
-    print(f"✗ Error testing connection: {e}")
+    print(f"[ERROR] Error testing connection: {e}")
 
 print("\n" + "=" * 70)
 print("  SETUP COMPLETE!")

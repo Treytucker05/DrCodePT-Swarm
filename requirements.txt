@@ -23,3 +23,6 @@ tree-sitter-language-pack
 tree-sitter-python
 tree-sitter-javascript
 tree-sitter-typescript
+fastapi
+uvicorn
+tzlocal

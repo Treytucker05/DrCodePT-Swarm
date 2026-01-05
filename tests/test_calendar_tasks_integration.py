@@ -151,7 +151,7 @@ async def test_get_free_time(calendar_helper, tasks_helper):
     from agent.autonomous.tools.calendar_tasks_tools import CalendarTasksTools
 
     tools = CalendarTasksTools(calendar_helper, tasks_helper)
-    result = await tools.get_free_time(duration_minutes=60, days_ahead=7)
+    result = await tools.get_free_time_async(duration_minutes=60, days_ahead=7)
 
     assert isinstance(result, dict)
     assert "success" in result
@@ -167,7 +167,7 @@ async def test_check_calendar_conflicts(calendar_helper, tasks_helper):
     start = now + timedelta(hours=1)
     end = start + timedelta(hours=1)
 
-    result = await tools.check_calendar_conflicts(
+    result = await tools.check_calendar_conflicts_async(
         event_title="Test Event",
         start_time=start.isoformat() + "Z",
         end_time=end.isoformat() + "Z",
@@ -187,7 +187,7 @@ async def test_create_calendar_event_tool(calendar_helper, tasks_helper):
     start = now + timedelta(hours=1)
     end = start + timedelta(hours=1)
 
-    result = await tools.create_calendar_event(
+    result = await tools.create_calendar_event_async(
         title="Test Event",
         start_time=start.isoformat() + "Z",
         end_time=end.isoformat() + "Z",
@@ -207,7 +207,7 @@ async def test_list_calendar_events_tool(calendar_helper, tasks_helper):
     now = datetime.utcnow()
     end = now + timedelta(days=7)
 
-    result = await tools.list_calendar_events(
+    result = await tools.list_calendar_events_async(
         time_min=now.isoformat() + "Z",
         time_max=end.isoformat() + "Z",
     )
@@ -222,7 +222,7 @@ async def test_list_all_tasks_tool(calendar_helper, tasks_helper):
     from agent.autonomous.tools.calendar_tasks_tools import CalendarTasksTools
 
     tools = CalendarTasksTools(calendar_helper, tasks_helper)
-    result = await tools.list_all_tasks()
+    result = await tools.list_all_tasks_async()
 
     assert isinstance(result, dict)
     assert "success" in result
@@ -234,7 +234,7 @@ async def test_create_task_tool(calendar_helper, tasks_helper):
     from agent.autonomous.tools.calendar_tasks_tools import CalendarTasksTools
 
     tools = CalendarTasksTools(calendar_helper, tasks_helper)
-    result = await tools.create_task(
+    result = await tools.create_task_async(
         title="Test Task",
         notes="Test task",
     )
@@ -249,7 +249,7 @@ async def test_search_tasks_tool(calendar_helper, tasks_helper):
     from agent.autonomous.tools.calendar_tasks_tools import CalendarTasksTools
 
     tools = CalendarTasksTools(calendar_helper, tasks_helper)
-    result = await tools.search_tasks("test")
+    result = await tools.search_tasks_async("test")
 
     assert isinstance(result, dict)
     assert "success" in result

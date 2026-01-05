@@ -82,7 +82,7 @@ DrCodePT-Swarm/
 │   │
 │   ├── integrations/         # External service integrations
 │   │   ├── yahoo_mail.py     # IMAP/SMTP for Yahoo Mail
-│   │   └── google_apis.py    # Google Calendar, Drive, etc.
+│   │   └── google_apis.py    # Google Calendar, Tasks (used by fast path in cli.py)
 │   │
 │   ├── llm/                  # LLM backends
 │   │   ├── base.py           # LLMClient interface
@@ -97,6 +97,7 @@ DrCodePT-Swarm/
 │   │   ├── run_logger.py     # Run-level event logging
 │   │   └── structured_logger.py # Structured JSON logging
 │   │
+│   ├── cli.py                # Interactive CLI with fast path routing
 │   └── run.py                # CLI entrypoint
 │
 ├── tests/                    # Test suite
@@ -251,7 +252,106 @@ class Reflection:
 - `minor_repair`: Attempt localized fix
 - `replan`: Discard current plan, generate new one
 
-### 6. LLM Backend (`llm/codex_cli_client.py`)
+### 6. CLI Routing and Fast Paths (`cli.py`)
+
+The interactive CLI (`agent/cli.py`) provides intelligent routing with multiple execution paths optimized for different query types:
+
+**Architecture:**
+```
+User Input
+    ↓
+[Detection] Classify query type
+    ↓
+    ├─→ [FASTEST PATH] Google Calendar/Tasks (0.9-10s)
+    │   └─→ Direct API calls + LLM natural language interpretation
+    │
+    ├─→ [FAST PATH] Simple queries (2-5s)
+    │   └─→ Direct LLM call, no agent loop
+    │
+    ├─→ [LEARNING PATH] Complex tasks (30-60s)
+    │   └─→ Full agent with research, planning, reflection
+    │
+    └─→ [DEFAULT PATH] AgentRunner
+        └─→ Standard autonomous agent execution
+```
+
+**Google Calendar/Tasks Fast Path (NEW - Jan 2026):**
+
+The fastest execution path bypasses all agent overhead for Google Calendar/Tasks queries:
+
+```python
+# Detection (cli.py:422-438)
+_is_google_calendar_or_tasks_query()
+  → Keywords: task, workout, calendar, event, etc.
+  → Returns: True/False (0.001s)
+
+# LLM Brain (cli.py:441-604)
+_interpret_task_query()  # For tasks
+_interpret_calendar_date()  # For calendar
+  → LLM interprets natural language
+  → Returns: structured decision JSON
+  → Time: 5-10s (LLM) or 0.01s (fallback)
+
+# Fast Path Execution (cli.py:607-781)
+_handle_google_fast_path()
+  → Load OAuth token (0.01s)
+  → Build API service (0.1s)
+  → Fetch from Google APIs (0.5s)
+  → Apply LLM-based filters (0.001s)
+  → Display results (0.001s)
+  → Total: 0.9-10s (vs 30-60s with Learning Agent)
+```
+
+**Performance Comparison:**
+| Query Type | Fast Path | Learning Agent | Speedup |
+|------------|-----------|----------------|---------|
+| "show my tasks" | 0.9s | 30-60s | 33-66x |
+| "what workouts do I need" | 5-10s | 30-60s | 3-12x |
+| "calendar tomorrow" | 5-10s | 30-60s | 3-12x |
+
+**Natural Language Understanding:**
+
+The fast path uses LLM interpretation for natural language:
+
+```python
+# Task queries
+"what workouts do I need to make"
+  → LLM: {"action": "list_specific", "list_name": "Workouts"}
+  → Shows only Workouts list
+
+"what do I need to do about my car"
+  → LLM: {"action": "filter_by_keyword", "filter_keyword": "car"}
+  → Filters tasks containing "car"
+
+# Calendar queries
+"show my calendar tomorrow"
+  → LLM: {"time_min": "2026-01-04T00:00:00Z", "time_max": "2026-01-04T23:59:59Z"}
+  → Shows only tomorrow's events
+
+"what's on my calendar next week"
+  → LLM: {"time_min": "2026-01-06T00:00:00Z", "time_max": "2026-01-12T23:59:59Z"}
+  → Shows next week's events
+```
+
+**Fallback Logic:**
+
+If LLM interpretation times out, uses keyword matching:
+- Task lists: Matches list names in query ("workouts" → Workouts list)
+- Keywords: Detects common terms (car, tax, diet, etc.)
+- Calendar dates: Parses "tomorrow", "today", "next week", etc.
+- Default: Shows all active tasks or next 7 days
+
+**Key Features:**
+- ✅ Multi-list support (fetches ALL task lists automatically)
+- ✅ Active tasks only (hides completed)
+- ✅ Smart filtering (by list name or keyword)
+- ✅ Rich display (title, notes preview, due dates)
+- ✅ Date-aware calendar (tomorrow, today, next week, etc.)
+- ✅ Graceful fallback (works even if LLM times out)
+
+See `GOOGLE_TASKS_FAST_PATH.md` for complete technical documentation.
+
+### 7. LLM Backend (`llm/codex_cli_client.py`)
 
 Uses local Codex CLI for inference:
 - No API keys required (uses `codex login`)

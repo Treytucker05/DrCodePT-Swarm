@@ -33,6 +33,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--memory-db", type=str, default=None, help="SQLite path for long-term memory store.")
     p.add_argument("--run-dir", type=str, default=None, help="Directory for this run's artifacts (trace, workspace).")
     p.add_argument("--stub-llm", action="store_true", help="Use a deterministic stub LLM (no API keys).")
+    p.add_argument("--llm-backend", choices=["codex_cli", "server"], default="codex_cli", help="LLM backend to use.")
     return p
 
 
@@ -163,14 +164,19 @@ def main(argv: list[str] | None = None) -> int:
             ]
         )
     else:
-        try:
-            llm = CodexCliClient.from_env()
-        except CodexCliNotFoundError as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
-        except CodexCliAuthError as exc:
-            print(str(exc), file=sys.stderr)
-            return 2
+        if args.llm_backend == "server":
+            from agent.llm.server_client import ServerClient
+            # We assume the server is running on localhost:8000
+            llm = ServerClient.from_env()
+        else:
+            try:
+                llm = CodexCliClient.from_env()
+            except CodexCliNotFoundError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+            except CodexCliAuthError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
 
     if mode == "auto":
         from agent.modes.autonomous import mode_autonomous

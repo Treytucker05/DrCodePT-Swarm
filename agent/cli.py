@@ -11,7 +11,18 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Optional
+import re
+import time
+import json
+from dataclasses import dataclass
+from typing import Optional, Tuple, List, Any
+from datetime import datetime
+
+from agent.autonomous.runner import AgentRunner
+from agent.autonomous.config import RunnerConfig, AgentConfig, PlannerConfig
+from agent.autonomous.memory.sqlite_store import SqliteMemoryStore
+from agent.config.profile import ProfileName
+from agent.llm.base import LLMClient
 
 # Ensure agent package is importable
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -74,12 +85,24 @@ def _setup_logging(verbose: bool = False) -> None:
         os.environ["TQDM_DISABLE"] = "1"
 
 
-def _get_llm_client():
+def _get_llm_client(backend: str = "codex_cli", model: Optional[str] = None):
     """Get the LLM client based on environment configuration.
 
     Prefers Codex CLI when available.
     Falls back to OpenRouter if Codex is unavailable.
     """
+    if backend == "server":
+        try:
+            from agent.llm.server_client import ServerClient
+            client = ServerClient.from_env()
+            if model and model != "default" and hasattr(client, "set_model"):
+                client.set_model(model)
+            return client
+        except Exception as e:
+            logger.debug(f"ServerClient init failed: {e}")
+            # Fallback to codex_cli
+            pass
+
     try:
         from agent.llm.codex_cli_client import CodexCliClient
         client = CodexCliClient.from_env()
@@ -97,7 +120,10 @@ def _get_llm_client():
     if os.getenv("OPENROUTER_API_KEY"):
         try:
             from agent.llm.openrouter_client import OpenRouterClient
-            return OpenRouterClient.from_env()
+            client = OpenRouterClient.from_env()
+            if model and model != "default":
+                client.model = model
+            return client
         except Exception as e:
             logger.debug(f"OpenRouterClient not available: {e}")
 
@@ -121,6 +147,7 @@ def run_agent(
     interactive: bool = True,
     verbose: bool = False,
     resume_path: Optional[Path] = None,
+    backend: str = "codex_cli",
 ) -> int:
     """
     Run the unified agent on a task.
@@ -161,7 +188,7 @@ def run_agent(
 
     # Get LLM client
     try:
-        llm = _get_llm_client()
+        llm = _get_llm_client(backend=backend)
     except RuntimeError as e:
         print(f"[ERROR] {e}")
         return 1
@@ -362,14 +389,15 @@ def _needs_learning_agent(text: str) -> bool:
     lower = text.lower()
 
     # Keywords that suggest complex tasks needing learning
+    # Note: "calendar" removed - calendar requests should use existing calendar tools
     learning_keywords = [
-        # Calendar/Email
-        "calendar", "outlook", "gmail", "email", "schedule",
-        # Auth
+        # Email (but not calendar - calendar has MCP tools available)
+        "outlook", "gmail", "email",
+        # Auth (for new integrations)
         "oauth", "authenticate", "login", "sign in",
-        # Integration
+        # Integration (for new setups)
         "api", "integrate", "connect", "setup", "configure",
-        # Web
+        # Web automation (for new sites)
         "automate", "browser", "website", "web page",
         # Desktop automation - USE LEARNING AGENT for these
         "notepad", "calculator", "open", "launch", "type", "write", "click",
@@ -418,35 +446,76 @@ def _fast_answer(llm, query: str) -> Optional[str]:
     return None
 
 
-def interactive_loop() -> int:
+
+
+
+@dataclass
+class CLISettings:
+    model: str = "default"
+    profile: ProfileName = "fast"
+    mode: str = "react"
+    
+    def save(self, path: Path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w") as f:
+            json.dump({
+                "model": self.model,
+                "profile": self.profile,
+                "mode": self.mode
+            }, f)
+            
+    @classmethod
+    def load(cls, path: Path) -> "CLISettings":
+        if not path.exists():
+            return cls()
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+                return cls(**data)
+        except Exception:
+            return cls()
+
+def _print_settings_menu(settings: CLISettings):
+    print("\n" + "="*30)
+    print("      SETTINGS MENU")
+    print("="*30)
+    print(f"  Model:   {settings.model}")
+    print(f"  Profile: {settings.profile}  (fast = low latency, deep = high reasoning)")
+    print(f"  Mode:    {settings.mode}")
+    print("-"*30)
+    print("  Commands: ")
+    print("    /model <name>   - Change LLM model")
+    print("    /profile <fast|deep|audit> - Change reasoning depth")
+    print("    /settings       - Show this menu")
+    print("="*30 + "\n")
+
+def interactive_loop(backend: str = "codex_cli") -> int:
     """
     Run an interactive REPL that feeds tasks to AgentRunner.
 
     This replaces the old treys_agent.py routing logic.
     Uses persistent memory across all tasks so the agent learns and remembers.
     """
-    from agent.autonomous.config import AgentConfig, PlannerConfig, RunnerConfig
-    from agent.autonomous.runner import AgentRunner
-    from agent.autonomous.memory.sqlite_store import SqliteMemoryStore
-    from pathlib import Path
-
     _setup_logging(verbose=False)
 
     print("\n" + "=" * 50)
-    print("          TREY'S AGENT - Interactive Mode")
+    print("          🚀 TREY'S AGENT - Interactive Mode")
     print("=" * 50)
     print("\nType your task and press Enter. Type 'exit' to quit.")
-    print("Commands: help, tools, skills, learn, exit\n")
+    print("Commands: /settings, help, tools, skills, learn, exit\n")
 
-    # Get LLM client once
+    settings_path = Path.home() / ".drcodept_swarm" / "cli_settings.json"
+    settings = CLISettings.load(settings_path)
+
+    # Get LLM client with initial model from settings
+    backend_val = "server" if os.environ.get("LLM_BACKEND") == "server" else "codex_cli"
     try:
-        llm = _get_llm_client()
+        llm = _get_llm_client(backend=backend_val, model=settings.model)
     except RuntimeError as e:
         print(f"[ERROR] {e}")
         return 1
 
     # Create persistent memory store that persists across all tasks in this session
-    # This allows the agent to remember past tasks, learn from failures, and improve
     memory_store = None
     try:
         repo_root = Path(__file__).resolve().parent.parent
@@ -459,6 +528,8 @@ def interactive_loop() -> int:
         logger.debug(f"Could not initialize persistent memory: {e}")
         print(f"[WARNING] Persistent memory unavailable - agent won't remember past tasks")
 
+    session_history: List[str] = []
+
     while True:
         try:
             user_input = input("> ").strip()
@@ -467,6 +538,46 @@ def interactive_loop() -> int:
             return 0
 
         if not user_input:
+            continue
+
+        if user_input.lower() == "exit":
+            break
+            
+        if user_input.lower().startswith("/"):
+            parts = user_input.split()
+            cmd = parts[0].lower()
+            
+            if cmd == "/settings":
+                _print_settings_menu(settings)
+                continue
+            elif cmd == "/model":
+                if len(parts) > 1:
+                    settings.model = parts[1]
+                    settings.save(settings_path)
+                    # Re-initialize LLM with new model
+                    try:
+                        llm = _get_llm_client(backend=backend_val, model=settings.model)
+                        print(f"[OK] Model set to: {settings.model}")
+                    except Exception as e:
+                        print(f"[ERROR] Failed to switch model: {e}")
+                else:
+                    print("[ERROR] Please specify a model name.")
+                continue
+            elif cmd == "/profile":
+                if len(parts) > 1 and parts[1] in ("fast", "deep", "audit"):
+                    settings.profile = parts[1]
+                    settings.save(settings_path)
+                    print(f"[OK] Profile set to: {settings.profile}")
+                else:
+                    print("[ERROR] Profile must be 'fast', 'deep', or 'audit'.")
+                continue
+            elif cmd == "/help":
+                print("\nAvailable commands:")
+                print("  /settings - View current settings")
+                print("  /model    - Set LLM model")
+                print("  /profile  - Set reasoning profile (fast/deep/audit)")
+                print("  exit      - Close the agent\n")
+                continue
             continue
 
         lower = user_input.lower()
@@ -479,6 +590,9 @@ def interactive_loop() -> int:
             print("""
 Commands:
   <task>       - Run a task (uses Learning Agent for complex tasks)
+  /settings    - Change Model, Speed (fast/deep), and Reasoning settings
+  /model       - Switch LLM model (e.g., /model gpt-4)
+  /profile     - Switch speed (e.g., /profile fast OR /profile deep OR /profile audit)
   learn <task> - Force learning mode (research + learn new skill)
   tools        - List all available tools (local + MCP)
   skills       - List all learned skills
@@ -510,28 +624,14 @@ Examples:
                 print("Usage: learn <task>")
             continue
 
-        # Fast path for simple queries (no agent overhead)
-        if _is_simple_query(user_input):
-            print(f"\n[TASK] {user_input}")
-            answer = _fast_answer(llm, user_input)
-            if answer:
-                print(f"[ANSWER] {answer}\n")
-                continue
-            # Fall through to full agent if fast path fails
-
-        # Learning agent for complex tasks (calendar, email, OAuth, etc.)       
-        if _needs_learning_agent(user_input):
-            if _try_run_learned_skill(llm, user_input):
-                continue
-            _run_learning_agent(llm, user_input)
-            continue
-
-        # Everything else goes to AgentRunner
-        # Use persistent memory store so agent remembers past tasks and learns
+        # Route all natural language tasks to the AgentRunner "Brain"
+        # This fulfills the user goal of reasoning before fetching programs/tools.
+        
+        # Use persistent settings for runner config
         runner_cfg = RunnerConfig(
             max_steps=30,
             timeout_seconds=600,
-            profile="fast",  # Use fast profile for interactive - less overhead
+            profile=settings.profile,
             llm_heartbeat_seconds=5.0,
         )
 
@@ -541,7 +641,7 @@ Examples:
             memory_db_path=Path(memory_store.path) if memory_store else None,
         )
 
-        planner_cfg = PlannerConfig(mode="react")
+        planner_cfg = PlannerConfig(mode=settings.mode)
 
         runner = AgentRunner(
             cfg=runner_cfg,
@@ -554,12 +654,41 @@ Examples:
         print(f"\n[TASK] {user_input}")
         print("       Working...\n")
 
-        result = runner.run(user_input)
+        # Inject local time and session history for context
+        now = datetime.now()
+        # Try to get timezone name natively
+        try:
+            import tzlocal
+            tz = tzlocal.get_localzone_name()
+        except ImportError:
+            # Fallback to a simple Windows command if needed, or just use the offset
+            tz = datetime.now().astimezone().tzname()
+        
+        local_time_str = now.strftime("%Y-%m-%d %H:%M:%S")
+        full_task = f"Current Local Time: {local_time_str} ({tz})\n"
+        if session_history:
+            history_text = "\n".join(session_history[-3:]) # Keep last 3 turns
+            full_task += f"Context from previous turns in this session:\n{history_text}\n"
+        
+        full_task += f"Current Task: {user_input}"
+
+        result = runner.run(full_task)
 
         # Extract and display the answer
         answer = _extract_answer(result)
         if answer:
             print(f"\n[ANSWER] {answer}")
+            session_history.append(f"User: {user_input}\nAssistant: {answer}")
+            # ALSO store in persistent memory for cross-session learning
+            if memory_store:
+                memory_store.upsert(
+                    kind="conversation",
+                    key=f"turn_{int(time.time())}",
+                    content=f"User Task: {user_input}\nAssistant Answer: {answer}",
+                    metadata={"task": user_input}
+                )
+        else:
+            session_history.append(f"User: {user_input}\nAssistant: (Task completed with stop reason: {result.stop_reason})")
 
         status = "SUCCESS" if result.success else "FAILED"
         print(f"[{status}] {result.stop_reason} (steps: {result.steps_executed})\n")
@@ -571,11 +700,15 @@ def _extract_answer(result) -> Optional[str]:
     try:
         from pathlib import Path
         import json
+        from datetime import datetime
 
         if result.trace_path:
             trace_path = Path(result.trace_path)
             if trace_path.exists():
-                # Read the trace file and find the finish tool call
+                last_successful_output = None
+                last_tool_name = None
+
+                # Read the trace file and find the finish tool call OR last successful output
                 with open(trace_path, "r", encoding="utf-8") as f:
                     for line in f:
                         try:
@@ -583,6 +716,8 @@ def _extract_answer(result) -> Optional[str]:
                             # Look for step with finish action
                             if entry.get("type") == "step":
                                 action = entry.get("action", {})
+                                tool_result = entry.get("result", {})
+
                                 if action.get("tool_name") == "finish":
                                     tool_args = action.get("tool_args", {})
                                     if isinstance(tool_args, dict):
@@ -591,8 +726,48 @@ def _extract_answer(result) -> Optional[str]:
                                         for arg in tool_args:
                                             if isinstance(arg, dict) and arg.get("key") in ("summary", "answer", "result"):
                                                 return arg.get("value")
+
+                                # If tool succeeded and has output, remember it
+                                if tool_result.get("success"):
+                                    last_tool_name = action.get("tool_name")
+                                    last_successful_output = tool_result.get("output")
                         except json.JSONDecodeError:
                             continue
+
+                # If no finish tool was called but we have calendar/tasks results, format them
+                if last_successful_output and last_tool_name == "list_calendar_events":
+                    events = last_successful_output.get("events", [])
+                    if events:
+                        answer = f"Found {len(events)} event(s):\n\n"
+                        for event in events:
+                            start = event.get("start", {}).get("dateTime", "")
+                            end = event.get("end", {}).get("dateTime", "")
+                            summary = event.get("summary", "Untitled")
+
+                            # Parse and format times
+                            try:
+                                start_dt = datetime.fromisoformat(start.replace('Z', '+00:00'))
+                                end_dt = datetime.fromisoformat(end.replace('Z', '+00:00'))
+                                time_str = f"{start_dt.strftime('%I:%M %p')} - {end_dt.strftime('%I:%M %p')}"
+                            except:
+                                time_str = f"{start} - {end}"
+
+                            answer += f"  • {summary}: {time_str}\n"
+                        return answer.strip()
+                    else:
+                        return "No events found in that time range."
+
+                elif last_successful_output and last_tool_name == "list_all_tasks":
+                    tasks = last_successful_output.get("tasks", [])
+                    if tasks:
+                        answer = f"Found {len(tasks)} task(s):\n\n"
+                        for task in tasks:
+                            title = task.get("title", "Untitled")
+                            answer += f"  • {title}\n"
+                        return answer.strip()
+                    else:
+                        return "No tasks found."
+
     except Exception as e:
         pass  # Silently fail - answer extraction is optional
     return None
@@ -657,6 +832,13 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--llm-backend",
+        choices=["codex_cli", "server"],
+        default="codex_cli",
+        help="LLM backend to use (default: codex_cli)",
+    )
+
+    parser.add_argument(
         "--list-tools",
         action="store_true",
         help="List all available tools (local + MCP) and exit",
@@ -677,7 +859,9 @@ def main() -> None:
 
     # Interactive mode
     if args.interactive or (args.task is None and not args.resume):
-        sys.exit(interactive_loop())
+        # Set backend in env so loops can pick it up
+        os.environ["LLM_BACKEND"] = args.llm_backend
+        sys.exit(interactive_loop(backend=args.llm_backend))
 
     # Single task mode
     if args.task:
@@ -690,6 +874,7 @@ def main() -> None:
             interactive=True,
             verbose=args.verbose,
             resume_path=resume_path,
+            backend=args.llm_backend,
         )
         sys.exit(exit_code)
 
@@ -713,6 +898,7 @@ def main() -> None:
             interactive=True,
             verbose=args.verbose,
             resume_path=resume_path,
+            backend=args.llm_backend,
         )
         sys.exit(exit_code)
 

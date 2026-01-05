@@ -22,5 +22,10 @@
     "env": {
       "GOOGLE_OAUTH_CREDENTIALS": "C:\\Users\\treyt\\OneDrive\\Desktop\\DrCodePT-Swarm\\credentials\\gcp-oauth-credentials.json"
     }
+  },
+  "obsidian": {
+    "command": "C:\\Program Files\\nodejs\\npx.cmd",
+    "args": ["-y", "@mauricio.wolff/mcp-obsidian@0.7.2", "C:\\Users\\treyt\\OneDrive\\Desktop\\LifeOS"],
+    "env": {}
   }
 }

@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 from uuid import uuid4
+from time import perf_counter
 
 from .backend import RunConfig, RunResult
 from .base import LLMClient
@@ -220,6 +221,7 @@ def call_codex(
     _debug_print(f"[DEBUG] Working dir: {cwd}")
     _debug_print(f"[DEBUG] Timeout: {timeout_seconds}s")
     try:
+        t0 = perf_counter()
         result = subprocess.run(
             cmd,
             input=prompt,
@@ -230,6 +232,8 @@ def call_codex(
             env=os.environ.copy(),
             encoding="utf-8",
         )
+        dur = perf_counter() - t0
+        _debug_print(f"[PERF] Codex subprocess duration: {dur:.3f}s")
         _debug_print(f"[DEBUG] Return code: {result.returncode}")
         _debug_print(f"[DEBUG] Stderr: {(result.stderr or '')[:500]}")
         if "429" in (result.stderr or "") or "rate limit" in (result.stderr or "").lower():

@@ -13,6 +13,26 @@ logger = logging.getLogger(__name__)
 
 
 class Reflector:
+    # Read-only tools that don't need expensive reflection
+    # These tools just query data, so we can skip the reflection LLM call
+    SKIP_REFLECTION_TOOLS = {
+        "list_calendar_events",
+        "get_free_time",
+        "check_calendar_conflicts",
+        "list_all_tasks",
+        "search_tasks",
+        "get_task_details",
+        "file_read",
+        "list_dir",
+        "glob_paths",
+        "file_search",
+        "web_fetch",
+        "web_search",
+        "system_info",
+        "clipboard_get",
+        "memory_search",
+    }
+
     def __init__(self, *, llm: Optional[LLMClient] = None, pre_mortem_enabled: bool = False):
         self._llm = llm
         self._pre_mortem_enabled = pre_mortem_enabled
@@ -57,6 +77,18 @@ class Reflector:
         tool_result: ToolResult,
         observation: Observation,
     ) -> Reflection:
+        # Skip expensive reflection for read-only tools on success
+        # Just return a simple success reflection without LLM call
+        if step.tool_name in self.SKIP_REFLECTION_TOOLS and tool_result.success:
+            logger.debug(f"Skipping reflection for successful read-only tool: {step.tool_name}")
+            return Reflection(
+                status="success",
+                explanation_short=f"{step.tool_name} succeeded",
+                next_hint="",
+                failure_type="none",
+                lesson="",
+            )
+
         if not self._llm:
             if tool_result.success:
                 return Reflection(status="success", explanation_short="Tool succeeded.", next_hint="")

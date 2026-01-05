@@ -50,6 +50,7 @@ This README is a high-level entrypoint. The authoritative docs live in:
 - `QUICK_REFERENCE.md` - command cheat sheet.
 - `TROUBLESHOOTING.md` - common issues + fixes.
 - `AGENT_SETUP_GUIDE.md` - environment setup and prerequisites.
+- `GOOGLE_TASKS_FAST_PATH.md` - **NEW!** Fast path technical documentation (6-60x faster Google Tasks/Calendar access).
 
 Historical / archive (context only; do not update as source of truth):
 - `ENHANCEMENT_SUMMARY.md`
@@ -78,6 +79,7 @@ When Codex is working in this repo, these files are the required rules:
 - Vision-guided automation: ✅ working with fast/reasoning tiering (Jan 2026 improvements)
 - Desktop automation: ✅ hybrid executor with UI automation + vision fallback
 - Google OAuth setup: ✅ autonomous via vision-guided browser navigation
+- **Google Tasks/Calendar Fast Path: ✅ NEW! 6-60x faster with LLM-powered natural language understanding** (See `GOOGLE_TASKS_FAST_PATH.md`)
 - "DO NOT execute" wrapper is applied only to swarm reasoning agents (chat/playbook are not wrapped).
 
 **Recent Vision System Improvements (Jan 2026):**

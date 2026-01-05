@@ -146,6 +146,15 @@ class MCPClient:
                 "get_entity",
                 "delete_entity",
             ],
+            "obsidian": [
+                "read_note",
+                "write_note",
+                "list_notes",
+                "search_notes",
+                "create_note",
+                "update_note",
+                "delete_note",
+            ],
             "filesystem": [
                 "read_file",
                 "write_file",
@@ -177,16 +186,20 @@ class MCPClient:
         Returns:
             Tool result
         """
+        # Extract server name from tool name (e.g., "google-calendar.list_events" -> "google-calendar")
+        server_name = tool_name.split(".", 1)[0]
+        
+        # Initialize server if needed (this will discover tools)
+        if server_name not in self.sessions:
+            await self._start_server(server_name)
+        
+        # Now check if tool exists after server initialization
         if tool_name not in self.available_tools:
             raise ValueError(
                 f"Tool {tool_name} not found. Available tools: {list(self.available_tools.keys())}"
             )
 
         tool_info = self.available_tools[tool_name]
-        server_name = tool_info["server"]
-
-        if server_name not in self.sessions:
-            await self._start_server(server_name)
 
         logger.info(f"Calling tool: {tool_name} with args: {arguments}")
 

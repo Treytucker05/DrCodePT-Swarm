@@ -219,10 +219,14 @@ class ReActPlanner(Planner):
             - Add preconditions and postconditions when useful (short, checkable).
             - tool_args must be a list of {{"key":"...","value":"..."}} pairs (values as strings; encode JSON if needed).
             - If the last step already succeeded, do NOT repeat the same tool + args. Move forward (verify or finish).
+            - Empty Results: If a listing or search tool returns an empty result (e.g., [], "No results found"), treat this as a definitive answer. Do NOT retry the same query. Use tool_name="finish" to report the result to the user.
             - For file_write: content MUST be a string. If writing JSON, use json.dumps(...) or a literal like "[]".
             - If the task asks to search/retrieve memory, you MUST call memory_search after memory_store.
             - If the task asks to write retrieved results to a file, you MUST include a file_write step with the actual content.
             - If unsafe_mode is false, avoid shell_exec unless necessary; prefer file tools.
+            - PROACTIVE AUTONOMY: If you are missing information (like timezone, location, or user preferences), use system_info or memory_search to find it before using human_ask.
+            - TOOL HIERARCHY: If a direct tool is available (e.g., list_calendar_events, list_all_tasks, web_search), use it. Do NOT use desktop or browser automation (screenshots/clicking) for tasks that can be solved with direct API tools.
+            - GOOGLE CALENDAR/TASKS AUTHORIZATION: If the calendar/tasks tools are available and credentials are configured, use them immediately for calendar/tasks requests. If a tool returns an auth error, ask the user to run setup_google_calendar.py (don't claim access you don't have).
             - IMPORTANT: tool_name must match exactly one of the available tools listed below.
 
             Available tools (name/description/schema):

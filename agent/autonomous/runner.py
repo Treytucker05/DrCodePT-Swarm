@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from agent.llm.base import LLMClient
 from agent.llm import schemas as llm_schemas
+from agent.llm.codex_cli_client import CodexCliAuthError
 
 from .config import AgentConfig, PlannerConfig, RunContext, RunnerConfig
 from agent.config.profile import RunUsage
@@ -41,6 +42,7 @@ from .tools.registry import ToolRegistry
 from .trace import JsonlTracer
 from agent.autonomous.retry_utils import LLM_RETRY_CONFIG, TOOL_RETRY_CONFIG, retry_with_backoff
 from agent.autonomous.monitoring import ResourceMonitor
+from time import perf_counter
 
 logger = logging.getLogger(__name__)
 
@@ -114,8 +116,8 @@ def _sanitize_relpath(value: str) -> Optional[str]:
 
 def _parse_read_or_create(task: str) -> Optional[Tuple[str, str, str]]:
     pattern = re.compile(
-        r"read\s+[\"'](?P<src>[^\"']+)[\"'].*?"
-        r"if it does not exist,\s*create it with (?:the )?text\s+[\"'](?P<content>[^\"']*)[\"'].*?"
+        r"(?:read|check)\s+[\"'](?P<src>[^\"']+)[\"'].*?"
+        r"if (?:it|file) does not exist,\s*(?:create|make) it with (?:the )?text\s+[\"'](?P<content>[^\"']*)[\"'].*?"
         r"write (?:its\s+)?contents to\s+[\"'](?P<dest>[^\"']+)[\"']",
         re.IGNORECASE | re.DOTALL,
     )
@@ -153,7 +155,7 @@ def _parse_project_bootstrap(task: str) -> Optional[Tuple[str, str, str, str, st
 
 def _parse_python_math(task: str) -> Optional[Tuple[str, str]]:
     pattern = re.compile(
-        r"use python to compute\s+(?P<expr>[^\.]+?)\s+and write the result to\s+[\"'](?P<dest>[^\"']+)[\"']",
+        r"use python to (?:compute|calculate|solve)\s+(?P<expr>[^\.]+?)\s+and (?:write|save) (?:the )?result to\s+[\"'](?P<dest>[^\"']+)[\"']",
         re.IGNORECASE | re.DOTALL,
     )
     match = pattern.search(task or "")
@@ -347,6 +349,25 @@ class AgentRunner:
             ))
         else:
             self.thrash_guard = None
+
+    def _log_perf(self, category: str, metric: str, duration: float, metadata: Dict[str, Any] = None) -> None:
+        """Log performance metric to performance.log."""
+        if not self.run_dir:
+            return
+        
+        try:
+            log_path = self.run_dir / "performance.log"
+            entry = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "cat": category,
+                "metric": metric,
+                "dur_ms": round(duration * 1000, 2),
+                "meta": metadata or {}
+            }
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
+        except Exception:
+            pass  # Don't crash on logging
 
     def _try_fast_path(
         self,
@@ -982,6 +1003,11 @@ class AgentRunner:
         memory_store = self.memory_store or self._open_default_memory_store()
         self._active_memory_store = memory_store
         tools = self.tools or build_default_tool_registry(self.agent_cfg, run_dir, memory_store=memory_store)
+        
+        # Debug: list all registered tools
+        all_tool_names = [spec.name for spec in tools.list_tools()]
+        logger.debug(f"[DEBUG] Registered tools: {', '.join(all_tool_names)}")
+        
         tool_summary = ""
         if self.cfg.llm_heartbeat_seconds:
             tool_summary = self._describe_tools_for_humans(tools)
@@ -1364,13 +1390,15 @@ class AgentRunner:
                         )
 
                 if preempted_tool_result is None and self.agent_cfg.pre_mortem_enabled:
-                    prem = self._call_llm_with_retry(
-                        tracer=tracer,
-                        where="premortem",
-                        fn=lambda: reflector.pre_mortem(task=task, step=step, observation=state.observations[-1]),
-                        allow_none=True,
-                    )
-                    tracer.log({"type": "premortem", "step_id": step.id, "data": prem})
+                    # Only do pre-mortem if NOT in fast profile to save latency
+                    if self.cfg.profile != "fast":
+                        prem = self._call_llm_with_retry(
+                            tracer=tracer,
+                            where="premortem",
+                            fn=lambda: reflector.pre_mortem(task=task, step=step, observation=state.observations[-1]),
+                            allow_none=True,
+                        )
+                        tracer.log({"type": "premortem", "step_id": step.id, "data": prem})
 
                 if preempted_tool_result is None:
                     # Preconditions check (if provided)
@@ -1588,14 +1616,38 @@ class AgentRunner:
                         started_monotonic=start,
                     )
 
-                reflection = self._call_llm_with_retry(
-                    tracer=tracer,
-                    where="reflection",
-                    fn=lambda: self._with_reasoning_effort(
-                        self._current_reasoning_effort,
-                        lambda: reflector.reflect(task=task, step=step, tool_result=tool_result, observation=obs),
-                    ),
-                )
+                try:
+                    # LATENCY OPTIMIZATION: Skip reflection in fast profile if tool succeeded
+                    if self.cfg.profile == "fast" and tool_result.success:
+                        reflection = Reflection(
+                            status="success",
+                            explanation_short="Fast profile: skipping reflection on success"
+                        )
+                    else:
+                        reflection = self._call_llm_with_retry(
+                            tracer=tracer,
+                            where="reflection",
+                            fn=lambda: self._with_reasoning_effort(
+                                self._current_reasoning_effort,
+                                lambda: reflector.reflect(task=task, step=step, tool_result=tool_result, observation=obs),
+                            ),
+                        )
+                except CodexCliAuthError as exc:
+                     return self._stop(
+                        tracer=tracer,
+                        memory_store=memory_store,
+                        success=False,
+                        reason="authentication_failed",
+                        steps=steps_executed + 1,
+                        run_id=run_id,
+                        llm_stats=tracked_llm,
+                        task=task,
+                        state=state,
+                        run_dir=run_dir,
+                        started_at=started_at,
+                        started_monotonic=start,
+                        error_data={"error": str(exc)},
+                    )
                 if reflection is None:
                     return self._stop(
                         tracer=tracer,
@@ -2100,7 +2152,14 @@ class AgentRunner:
                 _status_print(f"[TOOL] {tool_name} {self._format_tool_args(tool_args)}")
             if isinstance(getattr(self, "_stats", None), dict):
                 self._stats["tool_calls"] = self._stats.get("tool_calls", 0) + 1
-            result = tools.call(tool_name, tool_args, ctx)
+            
+            t0 = perf_counter()
+            try:
+                result = tools.call(tool_name, tool_args, ctx)
+            finally:
+                dur = perf_counter() - t0
+                self._log_perf("tool", tool_name, dur, {"success": result.success if 'result' in locals() else False})
+
             last = result
             if result.success or not result.retryable:
                 return result
@@ -2312,6 +2371,10 @@ class AgentRunner:
             parts.append("browser automation")
         if {"desktop", "desktop_som_snapshot", "desktop_click"} & names:
             parts.append("desktop automation")
+        if {"google-calendar.list_events", "list_calendar_events"} & names:
+            parts.append("calendar")
+        if {"google-tasks.list_tasks", "list_all_tasks"} & names:
+            parts.append("tasks")
         if "shell_exec" in names:
             parts.append("shell")
         return ", ".join(parts) if parts else "basic tools"
@@ -2432,14 +2495,21 @@ class AgentRunner:
         max_delay = max(self.cfg.llm_retry_backoff_seconds, self.cfg.llm_retry_backoff_seconds * 4)
         backoff_factor = LLM_RETRY_CONFIG.backoff_factor
         try:
-            return retry_with_backoff(
-                _attempt,
-                max_attempts=max_attempts,
-                initial_delay=initial_delay,
-                max_delay=max_delay,
-                backoff_factor=backoff_factor,
-            )
+            t0 = perf_counter()
+            try:
+                return retry_with_backoff(
+                    _attempt,
+                    max_attempts=max_attempts,
+                    initial_delay=initial_delay,
+                    max_delay=max_delay,
+                    backoff_factor=backoff_factor,
+                )
+            finally:
+                dur = perf_counter() - t0
+                self._log_perf("llm", where, dur, {"label": label})
         except Exception as exc:
+            if isinstance(exc, CodexCliAuthError):
+                raise exc
             last_exc = last_exc or LLMError(f"{where} failed: {exc}", original_exception=exc)
             if not allow_none:
                 tracer.log(

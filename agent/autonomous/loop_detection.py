@@ -26,7 +26,35 @@ class LoopDetector:
     - Same tool executed multiple times
     - With the same arguments
     - Producing the same output
+
+    Read-only tools are exempt from loop detection since getting
+    the same result multiple times is expected behavior for queries.
     """
+
+    # Read-only tools that should be exempt from loop detection
+    # These tools query data without side effects, so identical results are valid
+    EXEMPT_TOOLS = {
+        # Calendar & Tasks
+        "list_calendar_events",
+        "get_free_time",
+        "check_calendar_conflicts",
+        "list_all_tasks",
+        "search_tasks",
+        "get_task_details",
+        # File system reads
+        "file_read",
+        "list_dir",
+        "glob_paths",
+        "file_search",
+        # Web reads
+        "web_fetch",
+        "web_search",
+        # System info
+        "system_info",
+        "clipboard_get",
+        # Memory reads
+        "memory_search",
+    }
 
     def __init__(self, max_repeats: int = 3):
         """Initialize loop detector.
@@ -53,6 +81,12 @@ class LoopDetector:
         Returns:
             Tuple of (is_loop, message)
         """
+        # Skip loop detection for read-only tools
+        # These tools query data without side effects, so identical results are expected
+        if tool_name in self.EXEMPT_TOOLS:
+            logger.debug(f"Loop detection skipped for read-only tool: {tool_name}")
+            return False, None
+
         # Create key from tool name and args
         args_hash = _hash_dict(args)
         output_hash = _hash_str(output)
@@ -96,6 +130,11 @@ class LoopDetector:
         This is a convenient adapter for callers that already hash args/output. It behaves like `check`
         but expects pre-computed hashes and returns a boolean.
         """
+        # Skip loop detection for read-only tools
+        if tool_name in self.EXEMPT_TOOLS:
+            logger.debug(f"Loop detection skipped for read-only tool: {tool_name}")
+            return False
+
         key = f"{tool_name}:{args_hash}"
         if key not in self.history:
             self.history[key] = []

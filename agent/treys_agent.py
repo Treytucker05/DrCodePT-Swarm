@@ -1392,16 +1392,26 @@ def _prompt_startup_credentials() -> None:
         save_memory(memory)
 
 
-async def startup() -> None:
-    """Initialize MCP servers and helpers."""
+async def _lazy_init_mcp() -> None:
+    """Lazy initialization of MCP servers (only when needed)."""
     global _mcp_client, _calendar_helper, _tasks_helper
+    if _mcp_client is not None:
+        return  # Already initialized
+    
     _mcp_client = MCPClient()
-    await _mcp_client.initialize(
-        ["google-calendar", "google-tasks", "filesystem", "github"]
-    )
+    # Initialize MCP servers lazily (on first use) instead of at startup
+    # This improves boot time - servers will initialize when first accessed
     _calendar_helper = CalendarHelper(_mcp_client)
     _tasks_helper = TasksHelper(_mcp_client)
-    logger.info("Google Calendar and Tasks integration initialized")
+    logger.debug("MCP client created (lazy initialization)")
+
+
+async def startup() -> None:
+    """Initialize MCP servers and helpers (deprecated - now lazy)."""
+    # MCP initialization is now lazy - servers start when first accessed
+    # This significantly improves startup time
+    await _lazy_init_mcp()
+    logger.info("MCP client ready (servers will initialize on first use)")
 
 
 async def shutdown() -> None:
@@ -1655,10 +1665,8 @@ def main() -> None:
     if default_action_mode not in {"execute", "team", "auto", "swarm", "plan", "mail", "research", "collab", "think"}:
         default_action_mode = "execute"
     _prompt_startup_credentials()
-    try:
-        asyncio.run(startup())
-    except Exception as exc:
-        logger.warning("Failed to initialize MCP integrations: %s", exc)
+    # MCP initialization is now lazy - no blocking startup
+    # Servers will initialize when first accessed (calendar/tasks/etc)
     atexit.register(_shutdown_handler)
 
     chat_history: list[tuple[str, str]] = []

@@ -1046,7 +1046,19 @@ def system_info(ctx: RunContext, args: SystemInfoArgs) -> ToolResult:
         "python": sys.version,
         "cwd": str(Path.cwd()),
         "user": os.getenv("USERNAME") or os.getenv("USER") or "",
+        "timezone": "UTC"
     }
+    # Try to get real timezone on Windows via PowerShell
+    if platform.system() == "Windows":
+        try:
+            tz = subprocess.check_output(
+                ["powershell", "-NoLogo", "-NoProfile", "-Command", "[System.TimeZoneInfo]::Local.Id"],
+                text=True,
+            ).strip()
+            if tz:
+                info["timezone"] = tz
+        except Exception:
+            pass
     return ToolResult(success=True, output=info)
 
 
@@ -2062,27 +2074,25 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
         pass
 
     try:
-        from agent.mcp.client import MCPClient
         from agent.integrations.calendar_helper import CalendarHelper
         from agent.integrations.tasks_helper import TasksHelper
-
-        mcp_client = MCPClient()
-        try:
-            asyncio.run(mcp_client.initialize(["google-calendar", "google-tasks"]))
-        except RuntimeError:
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    loop.create_task(
-                        mcp_client.initialize(["google-calendar", "google-tasks"])
-                    )
-            except Exception:
-                pass
-        calendar_helper = CalendarHelper(mcp_client)
-        tasks_helper = TasksHelper(mcp_client)
+        
+        calendar_helper = CalendarHelper()
+        tasks_helper = TasksHelper()
         register_calendar_tasks_tools(reg, calendar_helper, tasks_helper)
     except Exception as exc:
-        logger.warning("Calendar/Tasks tools unavailable: %s", exc)
+        logger.warning(f"Direct Calendar/Tasks tools registration FAILED: {exc}")
+
+    try:
+        from agent.mcp.client import MCPClient
+        mcp_client = MCPClient()
+        # Initialize other MCP servers if needed, but not calendar/tasks (we have direct tools)
+        try:
+            asyncio.run(mcp_client.initialize([]))
+        except RuntimeError:
+            pass
+    except Exception as exc:
+        logger.debug(f"[DEBUG] MCP client initialization skipped: {exc}")
 
     if cfg.enable_web_gui:
         reg.register(

@@ -154,6 +154,15 @@ class SqliteMemoryStore:
         except Exception:
             pass
 
+    def _ensure_connection(self) -> None:
+        """Ensure database connection is alive, reconnect if needed."""
+        try:
+            self._conn.execute("SELECT 1")
+        except (sqlite3.ProgrammingError, sqlite3.OperationalError):
+            # Connection is closed or broken, reconnect
+            self._conn = sqlite3.connect(str(self.path))
+            self._conn.row_factory = sqlite3.Row
+
     def _init_schema(self) -> None:
         cur = self._conn.cursor()
         cur.execute(
@@ -306,6 +315,7 @@ class SqliteMemoryStore:
         key: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> int:
+        self._ensure_connection()
         now = time.time()
         meta_json = json.dumps(metadata or {}, ensure_ascii=False)
         content_hash = _sha256(content.strip())
