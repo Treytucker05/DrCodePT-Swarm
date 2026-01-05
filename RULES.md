@@ -20,7 +20,7 @@ python -m pytest -q
 ```
 
 2) Ruff lint
-Run on changed files or scoped targets to avoid legacy debt:
+Ruff is informational until baseline cleanup is done. Gating applies only to changed files (developer-run).
 ```powershell
 python -m ruff check <changed files>
 # or

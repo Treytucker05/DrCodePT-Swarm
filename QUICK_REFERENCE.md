@@ -13,7 +13,7 @@ python -m pytest -q
 python -m ruff check <targets>
 python -X utf8 -m mypy . --show-error-codes
 ```
-- Ruff should pass on the scoped targets you intend to change (typically `agent` and `tests` or specific files).
+- Ruff is informational until baseline cleanup is done. Gating applies only to changed files (developer-run).
 - Mypy runs in non-blocking mode (see `mypy.ini`), so it provides signal but does not gate merges.
 
 ## Core commands (known to work)
