@@ -7,6 +7,15 @@ Source of truth for agent behavior: `AGENT_BEHAVIOR.md`
 launchers\TREYS_AGENT.bat
 ```
 
+## Development Checks
+```powershell
+python -m pytest -q
+python -m ruff check <targets>
+python -X utf8 -m mypy . --show-error-codes
+```
+- Ruff should pass on the scoped targets you intend to change (typically `agent` and `tests` or specific files).
+- Mypy runs in non-blocking mode (see `mypy.ini`), so it provides signal but does not gate merges.
+
 ## Core commands (known to work)
 | Command | Description | Example |
 |---|---|---|
