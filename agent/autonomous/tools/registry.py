@@ -16,6 +16,7 @@ from .calendar_tasks_tools import (
     GetTaskDetailsArgs,
     GetFreeTimeArgs,
     ListAllTasksArgs,
+    ListTaskListsArgs,
     ListCalendarEventsArgs,
     SearchTasksArgs,
     UpdateCalendarEventArgs,
@@ -74,18 +75,38 @@ class ToolRegistry:
         self._tools[spec.name] = spec
 
     def list_tools(self) -> List[ToolSpec]:
-        return [self._tools[k] for k in sorted(self._tools.keys())]
+        from agent.integrations.manager import get_integration_manager
+
+        manager = get_integration_manager()
+        return [
+            self._tools[k]
+            for k in sorted(self._tools.keys())
+            if manager.should_expose_tool(k)
+        ]
 
     def get(self, name: str) -> Optional[ToolSpec]:
         return self._tools.get(name)
 
     def get_tool_spec(self, name: str) -> Optional[ToolSpec]:
+        from agent.integrations.manager import get_integration_manager
+
+        manager = get_integration_manager()
+        if not manager.should_expose_tool(name):
+            return None
         return self._tools.get(name)
 
     def has_tool(self, name: str) -> bool:
-        return name in self._tools
+        from agent.integrations.manager import get_integration_manager
+
+        manager = get_integration_manager()
+        return name in self._tools and manager.should_expose_tool(name)
 
     def tool_args_schema(self, name: str) -> Optional[Dict[str, Any]]:
+        from agent.integrations.manager import get_integration_manager
+
+        manager = get_integration_manager()
+        if not manager.should_expose_tool(name):
+            return None
         spec = self._tools.get(name)
         if spec is None:
             return None
@@ -150,6 +171,24 @@ class ToolRegistry:
         spec = self._tools.get(name)
         if spec is None:
             return ToolResult(success=False, error=f"Unknown tool: {name}")
+        from agent.integrations.manager import get_integration_manager
+
+        manager = get_integration_manager()
+        allowed, auto_enabled = manager.ensure_enabled_for_tool(
+            name, reason=f"tool call: {name}"
+        )
+        if not allowed:
+            return ToolResult(
+                success=False,
+                error="integration_disabled",
+                metadata={
+                    "tool": name,
+                    "integration": manager.integration_for_tool(name),
+                    "message": "Integration disabled. Enable it via /integrations.",
+                },
+            )
+        if auto_enabled:
+            logger.info("Auto-enabled integration for tool: %s", name)
         if spec.dangerous and not self.allow_interactive_tools:
             logger.warning(
                 "Interactive tool blocked in non-interactive mode: %s",
@@ -222,16 +261,30 @@ class ToolRegistry:
 
 def register_calendar_tasks_tools(
     registry: ToolRegistry,
-    calendar_helper: CalendarHelper,
-    tasks_helper: TasksHelper,
+    calendar_helper: Optional[CalendarHelper] = None,
+    tasks_helper: Optional[TasksHelper] = None,
+    *,
+    tools_provider=None,
 ) -> None:
-    tools = CalendarTasksTools(calendar_helper, tasks_helper)
+    def _get_tools() -> CalendarTasksTools:
+        if tools_provider is not None:
+            return tools_provider()
+        if calendar_helper is None or tasks_helper is None:
+            raise RuntimeError("calendar_helper and tasks_helper are required")
+        return CalendarTasksTools(calendar_helper, tasks_helper)
+
+    def _lazy(method_name: str):
+        def _fn(ctx: RunContext, args: Any) -> ToolResult:
+            tools = _get_tools()
+            return getattr(tools, method_name)(ctx, args)
+
+        return _fn
 
     registry.register(
         ToolSpec(
             name="get_free_time",
             args_model=GetFreeTimeArgs,
-            fn=tools.get_free_time,
+            fn=_lazy("get_free_time"),
             description="Find free time slots in your calendar for scheduling",
         )
     )
@@ -239,7 +292,7 @@ def register_calendar_tasks_tools(
         ToolSpec(
             name="check_calendar_conflicts",
             args_model=CheckConflictsArgs,
-            fn=tools.check_calendar_conflicts,
+            fn=_lazy("check_calendar_conflicts"),
             description="Check if a proposed event conflicts with existing calendar events",
         )
     )
@@ -247,7 +300,7 @@ def register_calendar_tasks_tools(
         ToolSpec(
             name="create_calendar_event",
             args_model=CreateCalendarEventArgs,
-            fn=tools.create_calendar_event,
+            fn=_lazy("create_calendar_event"),
             description="Create a new calendar event",
         )
     )
@@ -255,7 +308,7 @@ def register_calendar_tasks_tools(
         ToolSpec(
             name="list_calendar_events",
             args_model=ListCalendarEventsArgs,
-            fn=tools.list_calendar_events,
+            fn=_lazy("list_calendar_events"),
             description="List calendar events in a time range",
         )
     )
@@ -263,7 +316,7 @@ def register_calendar_tasks_tools(
         ToolSpec(
             name="update_calendar_event",
             args_model=UpdateCalendarEventArgs,
-            fn=tools.update_calendar_event,
+            fn=_lazy("update_calendar_event"),
             description="Update an existing calendar event",
         )
     )
@@ -271,23 +324,31 @@ def register_calendar_tasks_tools(
         ToolSpec(
             name="delete_calendar_event",
             args_model=DeleteCalendarEventArgs,
-            fn=tools.delete_calendar_event,
+            fn=_lazy("delete_calendar_event"),
             description="Delete a calendar event",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="list_task_lists",
+            args_model=ListTaskListsArgs,
+            fn=_lazy("list_task_lists"),
+            description="List all Google Tasks task lists",
         )
     )
     registry.register(
         ToolSpec(
             name="list_all_tasks",
             args_model=ListAllTasksArgs,
-            fn=tools.list_all_tasks,
-            description="List all tasks",
+            fn=_lazy("list_all_tasks"),
+            description="List tasks across all task lists (or a specific list)",
         )
     )
     registry.register(
         ToolSpec(
             name="create_task",
             args_model=CreateTaskArgs,
-            fn=tools.create_task,
+            fn=_lazy("create_task"),
             description="Create a new task",
         )
     )
@@ -295,7 +356,7 @@ def register_calendar_tasks_tools(
         ToolSpec(
             name="complete_task",
             args_model=CompleteTaskArgs,
-            fn=tools.complete_task,
+            fn=_lazy("complete_task"),
             description="Mark a task as complete",
         )
     )
@@ -303,7 +364,7 @@ def register_calendar_tasks_tools(
         ToolSpec(
             name="search_tasks",
             args_model=SearchTasksArgs,
-            fn=tools.search_tasks,
+            fn=_lazy("search_tasks"),
             description="Search for tasks by title or notes",
         )
     )
@@ -311,7 +372,7 @@ def register_calendar_tasks_tools(
         ToolSpec(
             name="update_task",
             args_model=UpdateTaskArgs,
-            fn=tools.update_task,
+            fn=_lazy("update_task"),
             description="Update an existing task",
         )
     )
@@ -319,7 +380,7 @@ def register_calendar_tasks_tools(
         ToolSpec(
             name="delete_task",
             args_model=DeleteTaskArgs,
-            fn=tools.delete_task,
+            fn=_lazy("delete_task"),
             description="Delete a task",
         )
     )
@@ -327,7 +388,7 @@ def register_calendar_tasks_tools(
         ToolSpec(
             name="get_task_details",
             args_model=GetTaskDetailsArgs,
-            fn=tools.get_task_details,
+            fn=_lazy("get_task_details"),
             description="Get details for a specific task",
         )
     )

@@ -2,6 +2,8 @@ import os
 import sys
 import logging
 import json
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, Any, Optional
 from fastapi import FastAPI, HTTPException
@@ -27,6 +29,9 @@ logging.basicConfig(
 logger = logging.getLogger("llm_server")
 
 app = FastAPI(title="DrCodePT Persistent LLM Server")
+
+DEFAULT_WORKERS = int(os.getenv("LLM_SERVER_WORKERS", "2"))
+DEFAULT_CONCURRENCY = int(os.getenv("LLM_SERVER_MAX_CONCURRENT", str(DEFAULT_WORKERS)))
 
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
@@ -195,22 +200,58 @@ class CodexHandler:
 
 handler = CodexHandler()
 
+def _get_executor() -> ThreadPoolExecutor:
+    executor = getattr(app.state, "executor", None)
+    if executor is None:
+        executor = ThreadPoolExecutor(max_workers=DEFAULT_WORKERS)
+        app.state.executor = executor
+    return executor
+
+def _get_semaphore() -> asyncio.Semaphore:
+    semaphore = getattr(app.state, "semaphore", None)
+    if semaphore is None:
+        semaphore = asyncio.Semaphore(DEFAULT_CONCURRENCY)
+        app.state.semaphore = semaphore
+    return semaphore
+
+async def _run_blocking(func, *args):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_get_executor(), lambda: func(*args))
+
 @app.on_event("startup")
 async def startup_event():
     try:
+        app.state.executor = ThreadPoolExecutor(max_workers=DEFAULT_WORKERS)
+        app.state.semaphore = asyncio.Semaphore(DEFAULT_CONCURRENCY)
         handler.startup_check()
     except Exception as e:
         logger.critical(f"Server startup failed: {e}")
         # We don't exit to allow 'health' checks to report failure?
         # But for an agent, maybe better to crash.
 
+@app.on_event("shutdown")
+async def shutdown_event():
+    executor = getattr(app.state, "executor", None)
+    if executor is not None:
+        executor.shutdown(wait=False)
+
 @app.post("/complete_json")
-def complete_json(req: CompletionRequest):
-    return handler.execute(req)
+async def complete_json(req: CompletionRequest):
+    sem = _get_semaphore()
+    await sem.acquire()
+    try:
+        return await _run_blocking(handler.execute, req)
+    finally:
+        sem.release()
 
 @app.post("/chat")
-def chat(req: CompletionRequest):
-    return handler.chat(req)
+async def chat(req: CompletionRequest):
+    sem = _get_semaphore()
+    await sem.acquire()
+    try:
+        return await _run_blocking(handler.chat, req)
+    finally:
+        sem.release()
 
 @app.get("/health")
 def health():

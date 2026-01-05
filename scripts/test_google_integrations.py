@@ -8,9 +8,13 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CREDENTIALS_PATH = REPO_ROOT / "credentials" / "gcp-oauth-credentials.json"
 MCP_CONFIG_PATH = REPO_ROOT / "agent" / "mcp" / "servers.json"
+
+pytestmark = pytest.mark.integration
 
 
 def check_credentials():

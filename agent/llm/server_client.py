@@ -8,6 +8,7 @@ from agent.llm.base import LLMClient
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+_SESSION = requests.Session()
 
 @dataclass(frozen=True)
 class ServerClient(LLMClient):
@@ -71,7 +72,7 @@ class ServerClient(LLMClient):
         }
         
         try:
-            resp = requests.post(url, json=payload, timeout=(timeout or self.timeout_seconds) + 5)
+            resp = _SESSION.post(url, json=payload, timeout=(timeout or self.timeout_seconds) + 5)
             resp.raise_for_status()
             data = resp.json()
             if "error" in data:
@@ -98,7 +99,7 @@ class ServerClient(LLMClient):
         }
         
         try:
-            resp = requests.post(url, json=payload, timeout=(timeout or self.timeout_seconds) + 5)
+            resp = _SESSION.post(url, json=payload, timeout=(timeout or self.timeout_seconds) + 5)
             resp.raise_for_status()
             data = resp.json()
             if "error" in data:

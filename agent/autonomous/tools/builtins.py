@@ -2026,6 +2026,19 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
             description="Search long-term memory (keyword + recency)",
         )
     )
+    try:
+        from .self_review import SelfReviewArgs, self_review
+
+        reg.register(
+            ToolSpec(
+                name="self_review",
+                args_model=SelfReviewArgs,
+                fn=self_review,
+                description="Run a self-review (tests + report) for this repo",
+            )
+        )
+    except Exception as exc:
+        logger.warning(f"Self-review tool registration FAILED: {exc}")
     reg.register(
         ToolSpec(
             name="mcp_list_tools",
@@ -2074,25 +2087,60 @@ def build_default_tool_registry(cfg: AgentConfig, run_dir: Path, *, memory_store
         pass
 
     try:
-        from agent.integrations.calendar_helper import CalendarHelper
-        from agent.integrations.tasks_helper import TasksHelper
-        
-        calendar_helper = CalendarHelper()
-        tasks_helper = TasksHelper()
-        register_calendar_tasks_tools(reg, calendar_helper, tasks_helper)
+        def _lazy_calendar_tasks_tools():
+            from agent.autonomous.tools.calendar_tasks_tools import CalendarTasksTools
+            from agent.integrations.calendar_helper import CalendarHelper
+            from agent.integrations.tasks_helper import TasksHelper
+
+            # Instantiate on first use to keep startup fast.
+            return CalendarTasksTools(CalendarHelper(), TasksHelper())
+
+        register_calendar_tasks_tools(reg, tools_provider=_lazy_calendar_tasks_tools)
     except Exception as exc:
         logger.warning(f"Direct Calendar/Tasks tools registration FAILED: {exc}")
 
     try:
-        from agent.mcp.client import MCPClient
-        mcp_client = MCPClient()
-        # Initialize other MCP servers if needed, but not calendar/tasks (we have direct tools)
-        try:
-            asyncio.run(mcp_client.initialize([]))
-        except RuntimeError:
-            pass
+        from .portal_tools import (
+            BlackboardSnapshotArgs,
+            CoachRxSnapshotArgs,
+            blackboard_snapshot,
+            coachrx_snapshot,
+        )
+
+        reg.register(
+            ToolSpec(
+                name="blackboard_snapshot",
+                args_model=BlackboardSnapshotArgs,
+                fn=blackboard_snapshot,
+                description="Log in to Blackboard and capture a snapshot/extract of the selected section",
+                dangerous=True,
+            )
+        )
+        reg.register(
+            ToolSpec(
+                name="coachrx_snapshot",
+                args_model=CoachRxSnapshotArgs,
+                fn=coachrx_snapshot,
+                description="Log in to CoachRX and capture a snapshot/extract of the selected section",
+                dangerous=True,
+            )
+        )
     except Exception as exc:
-        logger.debug(f"[DEBUG] MCP client initialization skipped: {exc}")
+        logger.warning(f"Portal tools registration FAILED: {exc}")
+
+    from agent.integrations.manager import get_integration_manager
+    integration_manager = get_integration_manager()
+    if not os.getenv("TREYS_AGENT_DISABLE_MCP") and integration_manager.should_load_mcp():
+        try:
+            from agent.mcp.client import MCPClient
+            mcp_client = MCPClient()
+            # Initialize other MCP servers if needed, but not calendar/tasks (we have direct tools)
+            try:
+                asyncio.run(mcp_client.initialize([]))
+            except RuntimeError:
+                pass
+        except Exception as exc:
+            logger.debug(f"[DEBUG] MCP client initialization skipped: {exc}")
 
     if cfg.enable_web_gui:
         reg.register(

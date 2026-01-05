@@ -7,6 +7,8 @@ Test script to verify:
 import sys
 from pathlib import Path
 
+import pytest
+
 # Add agent to path
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -14,6 +16,8 @@ from agent.autonomous.config import AgentConfig, PlannerConfig, RunnerConfig
 from agent.autonomous.runner import AgentRunner
 from agent.autonomous.memory.sqlite_store import SqliteMemoryStore
 from agent.llm.codex_cli_client import CodexCliClient
+
+pytestmark = pytest.mark.integration
 
 def test_memory_persistence():
     """Test that memory persists across AgentRunner instances."""

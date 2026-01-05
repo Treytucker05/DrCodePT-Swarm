@@ -78,8 +78,12 @@ class DeleteCalendarEventArgs(BaseModel):
     calendar_id: str = "primary"
 
 
+class ListTaskListsArgs(BaseModel):
+    max_results: int = 100
+
+
 class ListAllTasksArgs(BaseModel):
-    task_list_id: str = "@default"
+    task_list_id: str = "@all"
 
 
 class CreateTaskArgs(BaseModel):
@@ -211,6 +215,13 @@ class CalendarTasksTools:
         except Exception as exc:
             return ToolResult(success=False, error=str(exc))
 
+    def list_task_lists(self, ctx: RunContext, args: ListTaskListsArgs) -> ToolResult:
+        try:
+            task_lists = _run_async(self.tasks.list_task_lists(max_results=args.max_results))
+            return ToolResult(success=True, output={"task_lists": task_lists, "count": len(task_lists)})
+        except Exception as exc:
+            return ToolResult(success=False, error=str(exc))
+
     def list_all_tasks(self, ctx: RunContext, args: ListAllTasksArgs) -> ToolResult:
         try:
             tasks = _run_async(self.tasks.list_all_tasks(tasklist_id=args.task_list_id))
@@ -315,7 +326,14 @@ class CalendarTasksTools:
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
-    async def list_all_tasks_async(self, task_list_id: str = "@default") -> Dict[str, Any]:
+    async def list_task_lists_async(self, max_results: int = 100) -> Dict[str, Any]:
+        try:
+            task_lists = await self.tasks.list_task_lists(max_results=max_results)
+            return {"success": True, "output": {"task_lists": task_lists, "count": len(task_lists)}}
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    async def list_all_tasks_async(self, task_list_id: str = "@all") -> Dict[str, Any]:
         try:
             tasks = await self.tasks.list_all_tasks(tasklist_id=task_list_id)
             return {"success": True, "output": {"tasks": tasks, "count": len(tasks)}}

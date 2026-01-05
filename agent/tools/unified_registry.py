@@ -9,6 +9,7 @@ This is the central registry that the agent loop uses to:
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Type
 
@@ -221,7 +222,13 @@ class UnifiedRegistry:
             logger.info(f"Registered {extra_tools} additional tools")
 
         # Load MCP tools
-        if load_mcp:
+        from agent.integrations.manager import get_integration_manager
+        integration_manager = get_integration_manager()
+        if (
+            load_mcp
+            and not os.getenv("TREYS_AGENT_DISABLE_MCP")
+            and integration_manager.should_load_mcp()
+        ):
             try:
                 from .mcp_proxy import get_mcp_proxy
 
@@ -250,15 +257,23 @@ class UnifiedRegistry:
         if not self._initialized:
             self.initialize()
 
+        from agent.integrations.manager import get_integration_manager
+        integration_manager = get_integration_manager()
+
         specs: List[ToolSpec] = []
 
         # Add local tools
         for name, local_spec in self._local_tools.items():
-            specs.append(local_spec.to_tool_spec())
+            if integration_manager.should_expose_tool(name):
+                specs.append(local_spec.to_tool_spec())
 
         # Add MCP tools
         if self._mcp_proxy:
-            specs.extend(self._mcp_proxy.get_tool_specs())
+            specs.extend(
+                spec
+                for spec in self._mcp_proxy.get_tool_specs()
+                if integration_manager.should_expose_tool(spec.name)
+            )
 
         return specs
 
@@ -267,10 +282,20 @@ class UnifiedRegistry:
         if not self._initialized:
             self.initialize()
 
-        names = list(self._local_tools.keys())
+        from agent.integrations.manager import get_integration_manager
+        integration_manager = get_integration_manager()
+
+        names = [
+            name for name in self._local_tools.keys()
+            if integration_manager.should_expose_tool(name)
+        ]
 
         if self._mcp_proxy:
-            names.extend(self._mcp_proxy.list_tools())
+            names.extend(
+                name
+                for name in self._mcp_proxy.list_tools()
+                if integration_manager.should_expose_tool(name)
+            )
 
         return sorted(set(names))
 
@@ -278,6 +303,11 @@ class UnifiedRegistry:
         """Check if a tool exists."""
         if not self._initialized:
             self.initialize()
+
+        from agent.integrations.manager import get_integration_manager
+        integration_manager = get_integration_manager()
+        if not integration_manager.should_expose_tool(name):
+            return False
 
         # Check local tools
         if name in self._local_tools:
@@ -293,6 +323,11 @@ class UnifiedRegistry:
         """Get the spec for a specific tool."""
         if not self._initialized:
             self.initialize()
+
+        from agent.integrations.manager import get_integration_manager
+        integration_manager = get_integration_manager()
+        if not integration_manager.should_expose_tool(name):
+            return None
 
         # Check local tools
         if name in self._local_tools:
@@ -319,6 +354,24 @@ class UnifiedRegistry:
         """
         if not self._initialized:
             self.initialize()
+
+        from agent.integrations.manager import get_integration_manager
+        integration_manager = get_integration_manager()
+        allowed, auto_enabled = integration_manager.ensure_enabled_for_tool(
+            name, reason=f"tool call: {name}"
+        )
+        if not allowed:
+            return ToolResult.failure(
+                "integration_disabled",
+                retryable=False,
+                metadata={
+                    "tool": name,
+                    "integration": integration_manager.integration_for_tool(name),
+                    "message": "Integration disabled. Enable it via /integrations.",
+                },
+            )
+        if auto_enabled:
+            logger.info("Auto-enabled integration for tool: %s", name)
 
         # Check if it's an MCP tool (has namespace prefix like "server.tool")
         if "." in name and self._mcp_proxy and self._mcp_proxy.has_tool(name):
@@ -375,13 +428,20 @@ class UnifiedRegistry:
         if not self._initialized:
             self.initialize()
 
+        from agent.integrations.manager import get_integration_manager
+        integration_manager = get_integration_manager()
+
         print("\n" + "=" * 60)
         print("UNIFIED TOOL REGISTRY")
         print("=" * 60)
 
-        print(f"\nLocal Tools ({len(self._local_tools)}):")
+        local_names = [
+            name for name in sorted(self._local_tools.keys())
+            if integration_manager.should_expose_tool(name)
+        ]
+        print(f"\nLocal Tools ({len(local_names)}):")
         print("-" * 40)
-        for name in sorted(self._local_tools.keys()):
+        for name in local_names:
             spec = self._local_tools[name]
             danger = " [DANGEROUS]" if spec.dangerous else ""
             print(f"  {name}{danger}")
@@ -389,7 +449,10 @@ class UnifiedRegistry:
                 print(f"    -> {spec.description[:60]}...")
 
         if self._mcp_proxy:
-            mcp_tools = self._mcp_proxy.list_tools()
+            mcp_tools = [
+                name for name in self._mcp_proxy.list_tools()
+                if integration_manager.should_expose_tool(name)
+            ]
             print(f"\nMCP Tools ({len(mcp_tools)}):")
             print("-" * 40)
 
@@ -408,7 +471,7 @@ class UnifiedRegistry:
                     print(f"    - {tool}")
 
         print("\n" + "=" * 60)
-        total = len(self._local_tools) + (len(self._mcp_proxy.list_tools()) if self._mcp_proxy else 0)
+        total = len(local_names) + (len(mcp_tools) if self._mcp_proxy else 0)
         print(f"Total: {total} tools available")
         print("=" * 60 + "\n")
 

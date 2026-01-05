@@ -1,5 +1,5 @@
 site: coachrx
-start_url: https://dashboard.coachrx.app/
+start_url: https://dashboard.coachrx.app/clients
 login_flow:
   - selector: "input[type='email'], input[name='email'], input#email"
     action: fill
@@ -23,6 +23,7 @@ login_flow:
     note: "If verification code screen appears, complete it and press Enter"
 known_urls:
   - https://dashboard.coachrx.app/
+  - https://dashboard.coachrx.app/clients
   - https://dashboard.coachrx.app/login
 working_selectors:
   dashboard: "div.dashboard, section.dashboard, main.dashboard"

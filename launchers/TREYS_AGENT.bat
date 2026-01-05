@@ -40,17 +40,7 @@ rem Codex CLI is the primary LLM backend
 rem Uses free Codex access from ChatGPT Pro subscription
 rem If you need to re-authenticate: codex logout && codex login
 
-if /I "%TREYS_AGENT_DEBUG%"=="1" (
-  echo.
-  echo [CLEANUP] Ensuring fresh environment...
-  taskkill /F /FI "WINDOWTITLE eq DrCodePT LLM Server*" /T >nul 2>&1
-  taskkill /F /IM codex.exe /T >nul 2>&1
-  
-  rem Kill anything on port 8000 (LLM Server port)
-  for /f "tokens=5" %%a in ('netstat -aon ^| findstr :8000 ^| findstr LISTENING') do (
-    taskkill /F /PID %%a >nul 2>&1
-  )
-)
+rem Cleanup disabled: do not terminate existing servers
 
 if /I "%TREYS_AGENT_DEBUG%"=="1" (
   echo [START] Launching LLM Server...

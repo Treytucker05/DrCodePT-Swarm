@@ -11,6 +11,8 @@ from agent.mcp.client import MCPClient
 from agent.integrations.calendar_helper import CalendarHelper
 from agent.integrations.tasks_helper import TasksHelper
 
+pytestmark = pytest.mark.integration
+
 
 @pytest_asyncio.fixture
 async def mcp_client():

@@ -148,6 +148,7 @@ class ReActPlanner(Planner):
         self._tools = tools
         self._unsafe_mode = unsafe_mode
         self._model_router = model_router
+        self._tool_catalog_cache: Optional[List[Dict[str, Any]]] = None
 
     def _get_planning_llm(self) -> LLMClient:
         """Get the LLM to use for planning. Uses router if available."""
@@ -187,7 +188,9 @@ class ReActPlanner(Planner):
 
     def _build_tool_catalog(self) -> List[Dict[str, Any]]:
         """Build the tool catalog for the prompt."""
-        return [
+        if self._tool_catalog_cache is not None:
+            return self._tool_catalog_cache
+        catalog = [
             {
                 "name": spec.name,
                 "description": spec.description,
@@ -196,6 +199,8 @@ class ReActPlanner(Planner):
             }
             for spec in self._tools.list_tools()
         ]
+        self._tool_catalog_cache = catalog
+        return catalog
 
     def _build_plan_prompt(
         self,

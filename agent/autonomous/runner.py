@@ -2373,7 +2373,7 @@ class AgentRunner:
             parts.append("desktop automation")
         if {"google-calendar.list_events", "list_calendar_events"} & names:
             parts.append("calendar")
-        if {"google-tasks.list_tasks", "list_all_tasks"} & names:
+        if {"google-tasks.list_tasks", "list_all_tasks", "list_task_lists"} & names:
             parts.append("tasks")
         if "shell_exec" in names:
             parts.append("shell")

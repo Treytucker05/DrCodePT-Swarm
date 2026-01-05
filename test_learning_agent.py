@@ -2,6 +2,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 # Add repo root to path
 REPO_ROOT = Path(__file__).resolve().parent
 if str(REPO_ROOT) not in sys.path:
@@ -11,6 +13,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from agent.autonomous.learning_agent import LearningAgent
+
+pytestmark = pytest.mark.integration
 
 def test_calendar_request():
     """Test that calendar request only sets up Calendar API, not Tasks."""

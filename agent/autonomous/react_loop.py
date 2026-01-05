@@ -329,7 +329,7 @@ Determine:
         if "calendar" in lowered:
             core_tools.extend(["create_calendar_event", "list_calendar_events"])
         if "task" in lowered:
-            core_tools.extend(["create_task", "list_all_tasks"])
+            core_tools.extend(["create_task", "list_all_tasks", "list_task_lists"])
         if "email" in lowered or "mail" in lowered:
             core_tools.append("mail")
         return {k: v for k, v in self.tools.items() if k in core_tools}

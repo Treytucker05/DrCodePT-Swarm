@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import pytest
+
 from agent.autonomous.config import AgentConfig, PlannerConfig, RunnerConfig
 from agent.autonomous.llm.stub import StubLLM
 from agent.autonomous.runner import AgentRunner
+
+pytestmark = pytest.mark.integration
 
 
 def test_agent_runner_smoke(tmp_path) -> None:

@@ -18,6 +18,8 @@ from typing import Any, Dict, List
 
 import pytest
 
+pytestmark = pytest.mark.integration
+
 from agent.autonomous.config import AgentConfig, PlannerConfig, RunnerConfig
 from agent.autonomous.llm.stub import StubLLM
 from agent.autonomous.memory.sqlite_store import SqliteMemoryStore

@@ -6,11 +6,15 @@ Verifies credentials and tests basic mail functions.
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from agent.memory.credentials import get_credential
 from agent.integrations import yahoo_mail
+
+pytestmark = pytest.mark.integration
 
 
 def check_credentials():

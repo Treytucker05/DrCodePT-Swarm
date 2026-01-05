@@ -15,8 +15,8 @@ import re
 import time
 import json
 from dataclasses import dataclass
-from typing import Optional, Tuple, List, Any
-from datetime import datetime
+from typing import Optional, Tuple, List, Any, Dict
+from datetime import datetime, timedelta
 
 from agent.autonomous.runner import AgentRunner
 from agent.autonomous.config import RunnerConfig, AgentConfig, PlannerConfig
@@ -51,6 +51,29 @@ def list_all_tools() -> None:
         print(f"[ERROR] Failed to initialize registry: {e}")
         import traceback
         traceback.print_exc()
+
+
+def _list_secret_credentials() -> List[str]:
+    sites: set[str] = set()
+    try:
+        from agent.security.secret_store import get_secret_store
+
+        store = get_secret_store()
+        for name in store.list_names():
+            if name.startswith("credential:"):
+                sites.add(name.split("credential:", 1)[1])
+    except Exception:
+        pass
+
+    try:
+        from agent.memory.memory_manager import load_memory
+
+        memory = load_memory()
+        sites.update((memory.get("credentials") or {}).keys())
+    except Exception:
+        pass
+
+    return sorted(sites)
 
 
 def _setup_logging(verbose: bool = False) -> None:
@@ -446,6 +469,38 @@ def _fast_answer(llm, query: str) -> Optional[str]:
     return None
 
 
+def _interpret_calendar_date(text: str) -> Dict[str, Any]:
+    """
+    Lightweight calendar date interpretation helper for tests.
+
+    Returns a dict with optional "time_min"/"time_max" ISO strings and
+    "calendar_filter" when simple keywords are detected.
+    """
+    lower = (text or "").lower()
+    now = datetime.now().astimezone()
+    result: Dict[str, Any] = {}
+
+    if "personal" in lower:
+        result["calendar_filter"] = ["personal"]
+    elif "work" in lower:
+        result["calendar_filter"] = ["work"]
+
+    start = None
+    end = None
+    if "tomorrow" in lower:
+        start = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+    elif "today" in lower:
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1)
+
+    if start and end:
+        result["time_min"] = start.isoformat()
+        result["time_max"] = end.isoformat()
+
+    return result
+
+
 
 
 
@@ -476,18 +531,74 @@ class CLISettings:
             return cls()
 
 def _print_settings_menu(settings: CLISettings):
-    print("\n" + "="*30)
+    print("\n" + "=" * 30)
     print("      SETTINGS MENU")
-    print("="*30)
+    print("=" * 30)
     print(f"  Model:   {settings.model}")
     print(f"  Profile: {settings.profile}  (fast = low latency, deep = high reasoning)")
     print(f"  Mode:    {settings.mode}")
-    print("-"*30)
+    print("-" * 30)
     print("  Commands: ")
     print("    /model <name>   - Change LLM model")
     print("    /profile <fast|deep|audit> - Change reasoning depth")
     print("    /settings       - Show this menu")
-    print("="*30 + "\n")
+    print("=" * 30 + "\n")
+
+
+def _print_integrations_menu(manager):
+    specs = manager.list_integrations()
+    enabled = manager.enabled_integrations()
+    auto_flag = "ON" if manager.auto_enable_on_use() else "OFF"
+
+    print("\n" + "=" * 34)
+    print("      INTEGRATIONS MENU")
+    print("=" * 34)
+    print(f"  Auto-enable on use: {auto_flag}")
+    print(f"  Config: {manager.settings_path}")
+    print("-" * 34)
+    for idx, spec in enumerate(specs, 1):
+        status = "ON" if enabled.get(spec.key, True) else "OFF"
+        print(f"  {idx:>2}) {spec.label:<18} [{status}] ({spec.kind})")
+    print("-" * 34)
+    print("  Commands:")
+    print("    <number(s)>      - Toggle (e.g., 1 or 1 3 4)")
+    print("    all on|all off   - Enable/disable all")
+    print("    auto on|auto off - Auto-enable integrations on use")
+    print("    q                - Exit menu")
+    print("=" * 34 + "\n")
+
+
+def _run_integrations_menu(manager) -> None:
+    while True:
+        _print_integrations_menu(manager)
+        cmd = input("integrations> ").strip().lower()
+        if not cmd:
+            continue
+        if cmd in {"q", "quit", "exit", "done"}:
+            return
+        if cmd in {"all on", "on all", "enable all"}:
+            manager.enable_all()
+            continue
+        if cmd in {"all off", "off all", "disable all"}:
+            manager.disable_all()
+            continue
+        if cmd in {"auto on", "enable auto"}:
+            manager.set_auto_enable_on_use(True)
+            continue
+        if cmd in {"auto off", "disable auto"}:
+            manager.set_auto_enable_on_use(False)
+            continue
+
+        tokens = [t for t in re.split(r"[,\s]+", cmd) if t]
+        if tokens and all(t.isdigit() for t in tokens):
+            specs = manager.list_integrations()
+            for token in tokens:
+                idx = int(token)
+                if 1 <= idx <= len(specs):
+                    manager.toggle(specs[idx - 1].key)
+            continue
+
+        print("Unknown command. Use a number, 'all on', 'all off', 'auto on/off', or 'q'.")
 
 def interactive_loop(backend: str = "codex_cli") -> int:
     """
@@ -502,10 +613,13 @@ def interactive_loop(backend: str = "codex_cli") -> int:
     print("          🚀 TREY'S AGENT - Interactive Mode")
     print("=" * 50)
     print("\nType your task and press Enter. Type 'exit' to quit.")
-    print("Commands: /settings, help, tools, skills, learn, exit\n")
+    print("Commands: /settings, /integrations, help, tools, skills, learn, creds, exit\n")
 
     settings_path = Path.home() / ".drcodept_swarm" / "cli_settings.json"
     settings = CLISettings.load(settings_path)
+
+    from agent.integrations.manager import get_integration_manager
+    integration_manager = get_integration_manager()
 
     # Get LLM client with initial model from settings
     backend_val = "server" if os.environ.get("LLM_BACKEND") == "server" else "codex_cli"
@@ -516,9 +630,9 @@ def interactive_loop(backend: str = "codex_cli") -> int:
         return 1
 
     # Create persistent memory store that persists across all tasks in this session
+    repo_root = Path(__file__).resolve().parent.parent
     memory_store = None
     try:
-        repo_root = Path(__file__).resolve().parent.parent
         memory_path = repo_root / "agent" / "memory" / "autonomous_memory.sqlite3"
         memory_path.parent.mkdir(parents=True, exist_ok=True)
         memory_store = SqliteMemoryStore(path=memory_path)
@@ -527,6 +641,35 @@ def interactive_loop(backend: str = "codex_cli") -> int:
     except Exception as e:
         logger.debug(f"Could not initialize persistent memory: {e}")
         print(f"[WARNING] Persistent memory unavailable - agent won't remember past tasks")
+
+    try:
+        specs = integration_manager.list_integrations()
+        enabled = integration_manager.enabled_integrations()
+        enabled_count = sum(1 for spec in specs if enabled.get(spec.key, True))
+        auto_flag = "ON" if integration_manager.auto_enable_on_use() else "OFF"
+        print(
+            f"[INTEGRATIONS] {enabled_count}/{len(specs)} enabled "
+            f"(auto-enable {auto_flag}). Use /integrations to adjust."
+        )
+    except Exception:
+        pass
+
+    # Build a reusable tool registry for the session to avoid per-turn setup cost
+    session_agent_cfg = AgentConfig(
+        allow_human_ask=True,
+        allow_interactive_tools=True,
+        memory_db_path=Path(memory_store.path) if memory_store else None,
+    )
+    tool_registry = None
+    try:
+        from agent.autonomous.tools.builtins import build_default_tool_registry
+        session_run_dir = repo_root / "runs" / "autonomous" / "repl_session"
+        session_run_dir.mkdir(parents=True, exist_ok=True)
+        tool_registry = build_default_tool_registry(
+            session_agent_cfg, session_run_dir, memory_store=memory_store
+        )
+    except Exception as e:
+        logger.debug(f"Could not initialize tool registry cache: {e}")
 
     session_history: List[str] = []
 
@@ -549,6 +692,9 @@ def interactive_loop(backend: str = "codex_cli") -> int:
             
             if cmd == "/settings":
                 _print_settings_menu(settings)
+                continue
+            elif cmd == "/integrations":
+                _run_integrations_menu(integration_manager)
                 continue
             elif cmd == "/model":
                 if len(parts) > 1:
@@ -574,6 +720,7 @@ def interactive_loop(backend: str = "codex_cli") -> int:
             elif cmd == "/help":
                 print("\nAvailable commands:")
                 print("  /settings - View current settings")
+                print("  /integrations - Enable/disable integrations")
                 print("  /model    - Set LLM model")
                 print("  /profile  - Set reasoning profile (fast/deep/audit)")
                 print("  exit      - Close the agent\n")
@@ -586,13 +733,47 @@ def interactive_loop(backend: str = "codex_cli") -> int:
             print("Goodbye!")
             return 0
 
+        if lower in {"creds", "credentials"}:
+            sites = _list_secret_credentials()
+            if not sites:
+                print("[INFO] No credentials saved yet.")
+            else:
+                print("Saved credential sites: " + ", ".join(sites))
+            continue
+
+        if lower.startswith("cred:") or lower.startswith("credentials:"):
+            site = user_input.split(":", 1)[1].strip().lower()
+            if not site:
+                print("Usage: Cred: <site>  (example: Cred: blackboard)")
+                continue
+            try:
+                import getpass
+                from agent.memory.credentials import CredentialError, save_credential
+
+                print(f"[CREDENTIALS] Saving encrypted credentials for: {site}")
+                username = input(f"Username/email for {site}: ").strip()
+                password = getpass.getpass("Password (input hidden): ").strip()
+                if not username or not password:
+                    print("[INFO] Skipping: username/password cannot be blank.")
+                    continue
+                save_credential(site, username, password)
+                print(f"[SAVED] Stored encrypted credentials for '{site}'.")
+            except CredentialError as exc:
+                print(f"[ERROR] {exc}")
+            except Exception as exc:
+                print(f"[ERROR] Failed to save credentials: {exc}")
+            continue
+
         if lower in {"help", "?"}:
             print("""
 Commands:
   <task>       - Run a task (uses Learning Agent for complex tasks)
-  /settings    - Change Model, Speed (fast/deep), and Reasoning settings
+  /settings    - Change Model, Speed (fast/deep), and Reasoning settings        
+  /integrations- Enable/disable integrations (Google, Yahoo, Obsidian, etc.)
   /model       - Switch LLM model (e.g., /model gpt-4)
   /profile     - Switch speed (e.g., /profile fast OR /profile deep OR /profile audit)
+  Cred: <site> - Save/update credentials for a site
+  creds        - List stored credential sites
   learn <task> - Force learning mode (research + learn new skill)
   tools        - List all available tools (local + MCP)
   skills       - List all learned skills
@@ -635,11 +816,7 @@ Examples:
             llm_heartbeat_seconds=5.0,
         )
 
-        agent_cfg = AgentConfig(
-            allow_human_ask=True,
-            allow_interactive_tools=True,
-            memory_db_path=Path(memory_store.path) if memory_store else None,
-        )
+        agent_cfg = session_agent_cfg
 
         planner_cfg = PlannerConfig(mode=settings.mode)
 
@@ -648,6 +825,7 @@ Examples:
             agent_cfg=agent_cfg,
             planner_cfg=planner_cfg,
             llm=llm,
+            tools=tool_registry,
             memory_store=memory_store,  # Share memory across all tasks
         )
 
@@ -757,16 +935,51 @@ def _extract_answer(result) -> Optional[str]:
                     else:
                         return "No events found in that time range."
 
+                elif last_successful_output and last_tool_name == "list_task_lists":
+                    task_lists = (
+                        last_successful_output.get("task_lists")
+                        or last_successful_output.get("lists")
+                        or []
+                    )
+                    if task_lists:
+                        lines = [f"Found {len(task_lists)} task list(s):", ""]
+                        for task_list in task_lists:
+                            title = task_list.get("title", "Untitled")
+                            list_id = task_list.get("id")
+                            if list_id:
+                                lines.append(f"  - {title} (id: {list_id})")
+                            else:
+                                lines.append(f"  - {title}")
+                        return "\n".join(lines).strip()
+                    return "No task lists found."
+
                 elif last_successful_output and last_tool_name == "list_all_tasks":
                     tasks = last_successful_output.get("tasks", [])
                     if tasks:
-                        answer = f"Found {len(tasks)} task(s):\n\n"
+                        grouped: Dict[str, List[dict]] = {}
+                        has_list_titles = False
                         for task in tasks:
-                            title = task.get("title", "Untitled")
-                            answer += f"  • {title}\n"
-                        return answer.strip()
-                    else:
-                        return "No tasks found."
+                            list_title = task.get("_list_title") or task.get("list_title")
+                            if list_title:
+                                has_list_titles = True
+                            grouped.setdefault(list_title or "Tasks", []).append(task)
+
+                        lines = [f"Found {len(tasks)} task(s):", ""]
+                        if has_list_titles:
+                            for list_title in sorted(grouped.keys()):
+                                list_tasks = grouped[list_title]
+                                lines.append(f"[{list_title}] ({len(list_tasks)} tasks):")
+                                for task in list_tasks:
+                                    title = task.get("title", "Untitled")
+                                    lines.append(f"  - {title}")
+                                lines.append("")
+                        else:
+                            for task in tasks:
+                                title = task.get("title", "Untitled")
+                                lines.append(f"  - {title}")
+                        return "\n".join(lines).strip()
+                    return "No tasks found."
+
 
     except Exception as e:
         pass  # Silently fail - answer extraction is optional

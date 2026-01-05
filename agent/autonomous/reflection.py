@@ -20,6 +20,7 @@ class Reflector:
         "get_free_time",
         "check_calendar_conflicts",
         "list_all_tasks",
+        "list_task_lists",
         "search_tasks",
         "get_task_details",
         "file_read",

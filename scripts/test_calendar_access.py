@@ -1,6 +1,10 @@
 
 import asyncio
+import pytest
+
 from agent.integrations.calendar_helper import CalendarHelper
+
+pytestmark = pytest.mark.integration
 
 async def test_access():
     print("Initializing CalendarHelper...")

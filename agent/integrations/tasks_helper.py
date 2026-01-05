@@ -64,9 +64,63 @@ class TasksHelper:
         self._set_cache(cache_key, tasks)
         return tasks
 
-    async def list_all_tasks(self, tasklist_id: str = "@default") -> List[Dict[str, Any]]:
-        """Backwards-compatible alias for list_tasks."""
-        return await self.list_tasks(tasklist_id=tasklist_id)
+    async def list_task_lists(self, max_results: int = 100) -> List[Dict[str, Any]]:
+        """List all task lists for the user."""
+        cache_key = self._make_cache_key("list_task_lists", max_results=max_results)
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            return cached
+
+        self._check_service()
+        task_lists: List[Dict[str, Any]] = []
+        page_token = None
+        while True:
+            request = self.service.tasklists().list(
+                maxResults=max_results,
+                pageToken=page_token,
+            )
+            results = request.execute()
+            items = results.get("items", [])
+            if items:
+                task_lists.extend(items)
+            page_token = results.get("nextPageToken")
+            if not page_token:
+                break
+
+        self._set_cache(cache_key, task_lists)
+        return task_lists
+
+    async def list_all_tasks(self, tasklist_id: str = "@all") -> List[Dict[str, Any]]:
+        """List tasks across all task lists by default.
+
+        If tasklist_id is provided (and not "@all"), only that list is queried.
+        """
+        cache_key = self._make_cache_key("list_all_tasks", tasklist_id=tasklist_id)
+        cached = self._get_cached(cache_key)
+        if cached is not None:
+            return cached
+
+        if tasklist_id and tasklist_id not in {"@all", "all", "*"}:
+            tasks = await self.list_tasks(tasklist_id=tasklist_id)
+            self._set_cache(cache_key, tasks)
+            return tasks
+
+        task_lists = await self.list_task_lists()
+        all_tasks: List[Dict[str, Any]] = []
+        for task_list in task_lists:
+            list_id = task_list.get("id")
+            if not list_id:
+                continue
+            list_title = task_list.get("title") or "Untitled"
+            tasks = await self.list_tasks(tasklist_id=list_id)
+            for task in tasks:
+                task.setdefault("_list_id", list_id)
+                task.setdefault("_list_title", list_title)
+            if tasks:
+                all_tasks.extend(tasks)
+
+        self._set_cache(cache_key, all_tasks)
+        return all_tasks
 
     async def create_task(self, title: str, tasklist_id: str = "@default", notes: Optional[str] = None, due: Optional[str] = None) -> Dict[str, Any]:
         self._check_service()

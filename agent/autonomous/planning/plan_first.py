@@ -34,9 +34,12 @@ class PlanFirstPlanner(Planner):
         self._use_dppm = use_dppm
         self._use_tot = use_tot
         self._fallback_plan: Optional[Plan] = None
+        self._tool_catalog_cache: Optional[List[dict]] = None
 
-    def plan(self, *, task: str, observations: List[Observation], memories: List[dict]) -> Plan:
-        tool_catalog = [
+    def _get_tool_catalog(self) -> List[dict]:
+        if self._tool_catalog_cache is not None:
+            return self._tool_catalog_cache
+        catalog = [
             {
                 "name": spec.name,
                 "description": spec.description,
@@ -45,6 +48,11 @@ class PlanFirstPlanner(Planner):
             }
             for spec in self._tools.list_tools()
         ]
+        self._tool_catalog_cache = catalog
+        return catalog
+
+    def plan(self, *, task: str, observations: List[Observation], memories: List[dict]) -> Plan:
+        tool_catalog = self._get_tool_catalog()
         recent_obs = [model_dump(o) for o in observations[-18:]]
         dppm_plan = None
         if self._use_dppm:
